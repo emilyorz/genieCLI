@@ -61,6 +61,9 @@ class _CDP:
 _ELEMENT_REGISTRY = {}
 _NEXT_ID = 1
 
+# Tracks element hashes from previous snapshot to mark new elements with *
+_PREVIOUS_ELEMENT_HASHES: set = set()
+
 
 def clear_registry():
     global _ELEMENT_REGISTRY, _NEXT_ID
@@ -70,6 +73,30 @@ def clear_registry():
 
 def get_element_by_id(element_id: int):
     return _ELEMENT_REGISTRY.get(element_id)
+
+
+def _element_hash(tag: str, text: str, placeholder: str = "") -> str:
+    label = (text or placeholder)[:30]
+    return f"{tag}::{label}"
+
+
+def _format_element_line(eid: int, el: dict, is_new: bool) -> str:
+    tag = el["tag"]
+    text = el["text"] or ""
+    depth = el.get("depth", 0)
+    indent = "  " * depth
+    prefix = "*" if is_new else ""
+
+    if tag == "input":
+        attrs = []
+        if el.get("input_type"):
+            attrs.append(f'type="{el["input_type"]}"')
+        if el.get("placeholder"):
+            attrs.append(f'placeholder="{el["placeholder"]}"')
+        attrs.append(f'value="{el.get("value", "")}"')
+        return f"{indent}{prefix}[{eid}]<{tag} {' '.join(attrs)}>"
+    else:
+        return f"{indent}{prefix}[{eid}]<{tag}>{text}</{tag}>"
 
 
 def _register(tag, text, x, y, selector, role=""):
@@ -146,14 +173,25 @@ def get_page_snapshot(include_text=True, max_text=600) -> str:
 
             var cls = (el.className || "").toString().substring(0, 40);
 
+            var depth = 0;
+            var p = el.parentElement;
+            while (p && p !== document.body && depth < 10) {
+                depth++;
+                p = p.parentElement;
+            }
+
             results.push({
-                type:     item.type,
-                text:     text,
-                x:        Math.round(r.left + r.width / 2),
-                y:        Math.round(r.top  + r.height / 2),
-                tag:      el.tagName,
-                cls:      cls,
-                disabled: el.disabled || false,
+                type:        item.type,
+                text:        text,
+                x:           Math.round(r.left + r.width / 2),
+                y:           Math.round(r.top  + r.height / 2),
+                tag:         el.tagName.toLowerCase(),
+                cls:         cls,
+                disabled:    el.disabled || false,
+                depth:       depth,
+                input_type:  el.getAttribute('type') || '',
+                placeholder: el.getAttribute('placeholder') || '',
+                value:       (el.value || '').substring(0, 50),
             });
         });
     });
@@ -173,6 +211,7 @@ def get_page_snapshot(include_text=True, max_text=600) -> str:
             "=== Interactive Elements ===",
         ]
 
+        new_hashes: set = set()
         for el in elements:
             if el.get("disabled"):
                 continue
@@ -184,10 +223,13 @@ def get_page_snapshot(include_text=True, max_text=600) -> str:
                 selector="",
                 role=el["type"],
             )
-            label = el["text"] or el["cls"] or el["tag"]
-            lines.append(
-                f"[{eid:3}] {el['type']:<9} {label:<35} at ({el['x']:4},{el['y']:4})"
-            )
+            h = _element_hash(el["tag"], el["text"], el.get("placeholder", ""))
+            is_new = h not in _PREVIOUS_ELEMENT_HASHES
+            new_hashes.add(h)
+            lines.append(_format_element_line(eid, el, is_new))
+
+        _PREVIOUS_ELEMENT_HASHES.clear()
+        _PREVIOUS_ELEMENT_HASHES.update(new_hashes)
 
         # Visible text summary
         if include_text:
