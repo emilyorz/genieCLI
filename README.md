@@ -69,7 +69,7 @@
 ### 安裝依賴
 
 ```bash
-pip install websocket-client requests
+pip install -r requirements.txt
 ```
 
 ### 設定
@@ -99,6 +99,8 @@ pip install websocket-client requests
 | `authToken` | Bearer token（可直接填或用 `grab_auth.py` 自動抓） |
 | `defaultModel` | 預設使用的模型 |
 | `systemPrompt` | 系統提示詞 |
+
+> **注意：** config 讀取時會自動以 DEFAULTS 補全缺少的欄位，不需要在 JSON 裡填寫每個 key。
 
 ### 取得 Auth Token
 
@@ -249,12 +251,13 @@ AI    → [攔截並回傳 API 回應]
 ```
 genieCLI/
 ├── main.py              CLI 進入點
-├── api.py               HTTP / SSE client
-├── config.py            設定讀寫
+├── api.py               HTTP / SSE client（勿動）
+├── config.py            設定讀寫（自動補 DEFAULTS）
 ├── session.py           對話歷史管理
 ├── skill_runner.py      Tool call 解析與路由
 ├── page_context.py      CDP 高階封裝（snapshot/click/type）
-├── grab_auth.py         自動抓取 auth token 的腳本
+├── grab_auth.py         自動抓取 auth token 的腳本（勿動）
+├── requirements.txt     Python 依賴
 └── skills/
     ├── __init__.py      ALL_SKILLS 列表
     ├── base.py          BaseSkill 介面
@@ -262,8 +265,6 @@ genieCLI/
     ├── context.py       高階 CDP tools（snapshot/element 系列）
     └── system.py        檔案工具
 ```
-
----
 
 ## 限制與已知問題
 
