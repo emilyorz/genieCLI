@@ -8,10 +8,10 @@ from pathlib import Path
 
 CDP_URL            = "http://localhost:9222"
 CONFIG_PATH        = Path.home() / "ai-agent-config.json"
-TARGET_URL_KEYWORD = "tgenie"
-API_ENDPOINT       = "https://tgenie3-main.mlp.tw.ent.tsmc.com"
-FRONTEND_URL       = "https://tgenie3.tgenie.mlp.tw.ent.tsmc.com"
-COOKIE_DOMAIN      = ".tsmc.com"
+TARGET_URL_KEYWORD = "your-ai-app"
+API_ENDPOINT       = "https://your-ai-gateway.internal.company.com"
+FRONTEND_URL       = "https://your-frontend.internal.company.com"
+COOKIE_DOMAIN      = ".company.com"
 DEFAULT_MODEL      = "gemini-2.5-flash"
 SYSTEM_PROMPT      = "You are a helpful AI assistant."
 

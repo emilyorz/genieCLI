@@ -4,8 +4,8 @@ from pathlib import Path
 CONFIG_PATH = Path.home() / "ai-agent-config.json"
 
 DEFAULTS = {
-    "endpoint":     "https://tgenie3-main.mlp.tw.ent.tsmc.com",
-    "frontendUrl":  "https://tgenie3.tgenie.mlp.tw.ent.tsmc.com",
+    "endpoint":     "https://your-ai-gateway.internal.company.com",
+    "frontendUrl":  "https://your-frontend.internal.company.com",
     "authToken":    "",
     "customHeader": "",
     "defaultModel": "gemini-2.5-flash",
