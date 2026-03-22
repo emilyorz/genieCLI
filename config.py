@@ -4,13 +4,15 @@ from pathlib import Path
 CONFIG_PATH = Path.home() / "ai-agent-config.json"
 
 DEFAULTS = {
-    "endpoint":     "https://your-ai-gateway.internal.company.com",
-    "frontendUrl":  "https://your-frontend.internal.company.com",
-    "authToken":    "",
-    "customHeader": "",
-    "defaultModel": "gemini-2.5-flash",
-    "systemPrompt": "You are a helpful AI assistant.",
-    "cookies":      [],
+    "endpoint":         "https://your-ai-gateway.internal.company.com",
+    "frontendUrl":      "https://your-frontend.internal.company.com",
+    "targetUrlKeyword": "ai-app",       # keyword to find your app tab in Chrome CDP
+    "cookieDomain":     ".company.com",  # domain for cookie capture
+    "authToken":        "",
+    "customHeader":     "",
+    "defaultModel":     "gemini-2.5-flash",
+    "systemPrompt":     "You are a helpful AI assistant.",
+    "cookies":          [],
 }
 
 def load():

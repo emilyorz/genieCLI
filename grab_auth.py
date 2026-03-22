@@ -8,12 +8,6 @@ from pathlib import Path
 
 CDP_URL            = "http://localhost:9222"
 CONFIG_PATH        = Path.home() / "ai-agent-config.json"
-TARGET_URL_KEYWORD = "your-ai-app"
-API_ENDPOINT       = "https://your-ai-gateway.internal.company.com"
-FRONTEND_URL       = "https://your-frontend.internal.company.com"
-COOKIE_DOMAIN      = ".company.com"
-DEFAULT_MODEL      = "gemini-2.5-flash"
-SYSTEM_PROMPT      = "You are a helpful AI assistant."
 
 # JS snippets stored as constants to avoid inline escaping issues
 JS_CHECK_TEXTAREA = "document.querySelector('[name=\"chat-input-textarea\"]') !== null"
@@ -113,7 +107,7 @@ def main():
     # 1. Find TGenie tab
     print("  Connecting to Chrome CDP...")
     tabs = get_tabs()
-    tab  = find_tab(tabs, TARGET_URL_KEYWORD)
+    tab  = find_tab(tabs, existing.get("targetUrlKeyword", "ai-app"))
     if not tab:
         print(f"  [ERROR] No tab with '{TARGET_URL_KEYWORD}' found. Open tabs:")
         for t in tabs:
@@ -186,7 +180,8 @@ def main():
     if not all_cookies:
         all_cookies = cdp.send("Network.getAllCookies").get("cookies", [])
 
-    keep = [c for c in all_cookies if COOKIE_DOMAIN.lstrip(".") in c.get("domain", "")]
+    cookie_domain = existing.get("cookieDomain", ".company.com")
+    keep = [c for c in all_cookies if cookie_domain.lstrip(".") in c.get("domain", "")]
     print(f"  [OK] {len(keep)} cookie(s)")
     for c in keep:
         print(f"       {c['name']} @ {c['domain']}")
@@ -203,13 +198,15 @@ def main():
             pass
 
     cfg = {
-        "endpoint":     existing.get("endpoint",     API_ENDPOINT),
-        "frontendUrl":  existing.get("frontendUrl",  FRONTEND_URL),
-        "authToken":    token,
-        "customHeader": existing.get("customHeader", ""),
-        "defaultModel": existing.get("defaultModel", DEFAULT_MODEL),
-        "systemPrompt": existing.get("systemPrompt", SYSTEM_PROMPT),
-        "cookies":      [
+        "endpoint":         existing.get("endpoint",     ""),
+        "frontendUrl":      existing.get("frontendUrl",  ""),
+        "targetUrlKeyword":  existing.get("targetUrlKeyword", "ai-app"),
+        "cookieDomain":     existing.get("cookieDomain",  ".company.com"),
+        "authToken":        token,
+        "customHeader":     existing.get("customHeader",  ""),
+        "defaultModel":     existing.get("defaultModel",  "gemini-2.5-flash"),
+        "systemPrompt":     existing.get("systemPrompt", "You are a helpful AI assistant."),
+        "cookies":          [
             {"name": c["name"], "value": c["value"], "domain": c["domain"]}
             for c in keep
         ],
