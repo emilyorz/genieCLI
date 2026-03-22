@@ -258,6 +258,11 @@ def chat_loop(cfg, model, reasoning, use_skills):
                 sess.save_session(session)
                 print(c(f"  Saved: {session['title']}", GRAY))
             print(c("  Goodbye!", YELLOW))
+            try:
+                from skills._cdp import close_shared_cdp
+                close_shared_cdp()
+            except Exception:
+                pass
             break
 
         elif cmd == "/new":
