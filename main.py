@@ -162,6 +162,9 @@ MAX_TOOL_LOOPS = 15
 
 
 def send_with_tools(cfg, session, model, reasoning):
+    _last_memory: str = ""
+    recent_actions: list = []
+
     for loop in range(MAX_TOOL_LOOPS):
         reply = api.send(cfg, session["history"], model, reasoning)
         if not reply:
@@ -173,6 +176,15 @@ def send_with_tools(cfg, session, model, reasoning):
 
         tool_name = tool_call.get("tool", "?")
         tool_args = tool_call.get("args", {})
+
+        # Loop detection
+        action_key = tool_name + str(sorted(tool_args.items()))
+        recent_actions.append(action_key)
+        if len(recent_actions) > 20:
+            recent_actions.pop(0)
+        if recent_actions.count(action_key) >= 5:
+            return f"Loop detected: repeating '{tool_name}' too many times. Please try a different approach."
+
         print(c(f"  [Tool] {tool_name}", YELLOW), end="")
         if tool_args:
             args_str = ", ".join(f"{k}={repr(v)}" for k, v in tool_args.items())
@@ -189,10 +201,11 @@ def send_with_tools(cfg, session, model, reasoning):
             _, filename, b64_data = result.split(":", 2)
             img_bytes = __import__("base64").b64decode(b64_data)
             print(c(f"  [Screenshot] {filename} ({len(img_bytes)//1024}KB) — sending to AI", YELLOW))
-            # Tell AI there is an image to look at
+            mem_prefix = f"[Previous step memory]: {_last_memory}\n\n" if _last_memory else ""
             session["history"].append(
-                new_msg("user", "I took a screenshot of the current page. Please analyze what you see in the image and continue.")
+                new_msg("user", f"{mem_prefix}I took a screenshot of the current page. Please analyze what you see in the image and continue.")
             )
+            _last_memory = tool_call.get("memory", "")
             sess.save_session(session)
             # Send with image attached
             img_reply = api.send(
@@ -213,9 +226,11 @@ def send_with_tools(cfg, session, model, reasoning):
         else:
             preview = result[:100] + ("..." if len(result) > 100 else "")
             print(c(f"  [Result] {preview}", GRAY))
+            mem_prefix = f"[Previous step memory]: {_last_memory}\n\n" if _last_memory else ""
             session["history"].append(
-                new_msg("user", f"[Tool result: {tool_name}]\n{result}\n\nPlease continue based on this result.")
+                new_msg("user", f"{mem_prefix}[Tool result: {tool_name}]\n{result}\n\nPlease continue based on this result.")
             )
+            _last_memory = tool_call.get("memory", "")
 
         sess.save_session(session)
 

@@ -29,11 +29,14 @@ def build_system_prompt() -> str:
 
 ## HOW TO USE TOOLS
 
-When you need a tool, output ONLY this JSON (one line, no explanation):
-{{"tool": "tool_name", "args": {{"key": "value"}}}}
+When you need a tool, output ONLY this JSON (no explanation, no markdown):
+{{"memory": "1-2 sentence summary of what you just did and what you plan to do next.", "tool": "tool_name", "args": {{"key": "value"}}}}
 
-After receiving the tool result, continue reasoning or give the final answer in plain text.
-You can call tools multiple times in sequence to complete a task.
+When the task is complete and no more tools are needed, output:
+{{"memory": "Task complete.", "tool": null, "args": {{}}}}
+
+The "memory" field is required in every response. It helps you track progress across steps.
+After receiving the tool result, output the next JSON tool call or the final answer in plain text.
 
 ## DECISION STRATEGY
 
@@ -114,10 +117,19 @@ def parse_tool_call(text: str):
         if "tool" in data:
             if "args" not in data:
                 data["args"] = {}
+            if "memory" not in data:
+                data["memory"] = ""
             return data
     except Exception:
         pass
     return None
+
+
+def extract_memory(text: str) -> str:
+    parsed = parse_tool_call(text)
+    if parsed:
+        return parsed.get("memory", "")
+    return ""
 
 
 def run_tool(tool_call: dict) -> str:
