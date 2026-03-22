@@ -1,11 +1,16 @@
 from pathlib import Path
-from .base import BaseSkill
+from .base import Arg, BaseSkill
 
 
 class ReadFile(BaseSkill):
     name        = "read_file"
     description = "Read content of a local file"
-    args_schema = {"path": "Absolute or relative file path"}
+    group       = "file"
+    args        = [
+        Arg(name="path", type="str",
+            description="Absolute or relative file path",
+            required=True),
+    ]
 
     def run(self, path=""):
         try:
@@ -18,10 +23,15 @@ class ReadFile(BaseSkill):
 class WriteFile(BaseSkill):
     name        = "write_file"
     description = "Write text content to a local file"
-    args_schema = {
-        "path":    "File path to write to",
-        "content": "Text content to write",
-    }
+    group       = "file"
+    args        = [
+        Arg(name="path", type="str",
+            description="File path to write to",
+            required=True),
+        Arg(name="content", type="str",
+            description="Text content to write",
+            required=True),
+    ]
 
     def run(self, path="", content=""):
         try:
@@ -36,7 +46,12 @@ class WriteFile(BaseSkill):
 class ListFiles(BaseSkill):
     name        = "list_files"
     description = "List files in a directory"
-    args_schema = {"path": "Directory path (default: current directory)"}
+    group       = "file"
+    args        = [
+        Arg(name="path", type="str",
+            description="Directory path",
+            required=False, default="."),
+    ]
 
     def run(self, path="."):
         try:
