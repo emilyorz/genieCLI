@@ -1,17 +1,27 @@
 import json
 import re
 from skills import ALL_SKILLS
+from skills._registry import SkillRegistry
 
-SKILL_MAP = {s.name: s for s in ALL_SKILLS}
+SKILL_MAP = SkillRegistry._skills
 
 
 def build_system_prompt() -> str:
     # Build tool list
     tool_lines = []
     for skill in ALL_SKILLS:
-        args_str = ", ".join(
-            f"{k}: {v}" for k, v in skill.args_schema.items()
-        ) or "no args"
+        if skill.args:
+            parts = []
+            for arg in skill.args:
+                part = f"{arg.name}: {arg.description}"
+                if not arg.required:
+                    part += f" (optional, default: {arg.default})"
+                if arg.choices:
+                    part += f" [{'/'.join(arg.choices)}]"
+                parts.append(part)
+            args_str = ", ".join(parts)
+        else:
+            args_str = "no args"
         tool_lines.append(f"- {skill.name}({args_str}): {skill.description}")
     tools_block = "\n".join(tool_lines)
 
@@ -117,6 +127,11 @@ def run_tool(tool_call: dict) -> str:
     if not skill:
         available = ", ".join(SKILL_MAP.keys())
         return f"Unknown tool: '{name}'. Available tools: {available}"
+
+    ok, err = skill.validate(args)
+    if not ok:
+        return f"Validation error for '{name}': {err}"
+
     try:
         return skill.run(**args)
     except TypeError as e:

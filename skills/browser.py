@@ -1,7 +1,7 @@
 import json
 import time
 import base64
-from .base import BaseSkill
+from .base import Arg, BaseSkill
 
 def _requests():
     import requests
@@ -87,7 +87,8 @@ class _CDP:
 class BrowserListTabs(BaseSkill):
     name        = "browser_list_tabs"
     description = "List all open browser tabs with their index, title and URL"
-    args_schema = {}
+    group       = "navigation"
+    args        = []
 
     def run(self):
         tabs  = _requests().get(f"{CDP_URL}/json", timeout=3).json()
@@ -101,10 +102,15 @@ class BrowserListTabs(BaseSkill):
 class BrowserSwitchTab(BaseSkill):
     name        = "browser_switch_tab"
     description = "Switch to a tab by index (from browser_list_tabs) or by URL keyword"
-    args_schema = {
-        "index":   "Tab index number (from browser_list_tabs)",
-        "keyword": "URL or title keyword to match (alternative to index)",
-    }
+    group       = "navigation"
+    args        = [
+        Arg(name="index", type="int",
+            description="Tab index number (from browser_list_tabs)",
+            required=False, default=None),
+        Arg(name="keyword", type="str",
+            description="URL or title keyword to match (alternative to index)",
+            required=False, default=""),
+    ]
 
     def run(self, index=None, keyword=""):
         tabs  = _requests().get(f"{CDP_URL}/json", timeout=3).json()
@@ -133,7 +139,12 @@ class BrowserSwitchTab(BaseSkill):
 class BrowserNavigate(BaseSkill):
     name        = "browser_navigate"
     description = "Open a URL in a new browser tab"
-    args_schema = {"url": "The URL to open"}
+    group       = "navigation"
+    args        = [
+        Arg(name="url", type="str",
+            description="The URL to open",
+            required=True),
+    ]
 
     def run(self, url=""):
         cdp = _CDP()
@@ -156,7 +167,8 @@ class BrowserNavigate(BaseSkill):
 class BrowserGetURL(BaseSkill):
     name        = "browser_get_url"
     description = "Get the current page URL and title"
-    args_schema = {}
+    group       = "navigation"
+    args        = []
 
     def run(self):
         cdp = _CDP()
@@ -171,7 +183,8 @@ class BrowserGetURL(BaseSkill):
 class BrowserGetText(BaseSkill):
     name        = "browser_get_text"
     description = "Get all visible text content of the current page"
-    args_schema = {}
+    group       = "reading"
+    args        = []
 
     def run(self):
         cdp = _CDP()
@@ -187,10 +200,15 @@ class BrowserGetText(BaseSkill):
 class BrowserGetElement(BaseSkill):
     name        = "browser_get_element"
     description = "Get text, value, or any attribute from elements matching a CSS selector"
-    args_schema = {
-        "selector":  "CSS selector (returns ALL matching elements)",
-        "attribute": "What to get: text, value, innerHTML, href, src, or attribute name (default: text)",
-    }
+    group       = "reading"
+    args        = [
+        Arg(name="selector", type="str",
+            description="CSS selector (returns ALL matching elements)",
+            required=True),
+        Arg(name="attribute", type="str",
+            description="What to get: text, value, innerHTML, href, src, or attribute name",
+            required=False, default="text"),
+    ]
 
     def run(self, selector="", attribute="text"):
         cdp = _CDP()
@@ -224,7 +242,12 @@ class BrowserGetElement(BaseSkill):
 class BrowserGetBoundingBox(BaseSkill):
     name        = "browser_get_bounding_box"
     description = "Get position and size of an element — useful before clicking or screenshotting a region"
-    args_schema = {"selector": "CSS selector"}
+    group       = "reading"
+    args        = [
+        Arg(name="selector", type="str",
+            description="CSS selector",
+            required=True),
+    ]
 
     def run(self, selector=""):
         cdp = _CDP()
@@ -242,10 +265,16 @@ class BrowserGetBoundingBox(BaseSkill):
 class BrowserGetLocalStorage(BaseSkill):
     name        = "browser_get_local_storage"
     description = "Read localStorage or sessionStorage values (tokens, state, cached data)"
-    args_schema = {
-        "key":     "Specific key to get (optional — omit to list all keys)",
-        "storage": "localStorage or sessionStorage (default: localStorage)",
-    }
+    group       = "reading"
+    args        = [
+        Arg(name="key", type="str",
+            description="Specific key to get (omit to list all keys)",
+            required=False, default=""),
+        Arg(name="storage", type="str",
+            description="localStorage or sessionStorage",
+            required=False, default="localStorage",
+            choices=["localStorage", "sessionStorage"]),
+    ]
 
     def run(self, key="", storage="localStorage"):
         cdp = _CDP()
@@ -275,9 +304,12 @@ class BrowserGetLocalStorage(BaseSkill):
 class BrowserGetDOM(BaseSkill):
     name        = "browser_get_dom"
     description = "Inspect page DOM — find elements by selector, keyword in class/text, or list interactive elements"
-    args_schema = {
-        "query": "CSS selector, keyword, or special: 'buttons', 'inputs', 'links', 'canvas', 'class:xxx'",
-    }
+    group       = "reading"
+    args        = [
+        Arg(name="query", type="str",
+            description="CSS selector, keyword, or special: 'buttons', 'inputs', 'links', 'canvas', 'class:xxx'",
+            required=True),
+    ]
 
     def run(self, query=""):
         cdp = _CDP()
@@ -357,11 +389,18 @@ class BrowserGetDOM(BaseSkill):
 class BrowserInterceptXHR(BaseSkill):
     name        = "browser_intercept_xhr"
     description = "Capture XHR/fetch API responses by temporarily hooking the page network calls. Useful for reading chart data, API responses that aren't visible in DOM."
-    args_schema = {
-        "url_keyword": "Keyword to match in request URL (e.g. 'query', 'api', 'data')",
-        "action_js":   "JS to trigger the request (e.g. click a button). Leave empty to just wait.",
-        "timeout":     "Seconds to wait for response (default: 8)",
-    }
+    group       = "reading"
+    args        = [
+        Arg(name="url_keyword", type="str",
+            description="Keyword to match in request URL (e.g. 'query', 'api', 'data')",
+            required=False, default=""),
+        Arg(name="action_js", type="str",
+            description="JS to trigger the request (e.g. click a button). Leave empty to just wait.",
+            required=False, default=""),
+        Arg(name="timeout", type="int",
+            description="Seconds to wait for response",
+            required=False, default=8),
+    ]
 
     def run(self, url_keyword="", action_js="", timeout=8):
         cdp = _CDP()
@@ -436,11 +475,18 @@ class BrowserInterceptXHR(BaseSkill):
 class BrowserClick(BaseSkill):
     name        = "browser_click"
     description = "Single click on an element (CSS selector) or at x,y coordinates"
-    args_schema = {
-        "selector": "CSS selector (optional if using x,y)",
-        "x":        "X coordinate (optional if using selector)",
-        "y":        "Y coordinate (optional if using selector)",
-    }
+    group       = "interaction"
+    args        = [
+        Arg(name="selector", type="str",
+            description="CSS selector (optional if using x,y)",
+            required=False, default=""),
+        Arg(name="x", type="float",
+            description="X coordinate (optional if using selector)",
+            required=False, default=None),
+        Arg(name="y", type="float",
+            description="Y coordinate (optional if using selector)",
+            required=False, default=None),
+    ]
 
     def run(self, selector="", x=None, y=None):
         cdp = _CDP()
@@ -472,11 +518,18 @@ class BrowserClick(BaseSkill):
 class BrowserDoubleClick(BaseSkill):
     name        = "browser_double_click"
     description = "Double-click on an element or coordinates"
-    args_schema = {
-        "selector": "CSS selector (optional if using x,y)",
-        "x":        "X coordinate",
-        "y":        "Y coordinate",
-    }
+    group       = "interaction"
+    args        = [
+        Arg(name="selector", type="str",
+            description="CSS selector (optional if using x,y)",
+            required=False, default=""),
+        Arg(name="x", type="float",
+            description="X coordinate",
+            required=False, default=None),
+        Arg(name="y", type="float",
+            description="Y coordinate",
+            required=False, default=None),
+    ]
 
     def run(self, selector="", x=None, y=None):
         cdp = _CDP()
@@ -504,11 +557,18 @@ class BrowserDoubleClick(BaseSkill):
 class BrowserRightClick(BaseSkill):
     name        = "browser_right_click"
     description = "Right-click to open context menu on an element or coordinates"
-    args_schema = {
-        "selector": "CSS selector (optional if using x,y)",
-        "x":        "X coordinate",
-        "y":        "Y coordinate",
-    }
+    group       = "interaction"
+    args        = [
+        Arg(name="selector", type="str",
+            description="CSS selector (optional if using x,y)",
+            required=False, default=""),
+        Arg(name="x", type="float",
+            description="X coordinate",
+            required=False, default=None),
+        Arg(name="y", type="float",
+            description="Y coordinate",
+            required=False, default=None),
+    ]
 
     def run(self, selector="", x=None, y=None):
         cdp = _CDP()
@@ -535,15 +595,30 @@ class BrowserRightClick(BaseSkill):
 class BrowserDrag(BaseSkill):
     name        = "browser_drag"
     description = "Drag from one point to another — for sliders, drag-and-drop, resizing"
-    args_schema = {
-        "from_selector": "CSS selector of element to drag from (optional)",
-        "to_selector":   "CSS selector of drop target (optional)",
-        "from_x":        "Start X coordinate",
-        "from_y":        "Start Y coordinate",
-        "to_x":          "End X coordinate",
-        "to_y":          "End Y coordinate",
-        "steps":         "Smoothness steps (default: 10)",
-    }
+    group       = "interaction"
+    args        = [
+        Arg(name="from_selector", type="str",
+            description="CSS selector of element to drag from (optional)",
+            required=False, default=""),
+        Arg(name="to_selector", type="str",
+            description="CSS selector of drop target (optional)",
+            required=False, default=""),
+        Arg(name="from_x", type="float",
+            description="Start X coordinate",
+            required=False, default=None),
+        Arg(name="from_y", type="float",
+            description="Start Y coordinate",
+            required=False, default=None),
+        Arg(name="to_x", type="float",
+            description="End X coordinate",
+            required=False, default=None),
+        Arg(name="to_y", type="float",
+            description="End Y coordinate",
+            required=False, default=None),
+        Arg(name="steps", type="int",
+            description="Smoothness steps",
+            required=False, default=10),
+    ]
 
     def run(self, from_selector="", to_selector="", from_x=None, from_y=None,
             to_x=None, to_y=None, steps=10):
@@ -587,11 +662,18 @@ class BrowserDrag(BaseSkill):
 class BrowserType(BaseSkill):
     name        = "browser_type"
     description = "Type text into an input, textarea, or contenteditable element"
-    args_schema = {
-        "selector": "CSS selector of the field",
-        "text":     "Text to type",
-        "clear":    "Clear existing value first: true or false (default: true)",
-    }
+    group       = "interaction"
+    args        = [
+        Arg(name="selector", type="str",
+            description="CSS selector of the field",
+            required=True),
+        Arg(name="text", type="str",
+            description="Text to type",
+            required=True),
+        Arg(name="clear", type="bool",
+            description="Clear existing value first: true or false",
+            required=False, default=True),
+    ]
 
     def run(self, selector="", text="", clear=True):
         cdp = _CDP()
@@ -641,7 +723,12 @@ class BrowserType(BaseSkill):
 class BrowserKeyboard(BaseSkill):
     name        = "browser_keyboard"
     description = "Press keyboard keys: Enter, Tab, Escape, ArrowUp, ArrowDown, ArrowLeft, ArrowRight, Backspace, Space, F5, or ctrl+a, ctrl+c, ctrl+v etc."
-    args_schema = {"key": "Key or combo e.g. 'Enter', 'Tab', 'ctrl+a', 'ctrl+v'"}
+    group       = "interaction"
+    args        = [
+        Arg(name="key", type="str",
+            description="Key or combo e.g. 'Enter', 'Tab', 'ctrl+a', 'ctrl+v'",
+            required=False, default="Enter"),
+    ]
 
     def run(self, key="Enter"):
         cdp = _CDP()
@@ -667,12 +754,21 @@ class BrowserKeyboard(BaseSkill):
 class BrowserHover(BaseSkill):
     name        = "browser_hover"
     description = "Hover mouse over an element or coordinates to trigger tooltips, dropdowns, or hover effects"
-    args_schema = {
-        "selector": "CSS selector (optional if using x,y)",
-        "x":        "X coordinate",
-        "y":        "Y coordinate",
-        "duration": "Hover duration in seconds (default: 0.8)",
-    }
+    group       = "interaction"
+    args        = [
+        Arg(name="selector", type="str",
+            description="CSS selector (optional if using x,y)",
+            required=False, default=""),
+        Arg(name="x", type="float",
+            description="X coordinate",
+            required=False, default=None),
+        Arg(name="y", type="float",
+            description="Y coordinate",
+            required=False, default=None),
+        Arg(name="duration", type="float",
+            description="Hover duration in seconds",
+            required=False, default=0.8),
+    ]
 
     def run(self, selector="", x=None, y=None, duration=0.8):
         cdp = _CDP()
@@ -715,12 +811,22 @@ class BrowserHover(BaseSkill):
 class BrowserMouseSweep(BaseSkill):
     name        = "browser_mouse_sweep"
     description = "Sweep mouse across an element to collect tooltip values at each step — ideal for charts and graphs"
-    args_schema = {
-        "selector":  "CSS selector of the chart element to sweep",
-        "steps":     "Number of sample points (default: 15)",
-        "duration":  "Pause at each point in seconds (default: 0.2)",
-        "direction": "horizontal or vertical (default: horizontal)",
-    }
+    group       = "interaction"
+    args        = [
+        Arg(name="selector", type="str",
+            description="CSS selector of the chart element to sweep",
+            required=True),
+        Arg(name="steps", type="int",
+            description="Number of sample points",
+            required=False, default=15),
+        Arg(name="duration", type="float",
+            description="Pause at each point in seconds",
+            required=False, default=0.2),
+        Arg(name="direction", type="str",
+            description="Sweep direction",
+            required=False, default="horizontal",
+            choices=["horizontal", "vertical"]),
+    ]
 
     def run(self, selector="", steps=15, duration=0.2, direction="horizontal"):
         cdp = _CDP()
@@ -778,11 +884,19 @@ class BrowserMouseSweep(BaseSkill):
 class BrowserScroll(BaseSkill):
     name        = "browser_scroll"
     description = "Scroll the page or a specific element"
-    args_schema = {
-        "direction": "up, down, left, right",
-        "amount":    "Pixels to scroll (default: 500)",
-        "selector":  "Scroll inside this element instead of the page (optional)",
-    }
+    group       = "interaction"
+    args        = [
+        Arg(name="direction", type="str",
+            description="Scroll direction",
+            required=False, default="down",
+            choices=["up", "down", "left", "right"]),
+        Arg(name="amount", type="int",
+            description="Pixels to scroll",
+            required=False, default=500),
+        Arg(name="selector", type="str",
+            description="Scroll inside this element instead of the page (optional)",
+            required=False, default=""),
+    ]
 
     def run(self, direction="down", amount=500, selector=""):
         cdp = _CDP()
@@ -808,10 +922,15 @@ class BrowserScroll(BaseSkill):
 class BrowserSelect(BaseSkill):
     name        = "browser_select"
     description = "Select an option from a <select> dropdown"
-    args_schema = {
-        "selector": "CSS selector of the <select> element",
-        "value":    "Option value or visible text to select",
-    }
+    group       = "interaction"
+    args        = [
+        Arg(name="selector", type="str",
+            description="CSS selector of the <select> element",
+            required=True),
+        Arg(name="value", type="str",
+            description="Option value or visible text to select",
+            required=True),
+    ]
 
     def run(self, selector="", value=""):
         cdp = _CDP()
@@ -840,10 +959,16 @@ class BrowserSelect(BaseSkill):
 class BrowserCheckbox(BaseSkill):
     name        = "browser_checkbox"
     description = "Check, uncheck, or toggle a checkbox or radio button"
-    args_schema = {
-        "selector": "CSS selector of the checkbox/radio",
-        "action":   "check, uncheck, or toggle (default: toggle)",
-    }
+    group       = "interaction"
+    args        = [
+        Arg(name="selector", type="str",
+            description="CSS selector of the checkbox/radio",
+            required=True),
+        Arg(name="action", type="str",
+            description="check, uncheck, or toggle",
+            required=False, default="toggle",
+            choices=["check", "uncheck", "toggle"]),
+    ]
 
     def run(self, selector="", action="toggle"):
         cdp = _CDP()
@@ -870,10 +995,16 @@ class BrowserCheckbox(BaseSkill):
 class BrowserHandleDialog(BaseSkill):
     name        = "browser_handle_dialog"
     description = "Accept or dismiss browser alert/confirm/prompt dialogs"
-    args_schema = {
-        "action":     "accept or dismiss",
-        "prompt_text": "Text to enter if it's a prompt dialog (optional)",
-    }
+    group       = "interaction"
+    args        = [
+        Arg(name="action", type="str",
+            description="accept or dismiss",
+            required=False, default="accept",
+            choices=["accept", "dismiss"]),
+        Arg(name="prompt_text", type="str",
+            description="Text to enter if it's a prompt dialog (optional)",
+            required=False, default=""),
+    ]
 
     def run(self, action="accept", prompt_text=""):
         cdp = _CDP()
@@ -890,11 +1021,19 @@ class BrowserHandleDialog(BaseSkill):
 class BrowserWait(BaseSkill):
     name        = "browser_wait"
     description = "Wait for an element to appear, disappear, or for page to finish loading"
-    args_schema = {
-        "selector":  "CSS selector to wait for",
-        "condition": "appear or disappear (default: appear)",
-        "timeout":   "Max seconds (default: 10)",
-    }
+    group       = "interaction"
+    args        = [
+        Arg(name="selector", type="str",
+            description="CSS selector to wait for",
+            required=True),
+        Arg(name="condition", type="str",
+            description="appear or disappear",
+            required=False, default="appear",
+            choices=["appear", "disappear"]),
+        Arg(name="timeout", type="int",
+            description="Max seconds to wait",
+            required=False, default=10),
+    ]
 
     def run(self, selector="", condition="appear", timeout=10):
         cdp = _CDP()
@@ -916,9 +1055,12 @@ class BrowserWait(BaseSkill):
 class BrowserExecuteJS(BaseSkill):
     name        = "browser_execute_js"
     description = "Execute arbitrary JavaScript on the page and return the result. Most powerful skill — use when nothing else works."
-    args_schema = {
-        "code": "JavaScript code to execute. Use return to get a value.",
-    }
+    group       = "power"
+    args        = [
+        Arg(name="code", type="str",
+            description="JavaScript code to execute. Use return to get a value.",
+            required=True),
+    ]
 
     def run(self, code=""):
         cdp = _CDP()
@@ -939,7 +1081,12 @@ class BrowserExecuteJS(BaseSkill):
 class BrowserScreenshot(BaseSkill):
     name        = "browser_screenshot"
     description = "Take a full-page screenshot and send to AI for visual analysis"
-    args_schema = {"filename": "Output filename (default: screenshot.png)"}
+    group       = "visual"
+    args        = [
+        Arg(name="filename", type="str",
+            description="Output filename",
+            required=False, default="screenshot.png"),
+    ]
 
     def run(self, filename="screenshot.png"):
         cdp = _CDP()
@@ -959,11 +1106,18 @@ class BrowserScreenshot(BaseSkill):
 class BrowserScreenshotElement(BaseSkill):
     name        = "browser_screenshot_element"
     description = "Screenshot only a specific element — better for AI analysis of charts, panels, or small regions"
-    args_schema = {
-        "selector": "CSS selector of the element to capture",
-        "filename": "Output filename (default: element.png)",
-        "padding":  "Extra pixels around element (default: 10)",
-    }
+    group       = "visual"
+    args        = [
+        Arg(name="selector", type="str",
+            description="CSS selector of the element to capture",
+            required=True),
+        Arg(name="filename", type="str",
+            description="Output filename",
+            required=False, default="element.png"),
+        Arg(name="padding", type="int",
+            description="Extra pixels around element",
+            required=False, default=10),
+    ]
 
     def run(self, selector="", filename="element.png", padding=10):
         cdp = _CDP()
