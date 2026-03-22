@@ -125,7 +125,7 @@ def build_sys_prompt(cfg, use_skills):
         return f"{base}\n\n{skill_prompt}".strip() if base else skill_prompt
     return cfg.get("systemPrompt", "")
 
-def cmd_new(cfg, use_skills):
+def cmd_new(cfg, use_skills, reasoning="disable"):
     session = sess.new_session(build_sys_prompt(cfg, use_skills))
     print()
     print(c("  New conversation started.", GREEN))
@@ -225,7 +225,7 @@ def send_with_tools(cfg, session, model, reasoning):
 def chat_loop(cfg, model, reasoning, use_skills):
     current_reasoning = [reasoning]  # mutable so nested funcs can update
     session = sess.new_session(build_sys_prompt(cfg, use_skills))
-    print_banner(session, use_skills)
+    print_banner(session, use_skills, reasoning)
     print_help()
 
     while True:
@@ -249,7 +249,7 @@ def chat_loop(cfg, model, reasoning, use_skills):
             if any(m["role"] == "user" for m in session["history"]):
                 sess.save_session(session)
                 print(c(f"  Saved: {session['title']}", GRAY))
-            session = cmd_new(cfg, use_skills, current_reasoning[0])
+            session = cmd_new(cfg, use_skills, reasoning=current_reasoning[0])
 
         elif cmd == "/sessions":
             print_sessions(sess.list_sessions())

@@ -18,7 +18,8 @@ DEFAULTS = {
 def load():
     if CONFIG_PATH.exists():
         try:
-            return json.loads(CONFIG_PATH.read_text(encoding="utf-8"))
+            data = json.loads(CONFIG_PATH.read_text(encoding="utf-8"))
+            return {**DEFAULTS, **data}   # DEFAULTS fills in any missing keys
         except Exception:
             pass
     return dict(DEFAULTS)

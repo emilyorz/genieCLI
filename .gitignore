@@ -1,0 +1,25 @@
+# Python
+__pycache__/
+*.py[cod]
+*.pyo
+*.egg-info/
+.venv/
+venv/
+dist/
+build/
+
+# Runtime config (contains auth tokens)
+~/ai-agent-config.json
+
+# Sessions (conversation history)
+sessions/
+
+# Screenshots from browser tools
+screenshot.png
+element.png
+*.png
+
+# Editor
+.DS_Store
+.vscode/
+.idea/
