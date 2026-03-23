@@ -70,9 +70,21 @@ def _send_openai(cfg: dict, history: list, model: str, files: list = None) -> st
                 "image_url": {"url": f"data:{f['content_type']};base64,{b64}"},
             })
         # Find last user message and convert to multipart content
+        # content may already be array (content_as_array=True) or plain string
         for i in range(len(messages) - 1, -1, -1):
             if messages[i]["role"] == "user":
-                text_part = {"type": "text", "text": messages[i]["content"]}
+                raw = messages[i]["content"]
+                if isinstance(raw, list):
+                    # Already array format — extract text from first text part
+                    text = next(
+                        (p["text"] for p in raw if isinstance(p, dict) and p.get("text")),
+                        ""
+                    )
+                elif isinstance(raw, str):
+                    text = raw
+                else:
+                    text = ""
+                text_part = {"type": "text", "text": text}
                 messages[i]["content"] = [text_part] + image_parts
                 break
 
@@ -85,7 +97,12 @@ def _send_openai(cfg: dict, history: list, model: str, files: list = None) -> st
                 system_text = m["content"]
             else:
                 non_system.append(m)
-        payload = {"model": model, "messages": non_system}
+        payload = {
+            "model":          model,
+            "messages":       non_system,
+            "stream":         True,
+            "stream_options": {"include_usage": True},
+        }
         if system_text:
             payload["system"] = system_text
     else:
@@ -177,42 +194,54 @@ def new_msg(role: str, text: str) -> dict:
         "id":         str(uuid.uuid4()),
         "role":       role,
         "content":    [{"type": "text", "text": text, "reasonText": None}],
-        "form":       "text",
         "timestamp":  int(time.time() * 1000),
-        "tokenCount": max(1, len(text) // 4),
     }
 
 
 def parse_sse(raw: str) -> str:
     """
-    Parse SSE stream from TGenie backend.
-    Collects delta.content (final answer).
-    When reasoning is enabled the server may also emit delta.reasoning_content
-    (thinking tokens) — those are skipped; we only want the answer.
-    If content is completely empty after the full stream, fall back to
-    collecting reasoning_content so the caller at least gets something.
+    Parse SSE stream.
+
+    Handles multiple server formats:
+    - TGenie: data: {"done": true} as terminator
+    - OpenAI / Cline proxy: data: [DONE] as terminator
+    - Standard SSE: delta.content for answer, delta.reasoning_content for thinking
+
+    Falls back to reasoning tokens if content is empty (reasoning mode).
     """
     full      = ""
     reasoning = ""
     for line in raw.splitlines():
         line = line.strip()
-        if re.match(r'^data:\s*\{"done"\s*:\s*true', line):
-            break
-        m = re.match(r'^data:\s*(\{.+\})$', line)
-        if m:
-            try:
-                chunk = json.loads(m.group(1))
-                delta = chunk["choices"][0]["delta"]
-                # Primary: final answer content
-                text = delta.get("content") or ""
-                if text:
-                    full += text
-                # Secondary: reasoning/thinking tokens (collect as fallback)
-                rtext = delta.get("reasoning_content") or delta.get("reasonText") or ""
-                if rtext:
-                    reasoning += rtext
-            except Exception:
-                pass
+        if not line:
+            continue
+        # Terminators
+        if line == "data: [DONE]" or re.match(r'^data:\s*\{"done"\s*:\s*true', line):
+            continue  # don't break — there might be trailing data after [DONE]
+        # Extract JSON payload after "data:" prefix
+        if not line.startswith("data:"):
+            continue
+        json_str = line[5:].strip()
+        if not json_str or not json_str.startswith("{"):
+            continue
+        try:
+            chunk  = json.loads(json_str)
+            choice = chunk.get("choices", [{}])[0]
+            delta  = choice.get("delta", {})
+            # Primary: final answer content
+            text = delta.get("content") or ""
+            if text:
+                full += text
+            # Secondary: reasoning/thinking tokens (collect as fallback)
+            rtext = (
+                delta.get("reasoning_content")
+                or delta.get("reasonText")
+                or ""
+            )
+            if rtext:
+                reasoning += rtext
+        except (json.JSONDecodeError, KeyError, IndexError):
+            pass
     # If server only sent reasoning tokens and no content, surface reasoning
     # so the user sees something instead of [ERROR] Empty response
     return full or reasoning

@@ -43,9 +43,7 @@ messages = [
         "id": str(uuid.uuid4()),
         "role": "user",
         "content": [{"type": "text", "text": "What do you see in this image? Describe it briefly.", "reasonText": None}],
-        "form": "text",
         "timestamp": int(time.time() * 1000),
-        "tokenCount": 10,
     }
 ]
 

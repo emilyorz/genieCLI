@@ -367,40 +367,59 @@ class BrowserInterceptXHR(BaseSkill):
 
 # ── Interaction ───────────────────────────────────────────────────────────────
 
+def _resolve_coords(cdp, selector="", x=None, y=None):
+    """Resolve click target to (cx, cy). Returns (cx, cy) or error string."""
+    if selector:
+        pt = cdp.center_of(selector)
+        if not pt:
+            return f"Element not found: {selector}"
+        return pt
+    elif x is not None and y is not None:
+        return (float(x), float(y))
+    else:
+        return "Provide selector or x,y"
+
+
+def _mouse_click(cdp, cx, cy, button="left", click_count=1, repeat=1):
+    """Dispatch mouse press+release events."""
+    for _ in range(repeat):
+        for etype in ["mousePressed", "mouseReleased"]:
+            cdp.send("Input.dispatchMouseEvent", {
+                "type": etype, "x": cx, "y": cy,
+                "button": button, "clickCount": click_count,
+            })
+        if repeat > 1:
+            time.sleep(0.05)
+
+
+_CLICK_ARGS = [
+    Arg(name="selector", type="str",
+        description="CSS selector (optional if using x,y)",
+        required=False, default=""),
+    Arg(name="x", type="float",
+        description="X coordinate (optional if using selector)",
+        required=False, default=None),
+    Arg(name="y", type="float",
+        description="Y coordinate (optional if using selector)",
+        required=False, default=None),
+]
+
+
 class BrowserClick(BaseSkill):
     name        = "browser_click"
     description = "Single click on an element (CSS selector) or at x,y coordinates"
     group       = "interaction"
-    args        = [
-        Arg(name="selector", type="str",
-            description="CSS selector (optional if using x,y)",
-            required=False, default=""),
-        Arg(name="x", type="float",
-            description="X coordinate (optional if using selector)",
-            required=False, default=None),
-        Arg(name="y", type="float",
-            description="Y coordinate (optional if using selector)",
-            required=False, default=None),
-    ]
+    args        = list(_CLICK_ARGS)
 
     def run(self, selector="", x=None, y=None):
-        cdp = get_shared_cdp()
-        if selector:
-            pt = cdp.center_of(selector)
-            if not pt:
-                return f"Element not found: {selector}"
-            cx, cy = pt
-        elif x is not None and y is not None:
-            cx, cy = float(x), float(y)
-        else:
-            return "Provide selector or x,y"
+        cdp    = get_shared_cdp()
+        result = _resolve_coords(cdp, selector, x, y)
+        if isinstance(result, str):
+            return result
+        cx, cy = result
 
         url_before = cdp.js_val("window.location.href") or ""
-        for etype in ["mousePressed", "mouseReleased"]:
-            cdp.send("Input.dispatchMouseEvent", {
-                "type": etype, "x": cx, "y": cy,
-                "button": "left", "clickCount": 1,
-            })
+        _mouse_click(cdp, cx, cy, button="left", click_count=1)
         time.sleep(0.5)
         url_after = cdp.js_val("window.location.href") or ""
         nav = f" -> navigated to {url_after}" if url_after != url_before else " (no navigation)"
@@ -411,35 +430,16 @@ class BrowserDoubleClick(BaseSkill):
     name        = "browser_double_click"
     description = "Double-click on an element or coordinates"
     group       = "interaction"
-    args        = [
-        Arg(name="selector", type="str",
-            description="CSS selector (optional if using x,y)",
-            required=False, default=""),
-        Arg(name="x", type="float",
-            description="X coordinate",
-            required=False, default=None),
-        Arg(name="y", type="float",
-            description="Y coordinate",
-            required=False, default=None),
-    ]
+    args        = list(_CLICK_ARGS)
 
     def run(self, selector="", x=None, y=None):
-        cdp = get_shared_cdp()
-        if selector:
-            pt = cdp.center_of(selector)
-            if not pt:
-                return f"Element not found: {selector}"
-            cx, cy = pt
-        else:
-            cx, cy = float(x), float(y)
+        cdp    = get_shared_cdp()
+        result = _resolve_coords(cdp, selector, x, y)
+        if isinstance(result, str):
+            return result
+        cx, cy = result
 
-        for _ in range(2):
-            for etype in ["mousePressed", "mouseReleased"]:
-                cdp.send("Input.dispatchMouseEvent", {
-                    "type": etype, "x": cx, "y": cy,
-                    "button": "left", "clickCount": 2,
-                })
-            time.sleep(0.05)
+        _mouse_click(cdp, cx, cy, button="left", click_count=2, repeat=2)
         return f"Double-clicked at ({cx:.0f}, {cy:.0f})"
 
 
@@ -447,33 +447,16 @@ class BrowserRightClick(BaseSkill):
     name        = "browser_right_click"
     description = "Right-click to open context menu on an element or coordinates"
     group       = "interaction"
-    args        = [
-        Arg(name="selector", type="str",
-            description="CSS selector (optional if using x,y)",
-            required=False, default=""),
-        Arg(name="x", type="float",
-            description="X coordinate",
-            required=False, default=None),
-        Arg(name="y", type="float",
-            description="Y coordinate",
-            required=False, default=None),
-    ]
+    args        = list(_CLICK_ARGS)
 
     def run(self, selector="", x=None, y=None):
-        cdp = get_shared_cdp()
-        if selector:
-            pt = cdp.center_of(selector)
-            if not pt:
-                return f"Element not found: {selector}"
-            cx, cy = pt
-        else:
-            cx, cy = float(x), float(y)
+        cdp    = get_shared_cdp()
+        result = _resolve_coords(cdp, selector, x, y)
+        if isinstance(result, str):
+            return result
+        cx, cy = result
 
-        for etype in ["mousePressed", "mouseReleased"]:
-            cdp.send("Input.dispatchMouseEvent", {
-                "type": etype, "x": cx, "y": cy,
-                "button": "right", "clickCount": 1,
-            })
+        _mouse_click(cdp, cx, cy, button="right", click_count=1)
         time.sleep(0.3)
         return f"Right-clicked at ({cx:.0f}, {cy:.0f})"
 
