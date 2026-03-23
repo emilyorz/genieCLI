@@ -110,7 +110,7 @@ def main():
     existing = json.loads(CONFIG_PATH.read_text()) if CONFIG_PATH.exists() else {}
     tab  = find_tab(tabs, existing.get("targetUrlKeyword", "ai-app"))
     if not tab:
-        print(f"  [ERROR] No tab with '{TARGET_URL_KEYWORD}' found. Open tabs:")
+        print(f"  [ERROR] No tab with 'ai-app' found. Open tabs:")
         for t in tabs:
             print(f"    - {t.get('url', '')}")
         sys.exit(1)
