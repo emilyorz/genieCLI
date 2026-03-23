@@ -1,11 +1,31 @@
 #!/usr/bin/env python3
+"""
+TGenie CLI — AI browser agent powered by Chrome CDP.
+
+Usage:
+    python main.py chat                     # interactive chat (default)
+    python main.py chat --skills --debug    # with tools + debug output
+    python main.py sessions                 # list saved conversations
+    python main.py config                   # show current config
+"""
 import sys
-import argparse
+from typing import Optional
+from enum import Enum
+
+try:
+    import typer
+    from typer import Option
+except ImportError:
+    print("  [ERROR] typer not installed. Run: pip install typer")
+    sys.exit(1)
+
 import api
 import config
 import session as sess
 import skill_runner
 from api import new_msg
+
+# ── Colors ────────────────────────────────────────────────────────────────────
 
 CYAN   = "\033[96m"
 GREEN  = "\033[92m"
@@ -17,6 +37,28 @@ RESET  = "\033[0m"
 
 def c(text, color):
     return f"{color}{text}{RESET}"
+
+
+# ── Enums ─────────────────────────────────────────────────────────────────────
+
+class ReasoningLevel(str, Enum):
+    disable = "disable"
+    low     = "low"
+    medium  = "medium"
+    high    = "high"
+
+
+# ── Typer App ─────────────────────────────────────────────────────────────────
+
+app = typer.Typer(
+    name="tgenie",
+    help="TGenie CLI — AI browser agent powered by Chrome CDP",
+    add_completion=True,
+    no_args_is_help=False,
+)
+
+
+# ── Display helpers ───────────────────────────────────────────────────────────
 
 def read_input():
     try:
@@ -37,13 +79,15 @@ def read_input():
         return "\n".join(lines)
     return line
 
+
 def print_banner(session, use_skills, reasoning="disable"):
     print()
     print(c("  +======================================+", CYAN))
-    print(c("  |        TGenie CLI  v2.0              |", CYAN))
+    print(c("  |        TGenie CLI  v3.0              |", CYAN))
     print(c("  +======================================+", CYAN))
     print()
     print_session_info(session, use_skills, reasoning)
+
 
 def print_session_info(session, use_skills=False, reasoning="disable"):
     turns = sum(1 for m in session["history"] if m["role"] == "user")
@@ -54,6 +98,7 @@ def print_session_info(session, use_skills=False, reasoning="disable"):
         from skills import ALL_SKILLS
         print(c(f"  Skills  : {len(ALL_SKILLS)} enabled", GREEN))
     print(c("  ──────────────────────────────────────", GRAY))
+
 
 def print_help():
     cmds = [
@@ -75,6 +120,7 @@ def print_help():
         print(f"  {c(cmd, CYAN):<30} {desc}")
     print()
 
+
 def print_history(session):
     print()
     print(c(f"  == {session['title']} ==", YELLOW))
@@ -93,19 +139,23 @@ def print_history(session):
         print(c("  ──────────────────────────────────────", GRAY))
     print()
 
-def print_skills():
+
+def print_skills_list():
     from skills import ALL_SKILLS
     print()
     print(c("  Available skills:", YELLOW))
     for s in ALL_SKILLS:
-        args = ", ".join(s.args_schema.keys()) or "—"
         print(f"  {c(s.name, CYAN):<35} {s.description}")
-        if s.args_schema:
-            for k, v in s.args_schema.items():
-                print(f"  {'':35} {c(k, GRAY)}: {v}")
+        if s.args:
+            for arg in s.args:
+                detail = f"{arg.description}"
+                if not arg.required:
+                    detail += f" (default: {arg.default})"
+                print(f"  {'':35} {c(arg.name, GRAY)}: {detail}")
     print()
 
-def print_sessions(sessions):
+
+def print_sessions_list(sessions):
     print()
     if not sessions:
         print(c("  No saved sessions yet.", GRAY))
@@ -118,12 +168,16 @@ def print_sessions(sessions):
         print(f"  {c(str(i), CYAN)}. [{created}] {s['title'][:40]:<42} {c(turns, GRAY)}")
     print()
 
+
+# ── Core logic ────────────────────────────────────────────────────────────────
+
 def build_sys_prompt(cfg, use_skills):
     if use_skills:
         base = cfg.get("systemPrompt", "")
         skill_prompt = skill_runner.build_system_prompt()
         return f"{base}\n\n{skill_prompt}".strip() if base else skill_prompt
     return cfg.get("systemPrompt", "")
+
 
 def cmd_new(cfg, use_skills, reasoning="disable"):
     session = sess.new_session(build_sys_prompt(cfg, use_skills))
@@ -132,9 +186,10 @@ def cmd_new(cfg, use_skills, reasoning="disable"):
     print_session_info(session, use_skills, reasoning)
     return session
 
+
 def cmd_load(args, cfg, use_skills):
     sessions = sess.list_sessions()
-    print_sessions(sessions)
+    print_sessions_list(sessions)
     if not sessions:
         return None
     if not args:
@@ -157,13 +212,13 @@ def cmd_load(args, cfg, use_skills):
     print_session_info(loaded, use_skills)
     return loaded
 
+
 MAX_TOOL_LOOPS = 15
 
 
-
 def send_with_tools(cfg, session, model, reasoning):
-    _last_memory: str = ""
-    recent_actions: list = []
+    _last_memory = ""
+    recent_actions = []
 
     for loop in range(MAX_TOOL_LOOPS):
         reply = api.send(cfg, session["history"], model, reasoning)
@@ -193,7 +248,6 @@ def send_with_tools(cfg, session, model, reasoning):
             print()
 
         result = skill_runner.run_tool(tool_call)
-
         session["history"].append(new_msg("assistant", reply))
 
         # Screenshot: send as files attachment on next request
@@ -207,7 +261,6 @@ def send_with_tools(cfg, session, model, reasoning):
             )
             _last_memory = tool_call.get("memory", "")
             sess.save_session(session)
-            # Send with image attached
             try:
                 img_reply = api.send(
                     cfg, session["history"], model, reasoning,
@@ -220,16 +273,13 @@ def send_with_tools(cfg, session, model, reasoning):
             if img_reply and img_reply.strip():
                 tool_call2 = skill_runner.parse_tool_call(img_reply)
                 if not tool_call2:
-                    # AI gave final answer after seeing image
                     return img_reply
-                # AI wants more tools — add to history and continue loop
                 session["history"].append(new_msg("assistant", img_reply))
                 reply  = img_reply
                 result = img_reply
             else:
                 print(c(f"  [ERROR] AI returned empty (model may lack vision support or image too large)", RED))
             continue
-
         else:
             preview = result[:100] + ("..." if len(result) > 100 else "")
             print(c(f"  [Result] {preview}", GRAY))
@@ -245,7 +295,7 @@ def send_with_tools(cfg, session, model, reasoning):
 
 
 def chat_loop(cfg, model, reasoning, use_skills):
-    current_reasoning = [reasoning]  # mutable so nested funcs can update
+    current_reasoning = reasoning
     session = sess.new_session(build_sys_prompt(cfg, use_skills))
     print_banner(session, use_skills, reasoning)
     print_help()
@@ -276,10 +326,10 @@ def chat_loop(cfg, model, reasoning, use_skills):
             if any(m["role"] == "user" for m in session["history"]):
                 sess.save_session(session)
                 print(c(f"  Saved: {session['title']}", GRAY))
-            session = cmd_new(cfg, use_skills, reasoning=current_reasoning[0])
+            session = cmd_new(cfg, use_skills, reasoning=current_reasoning)
 
         elif cmd == "/sessions":
-            print_sessions(sess.list_sessions())
+            print_sessions_list(sess.list_sessions())
 
         elif cmd == "/load":
             loaded = cmd_load(args, cfg, use_skills)
@@ -291,7 +341,7 @@ def chat_loop(cfg, model, reasoning, use_skills):
 
         elif cmd == "/skills":
             if use_skills:
-                print_skills()
+                print_skills_list()
             else:
                 print(c("  Skills not enabled. Run with --skills", YELLOW))
 
@@ -305,14 +355,13 @@ def chat_loop(cfg, model, reasoning, use_skills):
         elif cmd == "/reasoning":
             levels = ["disable", "low", "medium", "high"]
             if args and args[0] in levels:
-                current_reasoning[0] = args[0]
-                print(c(f"  Reasoning set to: {current_reasoning[0]}", GREEN))
+                current_reasoning = args[0]
+                print(c(f"  Reasoning set to: {current_reasoning}", GREEN))
             else:
-                cur = current_reasoning[0]
-                idx = levels.index(cur) if cur in levels else 0
+                idx = levels.index(current_reasoning) if current_reasoning in levels else 0
                 nxt = levels[(idx + 1) % len(levels)]
-                current_reasoning[0] = nxt
-                print(c(f"  Reasoning: {cur} -> {nxt}", GREEN))
+                current_reasoning = nxt
+                print(c(f"  Reasoning: {levels[idx]} -> {nxt}", GREEN))
 
         elif cmd == "/renew":
             print(c("  Refreshing token...", YELLOW))
@@ -338,10 +387,9 @@ def chat_loop(cfg, model, reasoning, use_skills):
 
             print(c("  AI thinking...", GRAY))
             try:
-                reply = send_with_tools(cfg, session, model, current_reasoning[0])
+                reply = send_with_tools(cfg, session, model, current_reasoning)
             except Exception as e:
                 print(c(f"  [ERROR] {e}", RED))
-                # Roll back user message
                 session["history"].pop()
                 continue
 
@@ -355,35 +403,96 @@ def chat_loop(cfg, model, reasoning, use_skills):
                 session["history"].pop()
 
 
-def main():
-    parser = argparse.ArgumentParser(description="TGenie CLI")
-    parser.add_argument("--model",     "-m", help="Model name")
-    parser.add_argument("--reasoning", "-r",
-                        choices=["disable", "low", "medium", "high"],
-                        default="disable")
-    parser.add_argument("--skills",    "-s", action="store_true",
-                        help="Enable browser/file skills")
-    parser.add_argument("--debug",     "-d", action="store_true",
-                        help="Show raw HTTP request/response for debugging")
-    args = parser.parse_args()
+# ── Commands ──────────────────────────────────────────────────────────────────
 
-    if args.debug:
-        import api as _api
-        _api.DEBUG = True
+@app.command()
+def chat(
+    model: Optional[str] = Option(
+        None, "-m", "--model",
+        help="Model name (overrides config defaultModel)"),
+    reasoning: ReasoningLevel = Option(
+        ReasoningLevel.disable, "-r", "--reasoning",
+        help="Reasoning effort level"),
+    skills: bool = Option(
+        False, "-s", "--skills",
+        help="Enable browser/file skill tools"),
+    debug: bool = Option(
+        False, "-d", "--debug",
+        help="Print raw HTTP request/response for debugging"),
+):
+    """Start an interactive AI chat session (default command)."""
+    if debug:
+        api.DEBUG = True
         print(c("  [DEBUG MODE] HTTP request/response will be printed", YELLOW))
 
     cfg = config.load()
 
-    # TGenie mode requires auth token; OpenAI mode does not
     if cfg.get("interface", "tgenie") == "tgenie" and not cfg.get("authToken"):
         print(c("  [ERROR] No auth token. Run: python grab_auth.py", RED))
-        sys.exit(1)
+        raise typer.Exit(1)
 
-    model     = args.model or cfg.get("defaultModel", "gemini-2.5-flash")
-    reasoning = args.reasoning
+    resolved_model = model or cfg.get("defaultModel", "gemini-2.5-flash")
+    chat_loop(cfg, resolved_model, reasoning.value, use_skills=skills)
 
-    chat_loop(cfg, model, reasoning, use_skills=args.skills)
+
+@app.command()
+def sessions():
+    """List all saved conversations."""
+    saved = sess.list_sessions()
+    print_sessions_list(saved)
+
+
+@app.command(name="config")
+def show_config():
+    """Show current configuration (without sensitive values)."""
+    cfg = config.load()
+    print()
+    print(c("  Current config:", YELLOW))
+    print(c("  ──────────────────────────────────────", GRAY))
+    safe_keys = [
+        "interface", "endpoint", "frontendUrl", "defaultModel",
+        "openaiBaseUrl", "openaiContentArray", "systemPrompt",
+    ]
+    secret_keys = ["authToken", "openaiApiKey", "customHeader"]
+    for k in safe_keys:
+        if k in cfg and cfg[k]:
+            val = cfg[k]
+            if isinstance(val, str) and len(val) > 60:
+                val = val[:57] + "..."
+            print(f"  {c(k, CYAN):<30} {val}")
+    for k in secret_keys:
+        if k in cfg and cfg[k]:
+            val = cfg[k]
+            masked = val[:4] + "****" + val[-4:] if len(val) > 12 else "****"
+            print(f"  {c(k, CYAN):<30} {masked}")
+    print()
+
+
+@app.command()
+def renew():
+    """Refresh TGenie auth token (runs grab_auth.py)."""
+    import subprocess
+    print(c("  Refreshing token...", YELLOW))
+    result = subprocess.run([sys.executable, "grab_auth.py"])
+    if result.returncode == 0:
+        print(c("  [OK] Token refreshed.", GREEN))
+    else:
+        print(c("  [ERROR] Token refresh failed.", RED))
+        raise typer.Exit(1)
+
+
+@app.command()
+def tools():
+    """List all available skill tools."""
+    print_skills_list()
+
+
+@app.callback(invoke_without_command=True)
+def default(ctx: typer.Context):
+    """Default: run chat if no subcommand given."""
+    if ctx.invoked_subcommand is None:
+        ctx.invoke(chat)
 
 
 if __name__ == "__main__":
-    main()
+    app()

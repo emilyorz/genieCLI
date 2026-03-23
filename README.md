@@ -179,11 +179,13 @@ python grab_auth.py
 **macOS / Linux（推薦）：**
 
 ```bash
-# macOS
-python main.py --skills
+# 直接啟動（預設進 chat + skills）
+python main.py
+./tgenie.sh
 
-# Ubuntu / Linux（自動啟 Chrome + 裝依賴）
-./tgenie.sh --skills
+# 指定模型與 reasoning
+python main.py chat -m gpt-4o -r medium --skills --debug
+./tgenie.sh chat -m gemini-2.5-flash -r low --skills
 ```
 
 **Windows：**
@@ -192,11 +194,15 @@ tgenie.bat
 ```
 （bat 自動啟動 Chrome debug mode → 抓 token → 進入 CLI）
 
-加 `--skills` 啟用 browser/file tools，指定模型與 reasoning 等級：
+**子指令：**
 
 ```bash
-python main.py --skills -m gpt-4o -r medium
-./tgenie.sh --skills -m gemini-2.5-flash -r low
+python main.py --help          # 顯示所有子指令
+python main.py chat --help     # chat 參數說明
+python main.py sessions        # 列出已儲存的對話
+python main.py config          # 顯示目前設定
+python main.py renew           # 重新抓 auth token
+python main.py tools           # 列出所有 skill tools
 ```
 
 ---
@@ -317,7 +323,7 @@ AI    → [攔截並回傳 API 回應]
 
 ```
 genieCLI/
-├── main.py              CLI 進入點
+├── main.py              CLI 進入點（Typer framework）
 ├── api.py               HTTP client（TGenie SSE + OpenAI-compatible）
 ├── config.py            設定讀寫（自動補 DEFAULTS）
 ├── session.py           對話歷史管理
