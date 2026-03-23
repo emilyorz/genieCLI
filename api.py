@@ -11,6 +11,13 @@ urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
 
 import config as cfg_module
 
+# Global debug flag — set via main.py --debug
+DEBUG = False
+
+def _dbg(*args):
+    if DEBUG:
+        print("\033[90m  [DEBUG]", *args, "\033[0m")
+
 # ─────────────────────────────────────────────────────────────────────────────
 # OpenAI-compatible interface
 # ─────────────────────────────────────────────────────────────────────────────
@@ -64,12 +71,24 @@ def _send_openai(cfg: dict, history: list, model: str, files: list = None) -> st
         "Authorization": f"Bearer {api_key}",
     }
 
+    _dbg(f"POST {base_url}/chat/completions")
+    _dbg(f"model={model}  messages={len(messages)}")
+    if DEBUG:
+        for m in messages[-3:]:  # last 3 only to keep output sane
+            role    = m["role"]
+            content = m["content"] if isinstance(m["content"], str) else "[multipart]"
+            _dbg(f"  [{role}] {str(content)[:120]}")
+
     resp = requests.post(
         f"{base_url}/chat/completions",
         headers=headers,
         json=payload,
         timeout=120,
     )
+
+    _dbg(f"HTTP {resp.status_code}  content-type={resp.headers.get('content-type','?')}")
+    _dbg(f"body preview: {resp.text[:300]}")
+
     resp.raise_for_status()
 
     raw_text = resp.text.strip()
@@ -78,12 +97,15 @@ def _send_openai(cfg: dict, history: list, model: str, files: list = None) -> st
 
     # Some local servers (Ollama etc.) may return SSE stream even without stream=True
     if raw_text.startswith("data:"):
+        _dbg("Detected SSE stream, switching to parse_sse()")
         return parse_sse(raw_text)
 
     try:
         data = resp.json()
     except Exception:
         raise RuntimeError(f"Non-JSON response ({resp.status_code}): {raw_text[:200]}")
+
+    _dbg(f"parsed JSON keys: {list(data.keys())}")
 
     choice = data["choices"][0]
     msg    = choice.get("message") or {}
@@ -215,6 +237,9 @@ def _do_request(cfg: dict, history: list, model: str, reasoning: str, files: lis
     for ck in cfg.get("cookies", []):
         session.cookies.set(ck["name"], ck["value"], domain=ck["domain"])
 
+    _dbg(f"POST {cfg['endpoint']}/api/main/oaicompatible")
+    _dbg(f"model={model}  reasoning={reasoning}  body={len(body)}b")
+
     resp = session.post(
         f"{cfg['endpoint']}/api/main/oaicompatible",
         headers=headers,
@@ -222,6 +247,10 @@ def _do_request(cfg: dict, history: list, model: str, reasoning: str, files: lis
         timeout=120,
         verify=False,
     )
+
+    _dbg(f"HTTP {resp.status_code}  content-type={resp.headers.get('content-type','?')}")
+    _dbg(f"body preview: {resp.text[:300]}")
+
     resp.raise_for_status()
     raw = resp.text
     if raw.lstrip().startswith("data:"):

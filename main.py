@@ -363,10 +363,19 @@ def main():
                         default="disable")
     parser.add_argument("--skills",    "-s", action="store_true",
                         help="Enable browser/file skills")
+    parser.add_argument("--debug",     "-d", action="store_true",
+                        help="Show raw HTTP request/response for debugging")
     args = parser.parse_args()
 
+    if args.debug:
+        import api as _api
+        _api.DEBUG = True
+        print(c("  [DEBUG MODE] HTTP request/response will be printed", YELLOW))
+
     cfg = config.load()
-    if not cfg.get("authToken"):
+
+    # TGenie mode requires auth token; OpenAI mode does not
+    if cfg.get("interface", "tgenie") == "tgenie" and not cfg.get("authToken"):
         print(c("  [ERROR] No auth token. Run: python grab_auth.py", RED))
         sys.exit(1)
 
