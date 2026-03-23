@@ -341,6 +341,23 @@ genieCLI/
     └── system.py        檔案工具
 ```
 
+## Roadmap
+
+### Trino AI Query Advisor（規劃中）
+
+基於 [market research](research/trino-ai-assistant-market-research.md)（2026-03-23），未來計畫在此 repo 加入 Trino 查詢助手相關 skill。
+
+**動機：** 現有 Text-to-SQL 工具都是通用實作，沒有人針對 Trino dialect 做深度整合。  
+**方向：**
+- Trino-native SQL 生成（懂 partition pruning、Iceberg、connector 限制）
+- Schema auto-introspection（catalog/schema/table/column 自動注入 context）
+- Query guard（送出前自動 EXPLAIN，估算掃描量）
+- Partition hints（主動建議加 partition filter 避免全表掃描）
+
+**競品分析：** 目前最接近的是 [`txn2/mcp-trino`](https://github.com/txn2/mcp-trino)（MCP server），但無 advisor 邏輯。詳見 research 文件。
+
+---
+
 ## 限制與已知問題
 
 1. **需保持 Chrome 分頁開著** — CDP 只綁定到已開的分頁，關掉就斷線
