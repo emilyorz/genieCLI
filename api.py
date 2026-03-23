@@ -35,12 +35,15 @@ def _history_to_openai(history: list) -> list:
 
 def _send_openai(cfg: dict, history: list, model: str, files: list = None) -> str:
     """
-    Call any OpenAI-compatible API (OpenAI, Groq, Ollama, LM Studio, etc.).
-    Vision: if files are provided and the model supports it, the last user
-    message is augmented with image_url content parts.
+    Call any OpenAI-compatible or Anthropic-compatible API.
+
+    interface=openai  : standard OpenAI /chat/completions format (default)
+    interface=anthropic: Anthropic format — system extracted to top-level field,
+                         used by Cline-style internal proxies
     """
-    base_url = cfg.get("openaiBaseUrl", "https://api.openai.com/v1").rstrip("/")
-    api_key  = cfg.get("openaiApiKey", "")
+    base_url  = cfg.get("openaiBaseUrl", "https://api.openai.com/v1").rstrip("/")
+    api_key   = cfg.get("openaiApiKey", "")
+    interface = cfg.get("interface", "openai")
 
     messages = _history_to_openai(history)
 
@@ -61,10 +64,24 @@ def _send_openai(cfg: dict, history: list, model: str, files: list = None) -> st
                 messages[i]["content"] = [text_part] + image_parts
                 break
 
-    payload = {
-        "model":    model,
-        "messages": messages,
-    }
+    # Anthropic format: extract system message to top-level field
+    if interface == "anthropic":
+        system_text = ""
+        non_system  = []
+        for m in messages:
+            if m["role"] == "system":
+                system_text = m["content"]
+            else:
+                non_system.append(m)
+        payload = {"model": model, "messages": non_system}
+        if system_text:
+            payload["system"] = system_text
+    else:
+        # Standard OpenAI format
+        payload = {
+            "model":    model,
+            "messages": messages,
+        }
 
     headers = {
         "Content-Type":  "application/json",

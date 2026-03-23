@@ -13,12 +13,13 @@ DEFAULTS = {
     "customHeader":     "",
     "cookies":          [],
 
-    # ── OpenAI-compatible interface ───────────────────────────────────────
-    # Set interface to "openai" to bypass TGenie backend entirely.
-    # openaiBaseUrl can point to any OpenAI-compatible endpoint
-    # (e.g. "http://localhost:11434/v1" for Ollama,
-    #        "https://api.groq.com/openai/v1" for Groq, etc.)
-    "interface":        "tgenie",       # "tgenie" | "openai"
+    # ── OpenAI / Anthropic-compatible interface ───────────────────────────
+    # "tgenie"    : default, use internal TGenie backend
+    # "openai"    : standard OpenAI /chat/completions format
+    #               (OpenAI, Groq, Ollama, LM Studio, etc.)
+    # "anthropic" : Anthropic message format — system prompt extracted to
+    #               top-level field; used by Cline-style internal proxies
+    "interface":        "tgenie",       # "tgenie" | "openai" | "anthropic"
     "openaiApiKey":     "",             # sk-... or local dummy key
     "openaiBaseUrl":    "https://api.openai.com/v1",
 
