@@ -117,8 +117,30 @@ pip install -r requirements.txt
 | Groq | `https://api.groq.com/openai/v1` |
 | Ollama（本機） | `http://localhost:11434/v1` |
 | LM Studio（本機） | `http://localhost:1234/v1` |
+| 公司內部 Cline proxy | `http://your-internal-server` |
 
 > OpenAI interface 不需要 TGenie auth token，也不需要跑 `grab_auth.py`。
+
+#### Cline-style 內部 proxy
+
+某些公司內部 proxy（如 Cline 使用的 server）要求 user message content 以陣列格式傳送：
+
+```json
+{
+  "interface":          "openai",
+  "openaiApiKey":       "your-key",
+  "openaiBaseUrl":      "http://your-internal-proxy",
+  "defaultModel":       "coder",
+  "openaiContentArray": true
+}
+```
+
+`openaiContentArray: true` 會把 user message 從純字串改成：
+```json
+"content": [{"type": "text", "text": "你的訊息"}]
+```
+
+不加這個設定的話，內部 proxy 會回 500 錯誤。
 
 #### 欄位說明
 
@@ -132,6 +154,7 @@ pip install -r requirements.txt
 | `authToken` | TGenie Bearer token（可用 `grab_auth.py` 自動抓） |
 | `openaiApiKey` | OpenAI API key（或本機 dummy key） |
 | `openaiBaseUrl` | OpenAI-compatible endpoint URL |
+| `openaiContentArray` | `true` = user content 用陣列格式（Cline-style proxy 需要） |
 | `defaultModel` | 預設使用的模型 |
 | `systemPrompt` | 系統提示詞 |
 
