@@ -129,6 +129,11 @@ fi
 
 # ── 6. Launch CLI ─────────────────────────────────────────────────────────────
 echo
-"$PYTHON" "$SCRIPT_DIR/main.py" "${MAIN_ARGS[@]}"
+# Default to chat subcommand with --skills if no subcommand given
+if [ ${#MAIN_ARGS[@]} -eq 0 ]; then
+    "$PYTHON" "$SCRIPT_DIR/main.py" chat --skills
+else
+    "$PYTHON" "$SCRIPT_DIR/main.py" "${MAIN_ARGS[@]}"
+fi
 
 echo
