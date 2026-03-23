@@ -208,11 +208,16 @@ def send_with_tools(cfg, session, model, reasoning):
             _last_memory = tool_call.get("memory", "")
             sess.save_session(session)
             # Send with image attached
-            img_reply = api.send(
-                cfg, session["history"], model, reasoning,
-                files=[{"filename": filename, "content_type": "image/png", "data": img_bytes}]
-            )
-            if img_reply:
+            try:
+                img_reply = api.send(
+                    cfg, session["history"], model, reasoning,
+                    files=[{"filename": filename, "content_type": "image/png", "data": img_bytes}]
+                )
+            except Exception as e:
+                print(c(f"  [ERROR] Screenshot send failed: {e}", RED))
+                img_reply = None
+
+            if img_reply and img_reply.strip():
                 tool_call2 = skill_runner.parse_tool_call(img_reply)
                 if not tool_call2:
                     # AI gave final answer after seeing image
@@ -221,6 +226,8 @@ def send_with_tools(cfg, session, model, reasoning):
                 session["history"].append(new_msg("assistant", img_reply))
                 reply  = img_reply
                 result = img_reply
+            else:
+                print(c(f"  [ERROR] AI returned empty (model may lack vision support or image too large)", RED))
             continue
 
         else:
