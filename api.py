@@ -79,25 +79,43 @@ def _send_openai(cfg: dict, history: list, model: str, files: list = None) -> st
             content = m["content"] if isinstance(m["content"], str) else "[multipart]"
             _dbg(f"  [{role}] {str(content)[:120]}")
 
+    # Always use stream=True so we can handle both SSE and JSON responses
+    # correctly regardless of what the server decides to send back
     resp = requests.post(
         f"{base_url}/chat/completions",
         headers=headers,
         json=payload,
         timeout=120,
+        stream=True,
     )
 
     _dbg(f"HTTP {resp.status_code}  content-type={resp.headers.get('content-type','?')}")
-    _dbg(f"body preview: {resp.text[:300]}")
-
     resp.raise_for_status()
 
+    content_type = resp.headers.get("content-type", "")
+
+    # SSE stream (server-sent events) — read line by line
+    if "text/event-stream" in content_type or "stream" in content_type:
+        _dbg("SSE stream detected, reading with iter_lines()")
+        raw_lines = "\n".join(
+            line for line in resp.iter_lines(decode_unicode=True) if line
+        )
+        _dbg(f"SSE body preview: {raw_lines[:300]}")
+        result = parse_sse(raw_lines)
+        if not result:
+            raise RuntimeError(f"SSE stream ended with no content.\nRaw: {raw_lines[:300]}")
+        return result
+
+    # Regular JSON response
     raw_text = resp.text.strip()
+    _dbg(f"body preview: {raw_text[:300]}")
+
     if not raw_text:
         raise RuntimeError("Empty response from server (no body)")
 
-    # Some local servers (Ollama etc.) may return SSE stream even without stream=True
+    # Fallback: some servers send SSE without correct content-type header
     if raw_text.startswith("data:"):
-        _dbg("Detected SSE stream, switching to parse_sse()")
+        _dbg("Detected SSE body (no SSE content-type), switching to parse_sse()")
         return parse_sse(raw_text)
 
     try:
