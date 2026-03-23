@@ -39,6 +39,7 @@ def clear_registry():
     global _ELEMENT_REGISTRY, _NEXT_ID
     _ELEMENT_REGISTRY = {}
     _NEXT_ID = 1
+    _PREVIOUS_ELEMENT_HASHES.clear()
 
 
 def get_element_by_id(element_id: int):
