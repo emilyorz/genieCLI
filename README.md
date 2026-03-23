@@ -1,6 +1,8 @@
 # TGenie CLI
 
-透過 CLI 操控瀏覽器的 AI Agent 工具。底層使用 Chrome CDP（Remote Debugging Protocol），上層由 LLM（Gemini）驅動 Tool Agent，讓你可以用自然語言操控瀏覽器。
+透過 CLI 操控瀏覽器的 AI Agent 工具。底層使用 Chrome CDP（Remote Debugging Protocol），上層由 LLM 驅動 Tool Agent，讓你可以用自然語言操控瀏覽器。
+
+支援兩種 AI 後端：公司內部 TGenie gateway（預設）或任何 **OpenAI-compatible API**（OpenAI、Groq、Ollama、LM Studio 等）。
 
 **適用場景：** 自動化網頁操作、資料抓取、Dashboard 讀取、爬蟲、UI 測試。
 
@@ -76,9 +78,12 @@ pip install -r requirements.txt
 
 編輯 `~/ai-agent-config.json`（不存在會使用預設值）：
 
+#### TGenie backend（預設）
+
 ```json
 {
-  "endpoint":          "https://your-ai-gateway.internal.company.com",
+  "interface":        "tgenie",
+  "endpoint":         "https://your-ai-gateway.internal.company.com",
   "frontendUrl":      "https://your-frontend.internal.company.com",
   "targetUrlKeyword": "ai-app",
   "cookieDomain":     ".company.com",
@@ -86,23 +91,53 @@ pip install -r requirements.txt
   "customHeader":     "",
   "defaultModel":     "gemini-2.5-flash",
   "systemPrompt":     "You are a helpful AI assistant.",
-  "cookies": []
+  "cookies":          []
 }
 ```
 
+#### OpenAI-compatible interface
+
+把 `interface` 改成 `openai`，填上 `openaiApiKey` 與 `openaiBaseUrl`，就可以接任何相容端點：
+
+```json
+{
+  "interface":        "openai",
+  "openaiApiKey":     "sk-...",
+  "openaiBaseUrl":    "https://api.openai.com/v1",
+  "defaultModel":     "gpt-4o",
+  "systemPrompt":     "You are a helpful AI assistant."
+}
+```
+
+常用 `openaiBaseUrl` 對照：
+
+| 服務 | openaiBaseUrl |
+|------|--------------|
+| OpenAI | `https://api.openai.com/v1` |
+| Groq | `https://api.groq.com/openai/v1` |
+| Ollama（本機） | `http://localhost:11434/v1` |
+| LM Studio（本機） | `http://localhost:1234/v1` |
+
+> OpenAI interface 不需要 TGenie auth token，也不需要跑 `grab_auth.py`。
+
+#### 欄位說明
+
 | 欄位 | 說明 |
 |------|------|
-| `endpoint` | AI backend 的 API endpoint（必需） |
-| `frontendUrl` | 你的 AI 網頁應用 URL（用於 CDP cookie domain 比對） |
-| `targetUrlKeyword` | Chrome CDP 找 tab 的關鍵字（抓包含這個關鍵字的 tab） |
-| `cookieDomain` | 抓 cookie 時要比對的 domain |
-| `authToken` | Bearer token（可直接填或用 `grab_auth.py` 自動抓） |
+| `interface` | `"tgenie"`（預設）或 `"openai"` |
+| `endpoint` | TGenie backend API endpoint |
+| `frontendUrl` | TGenie 網頁應用 URL（CDP cookie domain 比對用） |
+| `targetUrlKeyword` | Chrome CDP 找 tab 的關鍵字 |
+| `cookieDomain` | 抓 cookie 時比對的 domain |
+| `authToken` | TGenie Bearer token（可用 `grab_auth.py` 自動抓） |
+| `openaiApiKey` | OpenAI API key（或本機 dummy key） |
+| `openaiBaseUrl` | OpenAI-compatible endpoint URL |
 | `defaultModel` | 預設使用的模型 |
 | `systemPrompt` | 系統提示詞 |
 
 > **注意：** config 讀取時會自動以 DEFAULTS 補全缺少的欄位，不需要在 JSON 裡填寫每個 key。
 
-### 取得 Auth Token
+### 取得 Auth Token（TGenie only）
 
 ```bash
 python grab_auth.py
@@ -114,22 +149,31 @@ python grab_auth.py
 3. 攔截並取出 Authorization header
 4. 順便把 domain cookie 一起存進 `~/ai-agent-config.json`
 
+> 使用 `interface: openai` 時不需要這個步驟。
+
 ### 啟動 CLI
 
-```bash
-python main.py
-```
-
-加 `--skills` 啟用 browser/file tools：
+**macOS / Linux（推薦）：**
 
 ```bash
+# macOS
 python main.py --skills
+
+# Ubuntu / Linux（自動啟 Chrome + 裝依賴）
+./tgenie.sh --skills
 ```
 
-指定模型與 reasoning 等級：
+**Windows：**
+```
+tgenie.bat
+```
+（bat 自動啟動 Chrome debug mode → 抓 token → 進入 CLI）
+
+加 `--skills` 啟用 browser/file tools，指定模型與 reasoning 等級：
 
 ```bash
-python main.py -m gemini-2.0-pro -r medium
+python main.py --skills -m gpt-4o -r medium
+./tgenie.sh --skills -m gemini-2.5-flash -r low
 ```
 
 ---
@@ -251,13 +295,15 @@ AI    → [攔截並回傳 API 回應]
 ```
 genieCLI/
 ├── main.py              CLI 進入點
-├── api.py               HTTP / SSE client（勿動）
+├── api.py               HTTP client（TGenie SSE + OpenAI-compatible）
 ├── config.py            設定讀寫（自動補 DEFAULTS）
 ├── session.py           對話歷史管理
 ├── skill_runner.py      Tool call 解析與路由
 ├── page_context.py      CDP 高階封裝（snapshot/click/type）
-├── grab_auth.py         自動抓取 auth token 的腳本（勿動）
+├── grab_auth.py         自動抓取 auth token（TGenie only）
 ├── requirements.txt     Python 依賴
+├── tgenie.bat           Windows 一鍵啟動
+├── tgenie.sh            Ubuntu/Linux 一鍵啟動
 └── skills/
     ├── __init__.py      ALL_SKILLS 列表
     ├── base.py          BaseSkill 介面
@@ -271,5 +317,5 @@ genieCLI/
 1. **需保持 Chrome 分頁開著** — CDP 只綁定到已開的分頁，關掉就斷線
 2. **Element ID 每次 snapshot 都會重置** — 頁面變動後需重新 `browser_snapshot`
 3. **React controlled inputs** — 有特別處理，但某些客製化 input library 可能失效
-4. **401 token 過期** — 只會自動 retry 一次，之後需手動 `/renew`
-5. **SSE streaming** — 使用 streaming mode，回覆會逐字出現
+4. **401 token 過期（TGenie）** — 只會自動 retry 一次，之後需手動 `/renew`
+5. **Reasoning mode** — 開啟 reasoning 時 server 可能只回 reasoning tokens 而非最終答案；CLI 會自動 fallback，但部分 model/endpoint 組合仍可能有異常
