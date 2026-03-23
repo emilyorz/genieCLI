@@ -71,7 +71,20 @@ def _send_openai(cfg: dict, history: list, model: str, files: list = None) -> st
         timeout=120,
     )
     resp.raise_for_status()
-    data   = resp.json()
+
+    raw_text = resp.text.strip()
+    if not raw_text:
+        raise RuntimeError("Empty response from server (no body)")
+
+    # Some local servers (Ollama etc.) may return SSE stream even without stream=True
+    if raw_text.startswith("data:"):
+        return parse_sse(raw_text)
+
+    try:
+        data = resp.json()
+    except Exception:
+        raise RuntimeError(f"Non-JSON response ({resp.status_code}): {raw_text[:200]}")
+
     choice = data["choices"][0]
     msg    = choice.get("message") or {}
     # content may be None when model returns tool_calls or only reasoning tokens
