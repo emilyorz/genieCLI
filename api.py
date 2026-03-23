@@ -22,13 +22,24 @@ def _dbg(*args):
 # OpenAI-compatible interface
 # ─────────────────────────────────────────────────────────────────────────────
 
-def _history_to_openai(history: list) -> list:
-    """Convert TGenie history format → standard OpenAI messages list."""
+def _history_to_openai(history: list, content_as_array: bool = False) -> list:
+    """
+    Convert TGenie history format → OpenAI messages list.
+
+    content_as_array=True: user messages use array format
+      [{"type": "text", "text": "..."}]
+    This is required by some internal proxies (e.g. Cline-style servers)
+    that expect the Cline wire format.
+    """
     msgs = []
     for m in history:
         role = m["role"]
         text = m["content"][0]["text"] if m.get("content") else ""
-        if role in ("user", "assistant", "system"):
+        if role not in ("user", "assistant", "system"):
+            continue
+        if content_as_array and role == "user":
+            msgs.append({"role": role, "content": [{"type": "text", "text": text}]})
+        else:
             msgs.append({"role": role, "content": text})
     return msgs
 
@@ -43,9 +54,10 @@ def _send_openai(cfg: dict, history: list, model: str, files: list = None) -> st
     """
     base_url  = cfg.get("openaiBaseUrl", "https://api.openai.com/v1").rstrip("/")
     api_key   = cfg.get("openaiApiKey", "")
-    interface = cfg.get("interface", "openai")
+    interface        = cfg.get("interface", "openai")
+    content_as_array = cfg.get("openaiContentArray", False)
 
-    messages = _history_to_openai(history)
+    messages = _history_to_openai(history, content_as_array=content_as_array)
 
     # Attach screenshot to the last user message if provided
     if files:

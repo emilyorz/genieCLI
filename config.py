@@ -22,6 +22,8 @@ DEFAULTS = {
     "interface":        "tgenie",       # "tgenie" | "openai" | "anthropic"
     "openaiApiKey":     "",             # sk-... or local dummy key
     "openaiBaseUrl":    "https://api.openai.com/v1",
+    "openaiContentArray": False,        # True = user content as [{type,text}] array
+                                        # required for Cline-style internal proxies
 
     # ── Shared ────────────────────────────────────────────────────────────
     "defaultModel":     "gemini-2.5-flash",
