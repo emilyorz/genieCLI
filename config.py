@@ -4,15 +4,27 @@ from pathlib import Path
 CONFIG_PATH = Path.home() / "ai-agent-config.json"
 
 DEFAULTS = {
+    # ── TGenie backend (default) ──────────────────────────────────────────
     "endpoint":         "https://your-ai-gateway.internal.company.com",
     "frontendUrl":      "https://your-frontend.internal.company.com",
     "targetUrlKeyword": "ai-app",       # keyword to find your app tab in Chrome CDP
     "cookieDomain":     ".company.com",  # domain for cookie capture
     "authToken":        "",
     "customHeader":     "",
+    "cookies":          [],
+
+    # ── OpenAI-compatible interface ───────────────────────────────────────
+    # Set interface to "openai" to bypass TGenie backend entirely.
+    # openaiBaseUrl can point to any OpenAI-compatible endpoint
+    # (e.g. "http://localhost:11434/v1" for Ollama,
+    #        "https://api.groq.com/openai/v1" for Groq, etc.)
+    "interface":        "tgenie",       # "tgenie" | "openai"
+    "openaiApiKey":     "",             # sk-... or local dummy key
+    "openaiBaseUrl":    "https://api.openai.com/v1",
+
+    # ── Shared ────────────────────────────────────────────────────────────
     "defaultModel":     "gemini-2.5-flash",
     "systemPrompt":     "You are a helpful AI assistant.",
-    "cookies":          [],
 }
 
 def load():

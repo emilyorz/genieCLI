@@ -11,6 +11,69 @@ urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
 
 import config as cfg_module
 
+# ─────────────────────────────────────────────────────────────────────────────
+# OpenAI-compatible interface
+# ─────────────────────────────────────────────────────────────────────────────
+
+def _history_to_openai(history: list) -> list:
+    """Convert TGenie history format → standard OpenAI messages list."""
+    msgs = []
+    for m in history:
+        role = m["role"]
+        text = m["content"][0]["text"] if m.get("content") else ""
+        if role in ("user", "assistant", "system"):
+            msgs.append({"role": role, "content": text})
+    return msgs
+
+
+def _send_openai(cfg: dict, history: list, model: str, files: list = None) -> str:
+    """
+    Call any OpenAI-compatible API (OpenAI, Groq, Ollama, LM Studio, etc.).
+    Vision: if files are provided and the model supports it, the last user
+    message is augmented with image_url content parts.
+    """
+    base_url = cfg.get("openaiBaseUrl", "https://api.openai.com/v1").rstrip("/")
+    api_key  = cfg.get("openaiApiKey", "")
+
+    messages = _history_to_openai(history)
+
+    # Attach screenshot to the last user message if provided
+    if files:
+        import base64 as _b64
+        image_parts = []
+        for f in files:
+            b64 = _b64.b64encode(f["data"]).decode()
+            image_parts.append({
+                "type": "image_url",
+                "image_url": {"url": f"data:{f['content_type']};base64,{b64}"},
+            })
+        # Find last user message and convert to multipart content
+        for i in range(len(messages) - 1, -1, -1):
+            if messages[i]["role"] == "user":
+                text_part = {"type": "text", "text": messages[i]["content"]}
+                messages[i]["content"] = [text_part] + image_parts
+                break
+
+    payload = {
+        "model":    model,
+        "messages": messages,
+    }
+
+    headers = {
+        "Content-Type":  "application/json",
+        "Authorization": f"Bearer {api_key}",
+    }
+
+    resp = requests.post(
+        f"{base_url}/chat/completions",
+        headers=headers,
+        json=payload,
+        timeout=120,
+    )
+    resp.raise_for_status()
+    data = resp.json()
+    return data["choices"][0]["message"]["content"]
+
 
 def new_msg(role: str, text: str) -> dict:
     return {
@@ -145,6 +208,18 @@ def _refresh_token() -> bool:
 
 
 def send(cfg: dict, history: list, model: str, reasoning: str, files: list = None) -> str:
+    interface = cfg.get("interface", "tgenie")
+
+    # ── OpenAI-compatible path ─────────────────────────────────────────────
+    if interface == "openai":
+        try:
+            return _send_openai(cfg, history, model, files)
+        except requests.HTTPError as e:
+            raise RuntimeError(f"OpenAI HTTP {e.response.status_code}: {e.response.text[:300]}")
+        except Exception as e:
+            raise RuntimeError(str(e))
+
+    # ── TGenie backend path (default) ──────────────────────────────────────
     try:
         return _do_request(cfg, history, model, reasoning, files)
 
