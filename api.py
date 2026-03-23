@@ -89,10 +89,13 @@ def _send_openai(cfg: dict, history: list, model: str, files: list = None) -> st
         if system_text:
             payload["system"] = system_text
     else:
-        # Standard OpenAI format
+        # Standard OpenAI format — always request stream so server
+        # returns SSE regardless of its default behaviour
         payload = {
-            "model":    model,
-            "messages": messages,
+            "model":          model,
+            "messages":       messages,
+            "stream":         True,
+            "stream_options": {"include_usage": True},
         }
 
     headers = {
@@ -129,10 +132,13 @@ def _send_openai(cfg: dict, history: list, model: str, files: list = None) -> st
         raw_lines = "\n".join(
             line for line in resp.iter_lines(decode_unicode=True) if line
         )
-        _dbg(f"SSE body preview: {raw_lines[:300]}")
+        _dbg(f"SSE raw ({len(raw_lines)} chars):\n{raw_lines[:600]}")
         result = parse_sse(raw_lines)
         if not result:
-            raise RuntimeError(f"SSE stream ended with no content.\nRaw: {raw_lines[:300]}")
+            raise RuntimeError(
+                f"SSE stream ended with no content.\n"
+                f"Raw preview:\n{raw_lines[:600]}"
+            )
         return result
 
     # Regular JSON response
