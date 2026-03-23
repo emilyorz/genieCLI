@@ -71,8 +71,17 @@ def _send_openai(cfg: dict, history: list, model: str, files: list = None) -> st
         timeout=120,
     )
     resp.raise_for_status()
-    data = resp.json()
-    return data["choices"][0]["message"]["content"]
+    data   = resp.json()
+    choice = data["choices"][0]
+    msg    = choice.get("message") or {}
+    # content may be None when model returns tool_calls or only reasoning tokens
+    content = (
+        msg.get("content")
+        or msg.get("reasoning_content")   # some providers surface reasoning here
+        or msg.get("refusal")             # surface refusal message if present
+        or ""
+    )
+    return content
 
 
 def new_msg(role: str, text: str) -> dict:
@@ -87,7 +96,16 @@ def new_msg(role: str, text: str) -> dict:
 
 
 def parse_sse(raw: str) -> str:
-    full = ""
+    """
+    Parse SSE stream from TGenie backend.
+    Collects delta.content (final answer).
+    When reasoning is enabled the server may also emit delta.reasoning_content
+    (thinking tokens) — those are skipped; we only want the answer.
+    If content is completely empty after the full stream, fall back to
+    collecting reasoning_content so the caller at least gets something.
+    """
+    full      = ""
+    reasoning = ""
     for line in raw.splitlines():
         line = line.strip()
         if re.match(r'^data:\s*\{"done"\s*:\s*true', line):
@@ -96,12 +114,20 @@ def parse_sse(raw: str) -> str:
         if m:
             try:
                 chunk = json.loads(m.group(1))
-                delta = chunk["choices"][0]["delta"].get("content", "")
-                if delta:
-                    full += delta
+                delta = chunk["choices"][0]["delta"]
+                # Primary: final answer content
+                text = delta.get("content") or ""
+                if text:
+                    full += text
+                # Secondary: reasoning/thinking tokens (collect as fallback)
+                rtext = delta.get("reasoning_content") or delta.get("reasonText") or ""
+                if rtext:
+                    reasoning += rtext
             except Exception:
                 pass
-    return full
+    # If server only sent reasoning tokens and no content, surface reasoning
+    # so the user sees something instead of [ERROR] Empty response
+    return full or reasoning
 
 
 def _do_request(cfg: dict, history: list, model: str, reasoning: str, files: list = None) -> str:
@@ -186,9 +212,14 @@ def _do_request(cfg: dict, history: list, model: str, reasoning: str, files: lis
     if raw.lstrip().startswith("data:"):
         return parse_sse(raw)
     parsed = resp.json()
-    reply  = parsed["choices"][0].get("message", {}).get("content")
-    if not reply:
-        reply = parsed["choices"][0].get("delta", {}).get("content")
+    choice = parsed["choices"][0]
+    msg    = choice.get("message") or choice.get("delta") or {}
+    reply  = (
+        msg.get("content")
+        or msg.get("reasoning_content")
+        or msg.get("reasonText")
+        or ""
+    )
     return reply
 
 
