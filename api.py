@@ -166,10 +166,12 @@ def _do_request(cfg: dict, history: list, model: str, reasoning: str, files: lis
     # files (binary)
     if files:
         for f in files:
+            fname    = f["filename"]
+            fctype   = f["content_type"]
             header = (
                 f"--{boundary}{CRLF}"
-                f'Content-Disposition: form-data; name="files"; filename="{f['filename']}"{CRLF}'
-                f'Content-Type: {f['content_type']}{CRLF}{CRLF}'
+                f'Content-Disposition: form-data; name="files"; filename="{fname}"{CRLF}'
+                f'Content-Type: {fctype}{CRLF}{CRLF}'
             ).encode("utf-8")
             body += header + f["data"] + CRLF.encode("utf-8")
 
