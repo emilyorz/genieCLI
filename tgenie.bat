@@ -1,13 +1,12 @@
 @echo off
-chcp 65001 > nul
 title TGenie CLI
 
-:: ── 設定區（按需修改）────────────────────────────────────────────
+:: �w�w �]�w�ϡ]���ݭק�^�w�w�w�w�w�w�w�w�w�w�w�w�w�w�w�w�w�w�w�w�w�w�w�w�w�w�w�w�w�w�w�w�w�w�w�w�w�w�w�w�w�w�w�w
 set CHROME="C:\Program Files\Google\Chrome\Application\chrome.exe"
 set CHROME_PROFILE=C:\ChromeDebug
 set SCRIPT_DIR=%~dp0
 set PYTHON=python
-:: ────────────────────────────────────────────────────────────────
+:: �w�w�w�w�w�w�w�w�w�w�w�w�w�w�w�w�w�w�w�w�w�w�w�w�w�w�w�w�w�w�w�w�w�w�w�w�w�w�w�w�w�w�w�w�w�w�w�w�w�w�w�w�w�w�w�w�w�w�w�w�w�w�w�w
 
 echo.
 echo  +======================================+
@@ -15,7 +14,7 @@ echo  ^|        TGenie CLI  Launcher          ^|
 echo  +======================================+
 echo.
 
-:: 1. 確認 Chrome 存在
+:: 1. �T�{ Chrome �s�b
 if not exist %CHROME% (
     echo  [ERROR] Chrome not found: %CHROME%
     echo  Please update CHROME path in this bat file.
@@ -23,7 +22,7 @@ if not exist %CHROME% (
     exit /b 1
 )
 
-:: 2. 確認 Python 存在
+:: 2. �T�{ Python �s�b
 %PYTHON% --version > nul 2>&1
 if errorlevel 1 (
     echo  [ERROR] Python not found. Make sure python is in PATH.
@@ -31,7 +30,7 @@ if errorlevel 1 (
     exit /b 1
 )
 
-:: 3. 確認 Chrome 是否已經在 debug mode 跑
+:: 3. �T�{ Chrome �O�_�w�g�b debug mode �]
 curl -s http://localhost:9222/json > nul 2>&1
 if errorlevel 1 (
     echo  Starting Chrome in debug mode...
@@ -43,7 +42,7 @@ if errorlevel 1 (
     echo  Waiting for Chrome to start...
     timeout /t 3 /nobreak > nul
 
-    :: 再等 Chrome 真的起來
+    :: �A�� Chrome �u���_��
     :wait_chrome
     curl -s http://localhost:9222/json > nul 2>&1
     if errorlevel 1 (
@@ -60,7 +59,7 @@ echo  Please make sure you are logged into TGenie in the Chrome window.
 echo  Press any key when ready...
 pause > nul
 
-:: 4. 抓 auth token
+:: 4. �� auth token
 echo.
 echo  Grabbing auth token...
 %PYTHON% "%SCRIPT_DIR%grab_auth.py"
@@ -71,7 +70,7 @@ if errorlevel 1 (
     exit /b 1
 )
 
-:: 5. 進入 AI agent
+:: 5. �i�J AI agent
 echo.
 %PYTHON% "%SCRIPT_DIR%main.py"
 
