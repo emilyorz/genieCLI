@@ -107,6 +107,7 @@ def main():
     # 1. Find TGenie tab
     print("  Connecting to Chrome CDP...")
     tabs = get_tabs()
+    existing = json.loads(CONFIG_PATH.read_text()) if CONFIG_PATH.exists() else {}
     tab  = find_tab(tabs, existing.get("targetUrlKeyword", "ai-app"))
     if not tab:
         print(f"  [ERROR] No tab with '{TARGET_URL_KEYWORD}' found. Open tabs:")
