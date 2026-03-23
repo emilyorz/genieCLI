@@ -13,51 +13,21 @@ AI then operates on element IDs, not selectors.
 
 import json
 import re
+import sys
+import os
 
-CDP_URL = "http://localhost:9222"
-
-
-# ── CDP helper ────────────────────────────────────────────────────────────────
-
-def _get_tab():
-    import requests
-    tabs  = requests.get(f"{CDP_URL}/json", timeout=3).json()
-    pages = [t for t in tabs if t.get("type") == "page"]
-    if not pages:
-        raise RuntimeError("No Chrome tab found")
-    return pages[0]
-
-
-class _CDP:
-    def __init__(self):
-        import requests as _req
-        import websocket as _ws
-        tab      = _get_tab()
-        self.ws  = _ws.create_connection(tab["webSocketDebuggerUrl"], timeout=15)
-        self._id = 0
-
-    def send(self, method, params=None):
-        self._id += 1
-        self.ws.send(json.dumps({"id": self._id, "method": method, "params": params or {}}))
-        cur = self._id
-        while True:
-            msg = json.loads(self.ws.recv())
-            if msg.get("id") == cur:
-                return msg.get("result", {})
-
-    def js_val(self, expr):
-        r = self.send("Runtime.evaluate", {
-            "expression": expr, "returnByValue": True
-        })
-        return r.get("result", {}).get("value")
-
-    def close(self):
-        self.ws.close()
+# Import shared CDP singleton from skills package
+def _get_cdp():
+    root = os.path.dirname(os.path.abspath(__file__))
+    if root not in sys.path:
+        sys.path.insert(0, root)
+    from skills._cdp import get_shared_cdp
+    return get_shared_cdp()
 
 
 # ── Element Registry ──────────────────────────────────────────────────────────
 
-# Global registry: element_id -> {selector, x, y, tag, text}
+# Global registry: element_id -> {id, tag, text, x, y, selector, role, backend_node_id}
 _ELEMENT_REGISTRY = {}
 _NEXT_ID = 1
 
@@ -81,9 +51,9 @@ def _element_hash(tag: str, text: str, placeholder: str = "") -> str:
 
 
 def _format_element_line(eid: int, el: dict, is_new: bool) -> str:
-    tag = el["tag"]
-    text = el["text"] or ""
-    depth = el.get("depth", 0)
+    tag    = el["tag"]
+    text   = el["text"] or ""
+    depth  = el.get("depth", 0)
     indent = "  " * depth
     prefix = "*" if is_new else ""
 
@@ -99,18 +69,19 @@ def _format_element_line(eid: int, el: dict, is_new: bool) -> str:
         return f"{indent}{prefix}[{eid}]<{tag}>{text}</{tag}>"
 
 
-def _register(tag, text, x, y, selector, role=""):
+def _register(tag, text, x, y, selector, role="", backend_node_id=0):
     global _NEXT_ID
     eid = _NEXT_ID
     _NEXT_ID += 1
     _ELEMENT_REGISTRY[eid] = {
-        "id":       eid,
-        "tag":      tag,
-        "text":     text,
-        "x":        x,
-        "y":        y,
-        "selector": selector,
-        "role":     role,
+        "id":              eid,
+        "tag":             tag,
+        "text":            text,
+        "x":               x,
+        "y":               y,
+        "selector":        selector,
+        "role":            role,
+        "backend_node_id": backend_node_id,
     }
     return eid
 
@@ -125,13 +96,12 @@ def get_page_snapshot(include_text=True, max_text=600) -> str:
     - Visible text summary
     Returns a compact string for AI context.
     """
-    cdp = _CDP()
-    try:
-        url   = cdp.js_val("window.location.href") or ""
-        title = cdp.js_val("document.title") or ""
+    cdp   = _get_cdp()
+    url   = cdp.js_val("window.location.href") or ""
+    title = cdp.js_val("document.title") or ""
 
-        # Collect interactive elements via JS
-        raw = cdp.js_val("""
+    # Collect interactive elements via JS
+    raw = cdp.js_val("""
 (function() {
     var results = [];
     var seen    = new Set();
@@ -200,52 +170,64 @@ def get_page_snapshot(include_text=True, max_text=600) -> str:
 })()
 """)
 
-        elements = json.loads(raw) if raw else []
+    elements = json.loads(raw) if raw else []
 
-        # Register elements and build display lines
-        clear_registry()
-        lines = [
-            f"[Page] {title}",
-            f"[URL]  {url}",
-            "",
-            "=== Interactive Elements ===",
-        ]
+    # Enrich elements with backendNodeId via CDP DOM.getNodeForLocation
+    for el in elements:
+        if el.get("disabled"):
+            continue
+        try:
+            node_result = cdp.send("DOM.getNodeForLocation", {
+                "x": el["x"],
+                "y": el["y"],
+                "includeUserAgentShadowDOM": False,
+            })
+            el["backend_node_id"] = node_result.get("backendNodeId", 0)
+        except Exception:
+            el["backend_node_id"] = 0
 
-        new_hashes: set = set()
-        for el in elements:
-            if el.get("disabled"):
-                continue
-            eid = _register(
-                tag=el["tag"],
-                text=el["text"],
-                x=el["x"],
-                y=el["y"],
-                selector="",
-                role=el["type"],
-            )
-            h = _element_hash(el["tag"], el["text"], el.get("placeholder", ""))
-            is_new = h not in _PREVIOUS_ELEMENT_HASHES
-            new_hashes.add(h)
-            lines.append(_format_element_line(eid, el, is_new))
+    # Register elements and build display lines
+    clear_registry()
+    lines = [
+        f"[Page] {title}",
+        f"[URL]  {url}",
+        "",
+        "=== Interactive Elements ===",
+    ]
 
-        _PREVIOUS_ELEMENT_HASHES.clear()
-        _PREVIOUS_ELEMENT_HASHES.update(new_hashes)
+    new_hashes: set = set()
+    for el in elements:
+        if el.get("disabled"):
+            continue
+        eid = _register(
+            tag=el["tag"],
+            text=el["text"],
+            x=el["x"],
+            y=el["y"],
+            selector="",
+            role=el["type"],
+            backend_node_id=el.get("backend_node_id", 0),
+        )
+        h      = _element_hash(el["tag"], el["text"], el.get("placeholder", ""))
+        is_new = h not in _PREVIOUS_ELEMENT_HASHES
+        new_hashes.add(h)
+        lines.append(_format_element_line(eid, el, is_new))
 
-        # Visible text summary
-        if include_text:
-            text = cdp.js_val("document.body.innerText") or ""
-            text = re.sub(r'\n{3,}', '\n\n', text).strip()
-            if text:
-                lines += [
-                    "",
-                    "=== Page Text (summary) ===",
-                    text[:max_text] + ("..." if len(text) > max_text else ""),
-                ]
+    _PREVIOUS_ELEMENT_HASHES.clear()
+    _PREVIOUS_ELEMENT_HASHES.update(new_hashes)
 
-        return "\n".join(lines)
+    # Visible text summary
+    if include_text:
+        text = cdp.js_val("document.body.innerText") or ""
+        text = re.sub(r'\n{3,}', '\n\n', text).strip()
+        if text:
+            lines += [
+                "",
+                "=== Page Text (summary) ===",
+                text[:max_text] + ("..." if len(text) > max_text else ""),
+            ]
 
-    finally:
-        cdp.close()
+    return "\n".join(lines)
 
 
 def get_numbers_on_page() -> str:
@@ -253,9 +235,8 @@ def get_numbers_on_page() -> str:
     Extract all numbers/values visible on page — useful for charts,
     dashboards, metrics where AI needs actual data values.
     """
-    cdp = _CDP()
-    try:
-        raw = cdp.js_val("""
+    cdp = _get_cdp()
+    raw = cdp.js_val("""
 (function() {
     var results = [];
     var seen    = new Set();
@@ -284,116 +265,117 @@ def get_numbers_on_page() -> str:
     return JSON.stringify([...new Set(results)].slice(0, 80));
 })()
 """)
-        values = json.loads(raw) if raw else []
-        if not values:
-            return "No numeric values found on page"
-        return "Numeric values on page:\n" + "\n".join(values)
-    finally:
-        cdp.close()
+    values = json.loads(raw) if raw else []
+    if not values:
+        return "No numeric values found on page"
+    return "Numeric values on page:\n" + "\n".join(values)
 
 
 def click_element(element_id: int) -> str:
-    """Click a registered element by its ID, then verify something changed."""
+    """Click a registered element by its ID using backendNodeId when available, else coordinates."""
     import time
     el = get_element_by_id(element_id)
     if not el:
         return f"Element #{element_id} not found. Run browser_snapshot first."
-    cdp = _CDP()
-    try:
-        # Capture state before click
-        url_before   = cdp.js_val("window.location.href") or ""
-        title_before = cdp.js_val("document.title") or ""
 
-        # Perform click
-        for etype in ["mousePressed", "mouseReleased"]:
-            cdp.send("Input.dispatchMouseEvent", {
-                "type": etype, "x": el["x"], "y": el["y"],
-                "button": "left", "clickCount": 1,
-            })
-        time.sleep(0.8)
+    cdp = _get_cdp()
 
-        # Verify: check what changed
-        url_after   = cdp.js_val("window.location.href") or ""
-        title_after = cdp.js_val("document.title") or ""
+    # Method 1: backendNodeId click (more reliable, avoids coordinate mismatch)
+    if el.get("backend_node_id") and el["backend_node_id"] > 0:
+        try:
+            result    = cdp.send("DOM.resolveNode", {"backendNodeId": el["backend_node_id"]})
+            object_id = result.get("object", {}).get("objectId")
+            if object_id:
+                cdp.send("Runtime.callFunctionOn", {
+                    "functionDeclaration": "function() { this.click(); return true; }",
+                    "objectId":            object_id,
+                    "returnByValue":       True,
+                })
+                try:
+                    cdp.send("Runtime.releaseObject", {"objectId": object_id})
+                except Exception:
+                    pass
+                return f"Clicked [{element_id}] '{el['text']}' via backendNodeId (more reliable)"
+        except Exception:
+            pass  # fallback to coordinate click
 
-        verification = []
-
-        if url_after != url_before:
-            verification.append(f"URL changed: {url_before} -> {url_after}")
-        if title_after != title_before:
-            verification.append(f"Title changed: {title_before} -> {title_after}")
-
-        # Check if element is still in DOM / changed state
-        x_j, y_j = str(el["x"]), str(el["y"])
-        state = cdp.js_val(
-            "(function(){"
-            "  var el = document.elementFromPoint(" + x_j + "," + y_j + ");"
-            "  if (!el) return 'element gone (page may have changed)';"
-            "  return 'element still present: ' + el.tagName + ' ' + (el.innerText||'').trim().substring(0,40);"
-            "})()"
-        )
-        verification.append(state or "no state info")
-
-        status = "VERIFIED" if (url_after != url_before or title_after != title_before) else "SENT (no navigation detected)"
-        result = f"Clicked [{element_id}] {el['role']} '{el['text']}' at ({el['x']},{el['y']}) — {status}"
-        if verification:
-            result += "\nVerification:\n" + "\n".join(f"  - {v}" for v in verification)
-        return result
-    finally:
-        cdp.close()
+    # Fallback: coordinate click
+    url_before = cdp.js_val("window.location.href") or ""
+    for etype in ["mousePressed", "mouseReleased"]:
+        cdp.send("Input.dispatchMouseEvent", {
+            "type": etype, "x": el["x"], "y": el["y"],
+            "button": "left", "clickCount": 1,
+        })
+    time.sleep(0.8)
+    url_after = cdp.js_val("window.location.href") or ""
+    status    = "navigated" if url_after != url_before else "clicked"
+    return f"Clicked [{element_id}] '{el['text']}' at ({el['x']},{el['y']}) via coordinates ({status})"
 
 
 def type_into_element(element_id: int, text: str) -> str:
-    """Type text into a registered input, then verify value was set."""
+    """Type text into a registered input using React-compatible setter, with keystroke fallback."""
     el = get_element_by_id(element_id)
     if not el:
         return f"Element #{element_id} not found. Run browser_snapshot first."
     if el["role"] not in ("INPUT", "TEXTAREA"):
         return f"Element #{element_id} is {el['role']}, not an input"
-    cdp = _CDP()
-    try:
-        x, y   = el["x"], el["y"]
-        text_j = json.dumps(text)
-        x_j, y_j = str(x), str(y)
 
-        # Click to focus
-        for etype in ["mousePressed", "mouseReleased"]:
-            cdp.send("Input.dispatchMouseEvent", {
-                "type": etype, "x": x, "y": y, "button": "left", "clickCount": 1
-            })
+    cdp    = _get_cdp()
+    x_j    = str(el["x"])
+    y_j    = str(el["y"])
+    text_j = json.dumps(text)
 
-        # Set value via JS
-        cdp.js_val(
-            "(function(){"
-            "  var el = document.elementFromPoint(" + x_j + "," + y_j + ");"
-            "  if (!el) return;"
-            "  var iS = Object.getOwnPropertyDescriptor(window.HTMLInputElement.prototype,'value');"
-            "  var tS = Object.getOwnPropertyDescriptor(window.HTMLTextAreaElement.prototype,'value');"
-            "  var s  = (iS&&iS.set)||(tS&&tS.set);"
-            "  if (s) s.call(el," + text_j + ");"
-            "  else el.value = " + text_j + ";"
-            "  el.dispatchEvent(new Event('input',{bubbles:true}));"
-            "  el.dispatchEvent(new Event('change',{bubbles:true}));"
-            "})()"
-        )
+    # Method 1: React-compatible input via native prototype setter
+    result = cdp.js_val(
+        "(function(){"
+        "  var el = document.elementFromPoint(" + x_j + "," + y_j + ");"
+        "  if (!el) return 'not found';"
+        "  el.focus();"
+        "  var iSetter = Object.getOwnPropertyDescriptor(window.HTMLInputElement.prototype, 'value');"
+        "  var tSetter = Object.getOwnPropertyDescriptor(window.HTMLTextAreaElement.prototype, 'value');"
+        "  var setter = (iSetter && iSetter.set) || (tSetter && tSetter.set);"
+        "  if (setter) {"
+        "    setter.call(el, '');"
+        "    setter.call(el, " + text_j + ");"
+        "  } else {"
+        "    el.value = '';"
+        "    el.value = " + text_j + ";"
+        "  }"
+        "  el.dispatchEvent(new Event('input', {bubbles: true}));"
+        "  el.dispatchEvent(new Event('change', {bubbles: true}));"
+        "  return el.value;"
+        "})()"
+    )
 
-        # Verify: read back the actual value
-        actual = cdp.js_val(
-            "(function(){"
-            "  var el = document.elementFromPoint(" + x_j + "," + y_j + ");"
-            "  return el ? (el.value || el.innerText || '') : null;"
-            "})()"
-        )
+    if result is None:
+        return f"Element at ({el['x']},{el['y']}) not found"
 
-        if actual is None:
-            return f"Typed into [{element_id}] but could not verify (element gone?)"
+    actual = str(result).strip()
 
-        actual_str = str(actual).strip()
-        if text in actual_str or actual_str == text:
-            return f"Typed into [{element_id}] '{el['text']}' — VERIFIED: value='{actual_str[:80]}'"
-        else:
-            return (f"Typed into [{element_id}] '{el['text']}' — WARNING: "
-                    f"expected '{text[:40]}' but got '{actual_str[:40]}'"
-                    f" (React/custom input may need different approach)")
-    finally:
-        cdp.close()
+    # Verify value was set
+    if text in actual or actual == text:
+        return f"Typed into [{element_id}] '{el['text']}' — VERIFIED: value='{actual[:60]}'"
+
+    # Method 2 fallback: keystroke-by-keystroke (for inputs with live validation)
+    cdp.js_val(
+        "(function(){"
+        "  var el = document.elementFromPoint(" + x_j + "," + y_j + ");"
+        "  if (el) { el.focus(); el.select(); }"
+        "})()"
+    )
+    cdp.send("Input.dispatchKeyEvent", {"type": "keyDown", "key": "a", "modifiers": 2})
+    cdp.send("Input.dispatchKeyEvent", {"type": "keyUp",   "key": "a", "modifiers": 2})
+
+    for char in text:
+        cdp.send("Input.dispatchKeyEvent", {"type": "keyDown", "text": char, "key": char})
+        cdp.send("Input.dispatchKeyEvent", {"type": "keyUp",   "text": char, "key": char})
+
+    # blur to trigger validation
+    cdp.js_val(
+        "(function(){"
+        "  var el = document.elementFromPoint(" + x_j + "," + y_j + ");"
+        "  if (el) el.blur();"
+        "})()"
+    )
+
+    return f"Typed into [{element_id}] '{el['text']}' via keystrokes (React fallback)"

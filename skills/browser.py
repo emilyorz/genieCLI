@@ -2,84 +2,13 @@ import json
 import time
 import base64
 from .base import Arg, BaseSkill
+from ._cdp import get_shared_cdp
 
 def _requests():
     import requests
     return requests
 
-def _websocket():
-    import websocket
-    return websocket
-
 CDP_URL = "http://localhost:9222"
-
-
-# ── CDP Connection ─────────────────────────────────────────────────────────────
-
-def _get_tab(tab_id=None):
-    """Get tab by id, or the most recently active page tab."""
-    tabs = _requests().get(f"{CDP_URL}/json", timeout=3).json()
-    pages = [t for t in tabs if t.get("type") == "page"]
-    if not pages:
-        raise RuntimeError("No Chrome tab found. Is Chrome running with --remote-debugging-port=9222?")
-    if tab_id:
-        match = next((t for t in pages if t.get("id") == tab_id), None)
-        return match or pages[0]
-    return pages[0]
-
-
-class _CDP:
-    def __init__(self, tab_id=None):
-        tab = _get_tab(tab_id)
-        self.tab_id = tab.get("id")
-        self.ws = _websocket().create_connection(tab["webSocketDebuggerUrl"], timeout=15)
-        self._id = 0
-
-    def send(self, method, params=None):
-        self._id += 1
-        self.ws.send(json.dumps({"id": self._id, "method": method, "params": params or {}}))
-        cur = self._id
-        while True:
-            msg = json.loads(self.ws.recv())
-            if msg.get("id") == cur:
-                if "error" in msg:
-                    return {"error": msg["error"]}
-                return msg.get("result", {})
-
-    def js(self, expr, await_promise=False):
-        return self.send("Runtime.evaluate", {
-            "expression":   expr,
-            "returnByValue": True,
-            "awaitPromise":  await_promise,
-        })
-
-    def js_val(self, expr):
-        r = self.js(expr)
-        return r.get("result", {}).get("value")
-
-    def get_box(self, selector):
-        """Return bounding box of element {x,y,w,h} or None."""
-        sel_json = json.dumps(selector)
-        raw = self.js_val(
-            "(function(){"
-            "  var el=document.querySelector(" + sel_json + ");"
-            "  if(!el)return null;"
-            "  el.scrollIntoView({block:'center',inline:'center'});"
-            "  var r=el.getBoundingClientRect();"
-            "  return JSON.stringify({x:r.left,y:r.top,w:r.width,h:r.height});"
-            "})()"
-        )
-        return json.loads(raw) if raw else None
-
-    def center_of(self, selector):
-        """Return (cx, cy) center of element or None."""
-        box = self.get_box(selector)
-        if not box:
-            return None
-        return box["x"] + box["w"] / 2, box["y"] + box["h"] / 2
-
-    def close(self):
-        self.ws.close()
 
 
 # ── Tab Management ─────────────────────────────────────────────────────────────
@@ -127,13 +56,9 @@ class BrowserSwitchTab(BaseSkill):
                 return f"No tab matching: {keyword}"
         else:
             return "Provide index or keyword"
-        # Activate tab via CDP Target
-        cdp = _CDP()
-        try:
-            cdp.send("Target.activateTarget", {"targetId": tab["id"]})
-            return f"Switched to: {tab.get('title','')} | {tab.get('url','')}"
-        finally:
-            cdp.close()
+        cdp = get_shared_cdp()
+        cdp.send("Target.activateTarget", {"targetId": tab["id"]})
+        return f"Switched to: {tab.get('title','')} | {tab.get('url','')}"
 
 
 class BrowserNavigate(BaseSkill):
@@ -147,21 +72,14 @@ class BrowserNavigate(BaseSkill):
     ]
 
     def run(self, url=""):
-        cdp = _CDP()
-        try:
-            cdp.send("Target.createTarget", {"url": url})
-            time.sleep(2)
-            tabs  = _requests().get(f"{CDP_URL}/json", timeout=3).json()
-            ntab  = next((t for t in tabs
-                          if t.get("type") == "page" and url in t.get("url","")), None)
-            title = ""
-            if ntab:
-                tmp = _CDP(ntab["id"])
-                title = tmp.js_val("document.title") or ""
-                tmp.close()
-            return f"Opened: {url} (title: {title})"
-        finally:
-            cdp.close()
+        cdp = get_shared_cdp()
+        cdp.send("Target.createTarget", {"url": url})
+        time.sleep(2)
+        tabs  = _requests().get(f"{CDP_URL}/json", timeout=3).json()
+        ntab  = next((t for t in tabs
+                      if t.get("type") == "page" and url in t.get("url", "")), None)
+        title = ntab.get("title", "") if ntab else ""
+        return f"Opened: {url} (title: {title})"
 
 
 class BrowserGetURL(BaseSkill):
@@ -171,11 +89,8 @@ class BrowserGetURL(BaseSkill):
     args        = []
 
     def run(self):
-        cdp = _CDP()
-        try:
-            return f"URL: {cdp.js_val('window.location.href')}\nTitle: {cdp.js_val('document.title')}"
-        finally:
-            cdp.close()
+        cdp = get_shared_cdp()
+        return f"URL: {cdp.js_val('window.location.href')}\nTitle: {cdp.js_val('document.title')}"
 
 
 # ── Reading ───────────────────────────────────────────────────────────────────
@@ -187,14 +102,11 @@ class BrowserGetText(BaseSkill):
     args        = []
 
     def run(self):
-        cdp = _CDP()
-        try:
-            title = cdp.js_val("document.title")
-            url   = cdp.js_val("window.location.href")
-            text  = cdp.js_val("document.body.innerText") or ""
-            return f"[Page: {title}]\n[URL: {url}]\n\n{text.strip()[:4000]}"
-        finally:
-            cdp.close()
+        cdp   = get_shared_cdp()
+        title = cdp.js_val("document.title")
+        url   = cdp.js_val("window.location.href")
+        text  = cdp.js_val("document.body.innerText") or ""
+        return f"[Page: {title}]\n[URL: {url}]\n\n{text.strip()[:4000]}"
 
 
 class BrowserGetElement(BaseSkill):
@@ -211,32 +123,29 @@ class BrowserGetElement(BaseSkill):
     ]
 
     def run(self, selector="", attribute="text"):
-        cdp = _CDP()
-        try:
-            sel_json  = json.dumps(selector)
-            attr_map  = {
-                "text":      "el.innerText",
-                "value":     "el.value",
-                "innerHTML": "el.innerHTML",
-                "href":      "el.href",
-                "src":       "el.src",
-            }
-            attr_js = attr_map.get(attribute, f"el.getAttribute({json.dumps(attribute)})")
-            val = cdp.js_val(
-                "(function(){"
-                "  var els=document.querySelectorAll(" + sel_json + ");"
-                "  if(!els.length) return 'not found: " + selector + "';"
-                "  var r=[];"
-                "  els.forEach(function(el,i){"
-                "    var v=" + attr_js + ";"
-                "    if(v!=null) r.push('['+i+'] '+String(v).trim().substring(0,300));"
-                "  });"
-                "  return r.join('\\n')||'all empty';"
-                "})()"
-            )
-            return val or "not found"
-        finally:
-            cdp.close()
+        cdp      = get_shared_cdp()
+        sel_json = json.dumps(selector)
+        attr_map = {
+            "text":      "el.innerText",
+            "value":     "el.value",
+            "innerHTML": "el.innerHTML",
+            "href":      "el.href",
+            "src":       "el.src",
+        }
+        attr_js = attr_map.get(attribute, f"el.getAttribute({json.dumps(attribute)})")
+        val = cdp.js_val(
+            "(function(){"
+            "  var els=document.querySelectorAll(" + sel_json + ");"
+            "  if(!els.length) return 'not found: " + selector + "';"
+            "  var r=[];"
+            "  els.forEach(function(el,i){"
+            "    var v=" + attr_js + ";"
+            "    if(v!=null) r.push('['+i+'] '+String(v).trim().substring(0,300));"
+            "  });"
+            "  return r.join('\\n')||'all empty';"
+            "})()"
+        )
+        return val or "not found"
 
 
 class BrowserGetBoundingBox(BaseSkill):
@@ -250,16 +159,13 @@ class BrowserGetBoundingBox(BaseSkill):
     ]
 
     def run(self, selector=""):
-        cdp = _CDP()
-        try:
-            box = cdp.get_box(selector)
-            if not box:
-                return f"Element not found: {selector}"
-            return (f"x={box['x']:.0f}, y={box['y']:.0f}, "
-                    f"width={box['w']:.0f}, height={box['h']:.0f}, "
-                    f"center=({box['x']+box['w']/2:.0f}, {box['y']+box['h']/2:.0f})")
-        finally:
-            cdp.close()
+        cdp = get_shared_cdp()
+        box = cdp.get_box(selector)
+        if not box:
+            return f"Element not found: {selector}"
+        return (f"x={box['x']:.0f}, y={box['y']:.0f}, "
+                f"width={box['w']:.0f}, height={box['h']:.0f}, "
+                f"center=({box['x']+box['w']/2:.0f}, {box['y']+box['h']/2:.0f})")
 
 
 class BrowserGetLocalStorage(BaseSkill):
@@ -277,28 +183,25 @@ class BrowserGetLocalStorage(BaseSkill):
     ]
 
     def run(self, key="", storage="localStorage"):
-        cdp = _CDP()
-        try:
-            s = storage if storage in ("localStorage", "sessionStorage") else "localStorage"
-            if key:
-                val = cdp.js_val(f"{s}.getItem({json.dumps(key)})")
-                return f"{key} = {val}" if val is not None else f"Key not found: {key}"
-            else:
-                result = cdp.js_val(
-                    "(function(){"
-                    "  var s=" + s + ";"
-                    "  var r=[];"
-                    "  for(var i=0;i<s.length;i++){"
-                    "    var k=s.key(i);"
-                    "    var v=s.getItem(k);"
-                    "    r.push(k+' = '+(v||'').substring(0,80));"
-                    "  }"
-                    "  return r.join('\\n')||'(empty)';"
-                    "})()"
-                )
-                return result or "(empty)"
-        finally:
-            cdp.close()
+        cdp = get_shared_cdp()
+        s = storage if storage in ("localStorage", "sessionStorage") else "localStorage"
+        if key:
+            val = cdp.js_val(f"{s}.getItem({json.dumps(key)})")
+            return f"{key} = {val}" if val is not None else f"Key not found: {key}"
+        else:
+            result = cdp.js_val(
+                "(function(){"
+                "  var s=" + s + ";"
+                "  var r=[];"
+                "  for(var i=0;i<s.length;i++){"
+                "    var k=s.key(i);"
+                "    var v=s.getItem(k);"
+                "    r.push(k+' = '+(v||'').substring(0,80));"
+                "  }"
+                "  return r.join('\\n')||'(empty)';"
+                "})()"
+            )
+            return result or "(empty)"
 
 
 class BrowserGetDOM(BaseSkill):
@@ -312,78 +215,74 @@ class BrowserGetDOM(BaseSkill):
     ]
 
     def run(self, query=""):
-        cdp = _CDP()
-        try:
-            q = query.strip()
-            specials = {
-                "buttons": "button, [role='button'], input[type='submit'], input[type='button']",
-                "inputs":  "input, textarea, select",
-                "links":   "a[href]",
-                "canvas":  "canvas, svg",
-            }
+        cdp = get_shared_cdp()
+        q = query.strip()
+        specials = {
+            "buttons": "button, [role='button'], input[type='submit'], input[type='button']",
+            "inputs":  "input, textarea, select",
+            "links":   "a[href]",
+            "canvas":  "canvas, svg",
+        }
 
-            if q.lower() in specials:
-                sel  = specials[q.lower()]
-                attr = "href" if q.lower() == "links" else "text"
-                return BrowserGetElement().run(selector=sel, attribute=attr)
+        if q.lower() in specials:
+            sel  = specials[q.lower()]
+            attr = "href" if q.lower() == "links" else "text"
+            return BrowserGetElement().run(selector=sel, attribute=attr)
 
-            elif q.lower().startswith("class:"):
-                kw   = q[6:].strip()
-                kw_json = json.dumps(kw.lower())
-                result = cdp.js_val(
-                    "(function(){"
-                    "  var kw=" + kw_json + ";"
-                    "  var found=new Set();"
-                    "  for(var el of document.querySelectorAll('*')){"
-                    "    var cls=(el.className||'').toString().toLowerCase();"
-                    "    if(cls.includes(kw)){"
-                    "      var c=cls.split(' ').find(function(c){return c.includes(kw);});"
-                    "      if(c) found.add(el.tagName+'.'+c);"
-                    "    }"
-                    "    if(found.size>=30)break;"
-                    "  }"
-                    "  return found.size?Array.from(found).join('\\n'):'Not found';"
-                    "})()"
-                )
-                return result
+        elif q.lower().startswith("class:"):
+            kw      = q[6:].strip()
+            kw_json = json.dumps(kw.lower())
+            result  = cdp.js_val(
+                "(function(){"
+                "  var kw=" + kw_json + ";"
+                "  var found=new Set();"
+                "  for(var el of document.querySelectorAll('*')){"
+                "    var cls=(el.className||'').toString().toLowerCase();"
+                "    if(cls.includes(kw)){"
+                "      var c=cls.split(' ').find(function(c){return c.includes(kw);});"
+                "      if(c) found.add(el.tagName+'.'+c);"
+                "    }"
+                "    if(found.size>=30)break;"
+                "  }"
+                "  return found.size?Array.from(found).join('\\n'):'Not found';"
+                "})()"
+            )
+            return result
 
-            else:
-                # Try as CSS selector first, fall back to text/class search
-                sel_json = json.dumps(q)
-                result = cdp.js_val(
-                    "(function(){"
-                    "  var q=" + sel_json + ";"
-                    "  var bySelector=[];"
-                    "  try {"
-                    "    var els=document.querySelectorAll(q);"
-                    "    els.forEach(function(el,i){"
-                    "      if(i>=15)return;"
-                    "      var r=el.getBoundingClientRect();"
-                    "      bySelector.push(el.tagName"
-                    "        +' class=\"'+(el.className||'').toString().substring(0,50)+'\"'"
-                    "        +' text=\"'+(el.innerText||'').trim().substring(0,60)+'\"'"
-                    "        +' at('+Math.round(r.left)+','+Math.round(r.top)+')');"
-                    "    });"
-                    "  } catch(e) {}"
-                    "  if(bySelector.length) return bySelector.join('\\n');"
-                    "  // fallback: search by text/class keyword"
-                    "  var kw=q.toLowerCase();"
-                    "  var found=[];"
-                    "  for(var el of document.querySelectorAll('*')){"
-                    "    var cls=(el.className||'').toString().toLowerCase();"
-                    "    var txt=(el.innerText||'').toLowerCase();"
-                    "    if(cls.includes(kw)||txt.includes(kw)){"
-                    "      found.push(el.tagName+' class=\"'+(el.className||'').toString().substring(0,50)+'\"'"
-                    "        +' text=\"'+(el.innerText||'').trim().substring(0,60)+'\"');"
-                    "      if(found.length>=15)break;"
-                    "    }"
-                    "  }"
-                    "  return found.length?found.join('\\n'):'Nothing found for: '+q;"
-                    "})()"
-                )
-                return result or "No result"
-        finally:
-            cdp.close()
+        else:
+            sel_json = json.dumps(q)
+            result   = cdp.js_val(
+                "(function(){"
+                "  var q=" + sel_json + ";"
+                "  var bySelector=[];"
+                "  try {"
+                "    var els=document.querySelectorAll(q);"
+                "    els.forEach(function(el,i){"
+                "      if(i>=15)return;"
+                "      var r=el.getBoundingClientRect();"
+                "      bySelector.push(el.tagName"
+                "        +' class=\"'+(el.className||'').toString().substring(0,50)+'\"'"
+                "        +' text=\"'+(el.innerText||'').trim().substring(0,60)+'\"'"
+                "        +' at('+Math.round(r.left)+','+Math.round(r.top)+')');"
+                "    });"
+                "  } catch(e) {}"
+                "  if(bySelector.length) return bySelector.join('\\n');"
+                "  // fallback: search by text/class keyword"
+                "  var kw=q.toLowerCase();"
+                "  var found=[];"
+                "  for(var el of document.querySelectorAll('*')){"
+                "    var cls=(el.className||'').toString().toLowerCase();"
+                "    var txt=(el.innerText||'').toLowerCase();"
+                "    if(cls.includes(kw)||txt.includes(kw)){"
+                "      found.push(el.tagName+' class=\"'+(el.className||'').toString().substring(0,50)+'\"'"
+                "        +' text=\"'+(el.innerText||'').trim().substring(0,60)+'\"');"
+                "      if(found.length>=15)break;"
+                "    }"
+                "  }"
+                "  return found.length?found.join('\\n'):'Nothing found for: '+q;"
+                "})()"
+            )
+            return result or "No result"
 
 
 class BrowserInterceptXHR(BaseSkill):
@@ -403,71 +302,67 @@ class BrowserInterceptXHR(BaseSkill):
     ]
 
     def run(self, url_keyword="", action_js="", timeout=8):
-        cdp = _CDP()
-        try:
-            kw_json = json.dumps(url_keyword)
-            # Inject XHR/fetch interceptor
-            cdp.js(
-                "(function(){"
-                "  window.__intercepted__ = [];"
-                "  var kw=" + kw_json + ";"
-                "  var origFetch=window.fetch;"
-                "  window.fetch=function(url,opts){"
-                "    return origFetch(url,opts).then(function(r){"
-                "      if(!kw||String(url).includes(kw)){"
-                "        r.clone().text().then(function(t){"
-                "          window.__intercepted__.push({url:String(url),body:t.substring(0,2000)});"
-                "        });"
-                "      }"
-                "      return r;"
-                "    });"
-                "  };"
-                "  var origOpen=XMLHttpRequest.prototype.open;"
-                "  var origSend=XMLHttpRequest.prototype.send;"
-                "  XMLHttpRequest.prototype.open=function(m,u){"
-                "    this.__url__=u; return origOpen.apply(this,arguments);"
-                "  };"
-                "  XMLHttpRequest.prototype.send=function(){"
-                "    var self=this;"
-                "    this.addEventListener('load',function(){"
-                "      if(!kw||String(self.__url__).includes(kw)){"
-                "        window.__intercepted__.push({url:String(self.__url__),body:(self.responseText||'').substring(0,2000)});"
-                "      }"
-                "    });"
-                "    return origSend.apply(this,arguments);"
-                "  };"
-                "})()"
-            )
+        cdp     = get_shared_cdp()
+        kw_json = json.dumps(url_keyword)
+        # Inject XHR/fetch interceptor
+        cdp.js(
+            "(function(){"
+            "  window.__intercepted__ = [];"
+            "  var kw=" + kw_json + ";"
+            "  var origFetch=window.fetch;"
+            "  window.fetch=function(url,opts){"
+            "    return origFetch(url,opts).then(function(r){"
+            "      if(!kw||String(url).includes(kw)){"
+            "        r.clone().text().then(function(t){"
+            "          window.__intercepted__.push({url:String(url),body:t.substring(0,2000)});"
+            "        });"
+            "      }"
+            "      return r;"
+            "    });"
+            "  };"
+            "  var origOpen=XMLHttpRequest.prototype.open;"
+            "  var origSend=XMLHttpRequest.prototype.send;"
+            "  XMLHttpRequest.prototype.open=function(m,u){"
+            "    this.__url__=u; return origOpen.apply(this,arguments);"
+            "  };"
+            "  XMLHttpRequest.prototype.send=function(){"
+            "    var self=this;"
+            "    this.addEventListener('load',function(){"
+            "      if(!kw||String(self.__url__).includes(kw)){"
+            "        window.__intercepted__.push({url:String(self.__url__),body:(self.responseText||'').substring(0,2000)});"
+            "      }"
+            "    });"
+            "    return origSend.apply(this,arguments);"
+            "  };"
+            "})()"
+        )
 
-            # Trigger action if provided
-            if action_js:
-                cdp.js(action_js)
+        # Trigger action if provided
+        if action_js:
+            cdp.js(action_js)
 
-            # Wait and poll for responses
-            deadline = time.time() + float(timeout)
-            while time.time() < deadline:
-                time.sleep(0.5)
-                count = cdp.js_val("window.__intercepted__.length")
-                if count and int(count) > 0:
-                    break
+        # Wait and poll for responses
+        deadline = time.time() + float(timeout)
+        while time.time() < deadline:
+            time.sleep(0.5)
+            count = cdp.js_val("window.__intercepted__.length")
+            if count and int(count) > 0:
+                break
 
-            results = cdp.js_val(
-                "JSON.stringify(window.__intercepted__ || [])"
-            )
-            # Cleanup
-            cdp.js("delete window.__intercepted__")
+        results = cdp.js_val(
+            "JSON.stringify(window.__intercepted__ || [])"
+        )
+        # Cleanup
+        cdp.js("delete window.__intercepted__")
 
-            if not results or results == "[]":
-                return f"No responses captured matching '{url_keyword}'. Try a different keyword or wait longer."
+        if not results or results == "[]":
+            return f"No responses captured matching '{url_keyword}'. Try a different keyword or wait longer."
 
-            captured = json.loads(results)
-            lines = []
-            for i, r in enumerate(captured[:5]):
-                lines.append(f"[{i}] URL: {r['url']}\nBody: {r['body'][:500]}")
-            return f"Captured {len(captured)} response(s):\n\n" + "\n---\n".join(lines)
-
-        finally:
-            cdp.close()
+        captured = json.loads(results)
+        lines = []
+        for i, r in enumerate(captured[:5]):
+            lines.append(f"[{i}] URL: {r['url']}\nBody: {r['body'][:500]}")
+        return f"Captured {len(captured)} response(s):\n\n" + "\n---\n".join(lines)
 
 
 # ── Interaction ───────────────────────────────────────────────────────────────
@@ -489,30 +384,27 @@ class BrowserClick(BaseSkill):
     ]
 
     def run(self, selector="", x=None, y=None):
-        cdp = _CDP()
-        try:
-            if selector:
-                pt = cdp.center_of(selector)
-                if not pt:
-                    return f"Element not found: {selector}"
-                cx, cy = pt
-            elif x is not None and y is not None:
-                cx, cy = float(x), float(y)
-            else:
-                return "Provide selector or x,y"
+        cdp = get_shared_cdp()
+        if selector:
+            pt = cdp.center_of(selector)
+            if not pt:
+                return f"Element not found: {selector}"
+            cx, cy = pt
+        elif x is not None and y is not None:
+            cx, cy = float(x), float(y)
+        else:
+            return "Provide selector or x,y"
 
-            url_before = cdp.js_val("window.location.href") or ""
-            for etype in ["mousePressed", "mouseReleased"]:
-                cdp.send("Input.dispatchMouseEvent", {
-                    "type": etype, "x": cx, "y": cy,
-                    "button": "left", "clickCount": 1,
-                })
-            time.sleep(0.5)
-            url_after = cdp.js_val("window.location.href") or ""
-            nav = f" -> navigated to {url_after}" if url_after != url_before else " (no navigation)"
-            return f"Clicked at ({cx:.0f}, {cy:.0f}){nav}"
-        finally:
-            cdp.close()
+        url_before = cdp.js_val("window.location.href") or ""
+        for etype in ["mousePressed", "mouseReleased"]:
+            cdp.send("Input.dispatchMouseEvent", {
+                "type": etype, "x": cx, "y": cy,
+                "button": "left", "clickCount": 1,
+            })
+        time.sleep(0.5)
+        url_after = cdp.js_val("window.location.href") or ""
+        nav = f" -> navigated to {url_after}" if url_after != url_before else " (no navigation)"
+        return f"Clicked at ({cx:.0f}, {cy:.0f}){nav}"
 
 
 class BrowserDoubleClick(BaseSkill):
@@ -532,26 +424,23 @@ class BrowserDoubleClick(BaseSkill):
     ]
 
     def run(self, selector="", x=None, y=None):
-        cdp = _CDP()
-        try:
-            if selector:
-                pt = cdp.center_of(selector)
-                if not pt:
-                    return f"Element not found: {selector}"
-                cx, cy = pt
-            else:
-                cx, cy = float(x), float(y)
+        cdp = get_shared_cdp()
+        if selector:
+            pt = cdp.center_of(selector)
+            if not pt:
+                return f"Element not found: {selector}"
+            cx, cy = pt
+        else:
+            cx, cy = float(x), float(y)
 
-            for _ in range(2):
-                for etype in ["mousePressed", "mouseReleased"]:
-                    cdp.send("Input.dispatchMouseEvent", {
-                        "type": etype, "x": cx, "y": cy,
-                        "button": "left", "clickCount": 2,
-                    })
-                time.sleep(0.05)
-            return f"Double-clicked at ({cx:.0f}, {cy:.0f})"
-        finally:
-            cdp.close()
+        for _ in range(2):
+            for etype in ["mousePressed", "mouseReleased"]:
+                cdp.send("Input.dispatchMouseEvent", {
+                    "type": etype, "x": cx, "y": cy,
+                    "button": "left", "clickCount": 2,
+                })
+            time.sleep(0.05)
+        return f"Double-clicked at ({cx:.0f}, {cy:.0f})"
 
 
 class BrowserRightClick(BaseSkill):
@@ -571,25 +460,22 @@ class BrowserRightClick(BaseSkill):
     ]
 
     def run(self, selector="", x=None, y=None):
-        cdp = _CDP()
-        try:
-            if selector:
-                pt = cdp.center_of(selector)
-                if not pt:
-                    return f"Element not found: {selector}"
-                cx, cy = pt
-            else:
-                cx, cy = float(x), float(y)
+        cdp = get_shared_cdp()
+        if selector:
+            pt = cdp.center_of(selector)
+            if not pt:
+                return f"Element not found: {selector}"
+            cx, cy = pt
+        else:
+            cx, cy = float(x), float(y)
 
-            for etype in ["mousePressed", "mouseReleased"]:
-                cdp.send("Input.dispatchMouseEvent", {
-                    "type": etype, "x": cx, "y": cy,
-                    "button": "right", "clickCount": 1,
-                })
-            time.sleep(0.3)
-            return f"Right-clicked at ({cx:.0f}, {cy:.0f})"
-        finally:
-            cdp.close()
+        for etype in ["mousePressed", "mouseReleased"]:
+            cdp.send("Input.dispatchMouseEvent", {
+                "type": etype, "x": cx, "y": cy,
+                "button": "right", "clickCount": 1,
+            })
+        time.sleep(0.3)
+        return f"Right-clicked at ({cx:.0f}, {cy:.0f})"
 
 
 class BrowserDrag(BaseSkill):
@@ -622,41 +508,38 @@ class BrowserDrag(BaseSkill):
 
     def run(self, from_selector="", to_selector="", from_x=None, from_y=None,
             to_x=None, to_y=None, steps=10):
-        cdp = _CDP()
-        try:
-            if from_selector:
-                pt = cdp.center_of(from_selector)
-                if not pt:
-                    return f"Source not found: {from_selector}"
-                fx, fy = pt
-            else:
-                fx, fy = float(from_x), float(from_y)
+        cdp = get_shared_cdp()
+        if from_selector:
+            pt = cdp.center_of(from_selector)
+            if not pt:
+                return f"Source not found: {from_selector}"
+            fx, fy = pt
+        else:
+            fx, fy = float(from_x), float(from_y)
 
-            if to_selector:
-                pt = cdp.center_of(to_selector)
-                if not pt:
-                    return f"Target not found: {to_selector}"
-                tx, ty = pt
-            else:
-                tx, ty = float(to_x), float(to_y)
+        if to_selector:
+            pt = cdp.center_of(to_selector)
+            if not pt:
+                return f"Target not found: {to_selector}"
+            tx, ty = pt
+        else:
+            tx, ty = float(to_x), float(to_y)
 
-            steps = int(steps)
+        steps = int(steps)
+        cdp.send("Input.dispatchMouseEvent", {
+            "type": "mousePressed", "x": fx, "y": fy, "button": "left", "clickCount": 1
+        })
+        for i in range(1, steps + 1):
+            ix = fx + (tx - fx) * i / steps
+            iy = fy + (ty - fy) * i / steps
             cdp.send("Input.dispatchMouseEvent", {
-                "type": "mousePressed", "x": fx, "y": fy, "button": "left", "clickCount": 1
+                "type": "mouseMoved", "x": ix, "y": iy, "button": "left"
             })
-            for i in range(1, steps + 1):
-                ix = fx + (tx - fx) * i / steps
-                iy = fy + (ty - fy) * i / steps
-                cdp.send("Input.dispatchMouseEvent", {
-                    "type": "mouseMoved", "x": ix, "y": iy, "button": "left"
-                })
-                time.sleep(0.02)
-            cdp.send("Input.dispatchMouseEvent", {
-                "type": "mouseReleased", "x": tx, "y": ty, "button": "left", "clickCount": 1
-            })
-            return f"Dragged from ({fx:.0f},{fy:.0f}) to ({tx:.0f},{ty:.0f})"
-        finally:
-            cdp.close()
+            time.sleep(0.02)
+        cdp.send("Input.dispatchMouseEvent", {
+            "type": "mouseReleased", "x": tx, "y": ty, "button": "left", "clickCount": 1
+        })
+        return f"Dragged from ({fx:.0f},{fy:.0f}) to ({tx:.0f},{ty:.0f})"
 
 
 class BrowserType(BaseSkill):
@@ -676,48 +559,45 @@ class BrowserType(BaseSkill):
     ]
 
     def run(self, selector="", text="", clear=True):
-        cdp = _CDP()
-        try:
-            sel_json  = json.dumps(selector)
-            text_json = json.dumps(text)
-            clr       = "true" if str(clear).lower() != "false" else "false"
-            val = cdp.js_val(
-                "(function(){"
-                "  var el=document.querySelector(" + sel_json + ");"
-                "  if(!el) return 'not found';"
-                "  el.focus();"
-                "  if(" + clr + "){"
-                "    var iS=Object.getOwnPropertyDescriptor(window.HTMLInputElement.prototype,'value');"
-                "    var tS=Object.getOwnPropertyDescriptor(window.HTMLTextAreaElement.prototype,'value');"
-                "    var setter=(iS&&iS.set)||(tS&&tS.set);"
-                "    if(setter) setter.call(el,'');"
-                "    else el.value='';"
-                "  }"
-                "  var iS=Object.getOwnPropertyDescriptor(window.HTMLInputElement.prototype,'value');"
-                "  var tS=Object.getOwnPropertyDescriptor(window.HTMLTextAreaElement.prototype,'value');"
-                "  var setter=(iS&&iS.set)||(tS&&tS.set);"
-                "  if(setter) setter.call(el," + text_json + ");"
-                "  else el.value=" + text_json + ";"
-                "  el.dispatchEvent(new Event('input',{bubbles:true}));"
-                "  el.dispatchEvent(new Event('change',{bubbles:true}));"
-                "  return 'ok: '+el.tagName;"
-                "})()"
-            )
-            # Verify value was set
-            actual = cdp.js_val(
-                "(function(){"
-                "  var el=document.querySelector(" + sel_json + ");"
-                "  return el?(el.value||el.innerText||''):null;"
-                "})()"
-            )
-            if actual is None:
-                return f"Type result: {val} (could not verify)"
-            actual_s = str(actual).strip()[:60]
-            if str(text) in actual_s or actual_s == str(text):
-                return f"Type result: {val} — VERIFIED: value='{actual_s}'"
-            return f"Type result: {val} — WARNING: got '{actual_s}' (may need different approach)"
-        finally:
-            cdp.close()
+        cdp       = get_shared_cdp()
+        sel_json  = json.dumps(selector)
+        text_json = json.dumps(text)
+        clr       = "true" if str(clear).lower() != "false" else "false"
+        val = cdp.js_val(
+            "(function(){"
+            "  var el=document.querySelector(" + sel_json + ");"
+            "  if(!el) return 'not found';"
+            "  el.focus();"
+            "  if(" + clr + "){"
+            "    var iS=Object.getOwnPropertyDescriptor(window.HTMLInputElement.prototype,'value');"
+            "    var tS=Object.getOwnPropertyDescriptor(window.HTMLTextAreaElement.prototype,'value');"
+            "    var setter=(iS&&iS.set)||(tS&&tS.set);"
+            "    if(setter) setter.call(el,'');"
+            "    else el.value='';"
+            "  }"
+            "  var iS=Object.getOwnPropertyDescriptor(window.HTMLInputElement.prototype,'value');"
+            "  var tS=Object.getOwnPropertyDescriptor(window.HTMLTextAreaElement.prototype,'value');"
+            "  var setter=(iS&&iS.set)||(tS&&tS.set);"
+            "  if(setter) setter.call(el," + text_json + ");"
+            "  else el.value=" + text_json + ";"
+            "  el.dispatchEvent(new Event('input',{bubbles:true}));"
+            "  el.dispatchEvent(new Event('change',{bubbles:true}));"
+            "  return 'ok: '+el.tagName;"
+            "})()"
+        )
+        # Verify value was set
+        actual = cdp.js_val(
+            "(function(){"
+            "  var el=document.querySelector(" + sel_json + ");"
+            "  return el?(el.value||el.innerText||''):null;"
+            "})()"
+        )
+        if actual is None:
+            return f"Type result: {val} (could not verify)"
+        actual_s = str(actual).strip()[:60]
+        if str(text) in actual_s or actual_s == str(text):
+            return f"Type result: {val} — VERIFIED: value='{actual_s}'"
+        return f"Type result: {val} — WARNING: got '{actual_s}' (may need different approach)"
 
 
 class BrowserKeyboard(BaseSkill):
@@ -731,24 +611,21 @@ class BrowserKeyboard(BaseSkill):
     ]
 
     def run(self, key="Enter"):
-        cdp = _CDP()
-        try:
-            parts    = key.lower().split("+")
-            main_key = parts[-1].capitalize()
-            mods     = 0
-            if "ctrl" in parts:  mods |= 2
-            if "shift" in parts: mods |= 8
-            if "alt" in parts:   mods |= 1
+        cdp      = get_shared_cdp()
+        parts    = key.lower().split("+")
+        main_key = parts[-1].capitalize()
+        mods     = 0
+        if "ctrl" in parts:  mods |= 2
+        if "shift" in parts: mods |= 8
+        if "alt" in parts:   mods |= 1
 
-            for etype in ["keyDown", "keyUp"]:
-                cdp.send("Input.dispatchKeyEvent", {
-                    "type":      etype,
-                    "key":       main_key,
-                    "modifiers": mods,
-                })
-            return f"Pressed: {key}"
-        finally:
-            cdp.close()
+        for etype in ["keyDown", "keyUp"]:
+            cdp.send("Input.dispatchKeyEvent", {
+                "type":      etype,
+                "key":       main_key,
+                "modifiers": mods,
+            })
+        return f"Pressed: {key}"
 
 
 class BrowserHover(BaseSkill):
@@ -771,41 +648,38 @@ class BrowserHover(BaseSkill):
     ]
 
     def run(self, selector="", x=None, y=None, duration=0.8):
-        cdp = _CDP()
-        try:
-            if selector:
-                pt = cdp.center_of(selector)
-                if not pt:
-                    return f"Element not found: {selector}"
-                hx, hy = pt
-            elif x is not None and y is not None:
-                hx, hy = float(x), float(y)
-            else:
-                return "Provide selector or x,y"
+        cdp = get_shared_cdp()
+        if selector:
+            pt = cdp.center_of(selector)
+            if not pt:
+                return f"Element not found: {selector}"
+            hx, hy = pt
+        elif x is not None and y is not None:
+            hx, hy = float(x), float(y)
+        else:
+            return "Provide selector or x,y"
 
-            cdp.send("Input.dispatchMouseEvent", {
-                "type": "mouseMoved", "x": hx, "y": hy, "modifiers": 0
-            })
-            time.sleep(float(duration))
+        cdp.send("Input.dispatchMouseEvent", {
+            "type": "mouseMoved", "x": hx, "y": hy, "modifiers": 0
+        })
+        time.sleep(float(duration))
 
-            tip = cdp.js_val(
-                "(function(){"
-                "  var sels=['[class*=\"tooltip\"]','[class*=\"Tooltip\"]',"
-                "    '[role=\"tooltip\"]','.grafana-tooltip','.graph-tooltip',"
-                "    '[class*=\"tippy\"]','[class*=\"popover\"]','[class*=\"Popover\"]'];"
-                "  for(var s of sels){"
-                "    var el=document.querySelector(s);"
-                "    if(el&&el.innerText&&el.innerText.trim()) return el.innerText.trim();"
-                "  }"
-                "  return null;"
-                "})()"
-            )
-            result = f"Hovered at ({hx:.0f}, {hy:.0f})"
-            if tip:
-                result += f"\nTooltip: {tip}"
-            return result
-        finally:
-            cdp.close()
+        tip = cdp.js_val(
+            "(function(){"
+            "  var sels=['[class*=\"tooltip\"]','[class*=\"Tooltip\"]',"
+            "    '[role=\"tooltip\"]','.grafana-tooltip','.graph-tooltip',"
+            "    '[class*=\"tippy\"]','[class*=\"popover\"]','[class*=\"Popover\"]'];"
+            "  for(var s of sels){"
+            "    var el=document.querySelector(s);"
+            "    if(el&&el.innerText&&el.innerText.trim()) return el.innerText.trim();"
+            "  }"
+            "  return null;"
+            "})()"
+        )
+        result = f"Hovered at ({hx:.0f}, {hy:.0f})"
+        if tip:
+            result += f"\nTooltip: {tip}"
+        return result
 
 
 class BrowserMouseSweep(BaseSkill):
@@ -829,56 +703,53 @@ class BrowserMouseSweep(BaseSkill):
     ]
 
     def run(self, selector="", steps=15, duration=0.2, direction="horizontal"):
-        cdp = _CDP()
-        try:
-            steps    = int(steps)
-            duration = float(duration)
-            box      = cdp.get_box(selector)
-            if not box:
-                return f"Element not found: {selector}"
+        cdp      = get_shared_cdp()
+        steps    = int(steps)
+        duration = float(duration)
+        box      = cdp.get_box(selector)
+        if not box:
+            return f"Element not found: {selector}"
 
-            if direction == "vertical":
-                points = [
-                    (box["x"] + box["w"] * 0.5,
-                     box["y"] + box["h"] * i / max(steps-1,1))
-                    for i in range(steps)
-                ]
-            else:
-                points = [
-                    (box["x"] + box["w"] * 0.05 + (box["w"]*0.9) * i / max(steps-1,1),
-                     box["y"] + box["h"] * 0.4)
-                    for i in range(steps)
-                ]
+        if direction == "vertical":
+            points = [
+                (box["x"] + box["w"] * 0.5,
+                 box["y"] + box["h"] * i / max(steps-1,1))
+                for i in range(steps)
+            ]
+        else:
+            points = [
+                (box["x"] + box["w"] * 0.05 + (box["w"]*0.9) * i / max(steps-1,1),
+                 box["y"] + box["h"] * 0.4)
+                for i in range(steps)
+            ]
 
-            time.sleep(0.3)
-            collected = []
-            tip_js = (
-                "(function(){"
-                "  var sels=['[class*=\"tooltip\"]','[class*=\"Tooltip\"]',"
-                "    '[role=\"tooltip\"]','.grafana-tooltip','.graph-tooltip',"
-                "    '[class*=\"tippy\"]','[class*=\"popover\"]'];"
-                "  for(var s of sels){"
-                "    var el=document.querySelector(s);"
-                "    if(el&&el.innerText&&el.innerText.trim()) return el.innerText.trim();"
-                "  }"
-                "  return null;"
-                "})()"
-            )
+        time.sleep(0.3)
+        collected = []
+        tip_js = (
+            "(function(){"
+            "  var sels=['[class*=\"tooltip\"]','[class*=\"Tooltip\"]',"
+            "    '[role=\"tooltip\"]','.grafana-tooltip','.graph-tooltip',"
+            "    '[class*=\"tippy\"]','[class*=\"popover\"]'];"
+            "  for(var s of sels){"
+            "    var el=document.querySelector(s);"
+            "    if(el&&el.innerText&&el.innerText.trim()) return el.innerText.trim();"
+            "  }"
+            "  return null;"
+            "})()"
+        )
 
-            for hx, hy in points:
-                cdp.send("Input.dispatchMouseEvent", {"type": "mouseMoved", "x": hx, "y": hy})
-                time.sleep(duration)
-                tip = cdp.js_val(tip_js)
-                if tip and tip not in collected:
-                    collected.append(tip)
+        for hx, hy in points:
+            cdp.send("Input.dispatchMouseEvent", {"type": "mouseMoved", "x": hx, "y": hy})
+            time.sleep(duration)
+            tip = cdp.js_val(tip_js)
+            if tip and tip not in collected:
+                collected.append(tip)
 
-            cdp.send("Input.dispatchMouseEvent", {"type": "mouseMoved", "x": 0, "y": 0})
+        cdp.send("Input.dispatchMouseEvent", {"type": "mouseMoved", "x": 0, "y": 0})
 
-            if not collected:
-                return "No tooltips found. Try browser_get_dom with query='tooltip' to find selector names."
-            return f"Collected {len(collected)} values:\n\n" + "\n---\n".join(collected)
-        finally:
-            cdp.close()
+        if not collected:
+            return "No tooltips found. Try browser_get_dom with query='tooltip' to find selector names."
+        return f"Collected {len(collected)} values:\n\n" + "\n---\n".join(collected)
 
 
 class BrowserScroll(BaseSkill):
@@ -899,24 +770,21 @@ class BrowserScroll(BaseSkill):
     ]
 
     def run(self, direction="down", amount=500, selector=""):
-        cdp = _CDP()
-        try:
-            px = int(amount)
-            dx = px  if direction == "right" else (-px if direction == "left" else 0)
-            dy = px  if direction == "down"  else (-px if direction == "up"   else 0)
-            if selector:
-                sel_json = json.dumps(selector)
-                cdp.js(
-                    "(function(){"
-                    "  var el=document.querySelector(" + sel_json + ");"
-                    "  if(el) el.scrollBy(" + str(dx) + "," + str(dy) + ");"
-                    "})()"
-                )
-            else:
-                cdp.js(f"window.scrollBy({dx},{dy})")
-            return f"Scrolled {direction} {px}px" + (f" in {selector}" if selector else "")
-        finally:
-            cdp.close()
+        cdp = get_shared_cdp()
+        px  = int(amount)
+        dx  = px  if direction == "right" else (-px if direction == "left" else 0)
+        dy  = px  if direction == "down"  else (-px if direction == "up"   else 0)
+        if selector:
+            sel_json = json.dumps(selector)
+            cdp.js(
+                "(function(){"
+                "  var el=document.querySelector(" + sel_json + ");"
+                "  if(el) el.scrollBy(" + str(dx) + "," + str(dy) + ");"
+                "})()"
+            )
+        else:
+            cdp.js(f"window.scrollBy({dx},{dy})")
+        return f"Scrolled {direction} {px}px" + (f" in {selector}" if selector else "")
 
 
 class BrowserSelect(BaseSkill):
@@ -933,27 +801,24 @@ class BrowserSelect(BaseSkill):
     ]
 
     def run(self, selector="", value=""):
-        cdp = _CDP()
-        try:
-            sel_json = json.dumps(selector)
-            val_json = json.dumps(value)
-            result = cdp.js_val(
-                "(function(){"
-                "  var el=document.querySelector(" + sel_json + ");"
-                "  if(!el) return 'not found';"
-                "  var opts=Array.from(el.options);"
-                "  var opt=opts.find(function(o){"
-                "    return o.value===" + val_json + "||o.text===" + val_json + ";"
-                "  });"
-                "  if(!opt) return 'option not found: '+" + val_json + ";"
-                "  el.value=opt.value;"
-                "  el.dispatchEvent(new Event('change',{bubbles:true}));"
-                "  return 'selected: '+opt.text;"
-                "})()"
-            )
-            return result
-        finally:
-            cdp.close()
+        cdp      = get_shared_cdp()
+        sel_json = json.dumps(selector)
+        val_json = json.dumps(value)
+        result   = cdp.js_val(
+            "(function(){"
+            "  var el=document.querySelector(" + sel_json + ");"
+            "  if(!el) return 'not found';"
+            "  var opts=Array.from(el.options);"
+            "  var opt=opts.find(function(o){"
+            "    return o.value===" + val_json + "||o.text===" + val_json + ";"
+            "  });"
+            "  if(!opt) return 'option not found: '+" + val_json + ";"
+            "  el.value=opt.value;"
+            "  el.dispatchEvent(new Event('change',{bubbles:true}));"
+            "  return 'selected: '+opt.text;"
+            "})()"
+        )
+        return result
 
 
 class BrowserCheckbox(BaseSkill):
@@ -971,25 +836,22 @@ class BrowserCheckbox(BaseSkill):
     ]
 
     def run(self, selector="", action="toggle"):
-        cdp = _CDP()
-        try:
-            sel_json = json.dumps(selector)
-            act_json = json.dumps(action)
-            result = cdp.js_val(
-                "(function(){"
-                "  var el=document.querySelector(" + sel_json + ");"
-                "  if(!el) return 'not found';"
-                "  var act=" + act_json + ";"
-                "  if(act==='check') el.checked=true;"
-                "  else if(act==='uncheck') el.checked=false;"
-                "  else el.checked=!el.checked;"
-                "  el.dispatchEvent(new Event('change',{bubbles:true}));"
-                "  return 'checkbox is now: '+(el.checked?'checked':'unchecked');"
-                "})()"
-            )
-            return result
-        finally:
-            cdp.close()
+        cdp      = get_shared_cdp()
+        sel_json = json.dumps(selector)
+        act_json = json.dumps(action)
+        result   = cdp.js_val(
+            "(function(){"
+            "  var el=document.querySelector(" + sel_json + ");"
+            "  if(!el) return 'not found';"
+            "  var act=" + act_json + ";"
+            "  if(act==='check') el.checked=true;"
+            "  else if(act==='uncheck') el.checked=false;"
+            "  else el.checked=!el.checked;"
+            "  el.dispatchEvent(new Event('change',{bubbles:true}));"
+            "  return 'checkbox is now: '+(el.checked?'checked':'unchecked');"
+            "})()"
+        )
+        return result
 
 
 class BrowserHandleDialog(BaseSkill):
@@ -1007,15 +869,12 @@ class BrowserHandleDialog(BaseSkill):
     ]
 
     def run(self, action="accept", prompt_text=""):
-        cdp = _CDP()
-        try:
-            cdp.send("Page.handleJavaScriptDialog", {
-                "accept":     action == "accept",
-                "promptText": prompt_text,
-            })
-            return f"Dialog {action}ed"
-        finally:
-            cdp.close()
+        cdp = get_shared_cdp()
+        cdp.send("Page.handleJavaScriptDialog", {
+            "accept":     action == "accept",
+            "promptText": prompt_text,
+        })
+        return f"Dialog {action}ed"
 
 
 class BrowserWait(BaseSkill):
@@ -1036,20 +895,17 @@ class BrowserWait(BaseSkill):
     ]
 
     def run(self, selector="", condition="appear", timeout=10):
-        cdp = _CDP()
-        try:
-            sel_json = json.dumps(selector)
-            deadline = time.time() + float(timeout)
-            while time.time() < deadline:
-                exists = cdp.js_val("document.querySelector(" + sel_json + ")!==null")
-                if condition == "appear" and exists:
-                    return f"Element appeared: {selector}"
-                if condition == "disappear" and not exists:
-                    return f"Element disappeared: {selector}"
-                time.sleep(0.5)
-            return f"Timeout after {timeout}s waiting for {selector} to {condition}"
-        finally:
-            cdp.close()
+        cdp      = get_shared_cdp()
+        sel_json = json.dumps(selector)
+        deadline = time.time() + float(timeout)
+        while time.time() < deadline:
+            exists = cdp.js_val("document.querySelector(" + sel_json + ")!==null")
+            if condition == "appear" and exists:
+                return f"Element appeared: {selector}"
+            if condition == "disappear" and not exists:
+                return f"Element disappeared: {selector}"
+            time.sleep(0.5)
+        return f"Timeout after {timeout}s waiting for {selector} to {condition}"
 
 
 class BrowserExecuteJS(BaseSkill):
@@ -1063,17 +919,13 @@ class BrowserExecuteJS(BaseSkill):
     ]
 
     def run(self, code=""):
-        cdp = _CDP()
-        try:
-            # Wrap in function to support return statements
-            wrapped = f"(function(){{ {code} }})()"
-            val = cdp.js_val(wrapped)
-            if val is None:
-                return "Executed (no return value)"
-            result = str(val)
-            return result[:3000] if len(result) > 3000 else result
-        finally:
-            cdp.close()
+        cdp     = get_shared_cdp()
+        wrapped = f"(function(){{ {code} }})()"
+        val     = cdp.js_val(wrapped)
+        if val is None:
+            return "Executed (no return value)"
+        result = str(val)
+        return result[:3000] if len(result) > 3000 else result
 
 
 # ── Visual ─────────────────────────────────────────────────────────────────────
@@ -1089,18 +941,15 @@ class BrowserScreenshot(BaseSkill):
     ]
 
     def run(self, filename="screenshot.png"):
-        cdp = _CDP()
-        try:
-            result = cdp.send("Page.captureScreenshot", {"format": "png"})
-            data   = result.get("data", "")
-            if not data:
-                return "Screenshot failed"
-            img_bytes = base64.b64decode(data)
-            with open(filename, "wb") as f:
-                f.write(img_bytes)
-            return f"__SCREENSHOT__:{filename}:{data}"
-        finally:
-            cdp.close()
+        cdp    = get_shared_cdp()
+        result = cdp.send("Page.captureScreenshot", {"format": "png"})
+        data   = result.get("data", "")
+        if not data:
+            return "Screenshot failed"
+        img_bytes = base64.b64decode(data)
+        with open(filename, "wb") as f:
+            f.write(img_bytes)
+        return f"__SCREENSHOT__:{filename}:{data}"
 
 
 class BrowserScreenshotElement(BaseSkill):
@@ -1120,27 +969,24 @@ class BrowserScreenshotElement(BaseSkill):
     ]
 
     def run(self, selector="", filename="element.png", padding=10):
-        cdp = _CDP()
-        try:
-            box = cdp.get_box(selector)
-            if not box:
-                return f"Element not found: {selector}"
+        cdp = get_shared_cdp()
+        box = cdp.get_box(selector)
+        if not box:
+            return f"Element not found: {selector}"
 
-            pad = int(padding)
-            clip = {
-                "x":      max(0, box["x"] - pad),
-                "y":      max(0, box["y"] - pad),
-                "width":  box["w"] + pad * 2,
-                "height": box["h"] + pad * 2,
-                "scale":  2,  # 2x resolution for clarity
-            }
-            result = cdp.send("Page.captureScreenshot", {"format": "png", "clip": clip})
-            data   = result.get("data", "")
-            if not data:
-                return "Screenshot failed"
-            img_bytes = base64.b64decode(data)
-            with open(filename, "wb") as f:
-                f.write(img_bytes)
-            return f"__SCREENSHOT__:{filename}:{data}"
-        finally:
-            cdp.close()
+        pad  = int(padding)
+        clip = {
+            "x":      max(0, box["x"] - pad),
+            "y":      max(0, box["y"] - pad),
+            "width":  box["w"] + pad * 2,
+            "height": box["h"] + pad * 2,
+            "scale":  2,  # 2x resolution for clarity
+        }
+        result = cdp.send("Page.captureScreenshot", {"format": "png", "clip": clip})
+        data   = result.get("data", "")
+        if not data:
+            return "Screenshot failed"
+        img_bytes = base64.b64decode(data)
+        with open(filename, "wb") as f:
+            f.write(img_bytes)
+        return f"__SCREENSHOT__:{filename}:{data}"
