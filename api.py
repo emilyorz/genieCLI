@@ -338,8 +338,8 @@ def _refresh_token() -> bool:
 def send(cfg: dict, history: list, model: str, reasoning: str, files: list = None) -> str:
     interface = cfg.get("interface", "tgenie")
 
-    # ── OpenAI-compatible path ─────────────────────────────────────────────
-    if interface == "openai":
+    # ── OpenAI / Anthropic-compatible path ────────────────────────────────
+    if interface in ("openai", "anthropic"):
         try:
             return _send_openai(cfg, history, model, files)
         except requests.HTTPError as e:
