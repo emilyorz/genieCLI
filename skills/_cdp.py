@@ -80,7 +80,7 @@ class SharedCDP:
 
     def get_box(self, selector):
         """Return bounding box {x, y, w, h} of element or None."""
-        sel_json = json.dumps(selector)
+        sel_json = json.dumps(selector) if selector else "null"
         raw = self.js_val(
             "(function(){"
             "  var el=document.querySelector(" + sel_json + ");"
@@ -90,7 +90,12 @@ class SharedCDP:
             "  return JSON.stringify({x:r.left,y:r.top,w:r.width,h:r.height});"
             "})()"
         )
-        return json.loads(raw) if raw else None
+        if not raw:
+            return None
+        try:
+            return json.loads(raw)
+        except (json.JSONDecodeError, TypeError):
+            return None
 
     def center_of(self, selector):
         """Return (cx, cy) center of element or None."""

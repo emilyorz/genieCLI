@@ -103,8 +103,8 @@ class BrowserGetText(BaseSkill):
 
     def run(self):
         cdp   = get_shared_cdp()
-        title = cdp.js_val("document.title")
-        url   = cdp.js_val("window.location.href")
+        title = cdp.js_val("document.title") or "(no title)"
+        url   = cdp.js_val("window.location.href") or "(no URL)"
         text  = cdp.js_val("document.body.innerText") or ""
         return f"[Page: {title}]\n[URL: {url}]\n\n{text.strip()[:4000]}"
 
