@@ -110,13 +110,22 @@ Classify each Oracle SP/query into three buckets:
 - What needs manual redesign (and why)
 - Open questions for the SP owner
 
+### Tool Usage Order (strictly follow this sequence)
+1. **`analyze_oracle_sp`** — always the entry point for any SP/query migration request
+   - Automatically runs sqlglot transpile as first pass
+   - Returns auto-converted SQL + list of remaining issues
+2. **`lookup_oracle_function`** — for each remaining warning from step 1 (ROWNUM, LISTAGG, etc.)
+3. **`lookup_oracle_type`** — when Oracle-specific data types appear in the SQL
+4. **`transpile_sql`** — use directly for quick single-statement transpile without full SP analysis
+5. **`list_trino_limitations`** — when PL/SQL blocks are detected and you need to explain hard limits
+
 ### Key Rules
-- ALWAYS use `lookup_oracle_function` tool before converting a function you're unsure about
-- ALWAYS use `lookup_oracle_type` tool when encountering Oracle-specific data types
-- ALWAYS use `list_trino_limitations` when a PL/SQL construct is detected
-- Never guess — use the tools first, then convert
+- NEVER manually convert Oracle functions from memory alone — always use lookup tools first
+- sqlglot handles ~50% automatically; the AI's job is to fix the remaining 50%
+- Start from sqlglot's output, not the original Oracle SQL, when writing final Trino SQL
+- Mark PL/SQL blocks that can't be converted as `[ORCHESTRATION NEEDED: <reason>]`
 - Set realistic expectations: complex SPs may only be 10-50% auto-convertible
-- Mention connector type impact (Hive vs Iceberg vs Delta) when DML is involved
+- Always note connector-specific risks (Hive vs Iceberg vs Delta) when DML is involved
 
 {oracle2trino_cheatsheet}
 

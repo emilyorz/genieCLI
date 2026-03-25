@@ -2,13 +2,15 @@
 oracle2trino skill — Oracle SP to Trino SQL migration assistant.
 
 Tools:
-  - lookup_oracle_function: query the local YAML mapping table
-  - list_trino_limitations: return all known Trino hard limits
+  - transpile_sql         : sqlglot 機械轉換（第一 pass，快速省力）
+  - lookup_oracle_function: YAML 函數對照查表
+  - lookup_oracle_type    : YAML 型別對照查表
+  - list_trino_limitations: Trino 硬限制清單
+  - analyze_oracle_sp     : 完整 SP 分析（auto-transpile + construct detection + AI instructions）
 """
 from __future__ import annotations
 
 from pathlib import Path
-from typing import Any
 
 import yaml
 
@@ -28,14 +30,115 @@ def _load_db() -> dict:
     return _DB
 
 
+# ── sqlglot helper ────────────────────────────────────────────────────────────
+
+def _sqlglot_transpile(sql: str) -> tuple[str, list[str]]:
+    """
+    Run sqlglot Oracle→Trino transpile.
+    Returns (transpiled_sql, list_of_warnings).
+    Falls back gracefully if sqlglot not installed.
+    """
+    try:
+        import sqlglot
+        import sqlglot.errors as sge
+
+        warnings: list[str] = []
+        errors_caught: list[str] = []
+
+        # Collect parse/transpile errors as warnings (don't crash, suppress stderr noise)
+        import io, sys
+        _stderr_capture = io.StringIO()
+        _old_stderr = sys.stderr
+        sys.stderr = _stderr_capture
+        try:
+            results = sqlglot.transpile(
+                sql,
+                read="oracle",
+                write="trino",
+                error_level=sge.ErrorLevel.WARN,
+            )
+        finally:
+            sys.stderr = _old_stderr
+        transpiled = results[0] if results else sql
+
+        # Detect constructs sqlglot leaves unchanged (known gaps)
+        known_gaps = [
+            ("ROWNUM",          "ROWNUM not converted — rewrite as ROW_NUMBER() subquery or FETCH FIRST n ROWS"),
+            ("LISTAGG",         "LISTAGG not converted — rewrite as ARRAY_JOIN(ARRAY_AGG(...), ',')"),
+            ("MONTHS_BETWEEN",  "MONTHS_BETWEEN not converted — rewrite as DATE_DIFF('month', d2, d1)"),
+            ("WM_CONCAT",       "WM_CONCAT not converted — rewrite as ARRAY_JOIN(ARRAY_AGG(...), ',')"),
+            ("CONNECT BY",      "CONNECT BY may not be fully converted — verify recursive CTE output"),
+            ("PIVOT",           "PIVOT may be dropped or incorrect — rewrite as CASE-WHEN aggregation"),
+            ("UNPIVOT",         "UNPIVOT not converted — rewrite as CROSS JOIN UNNEST"),
+            ("EXECUTE IMMEDIATE","EXECUTE IMMEDIATE not converted — move to Python layer"),
+        ]
+        upper_out = transpiled.upper()
+        for keyword, msg in known_gaps:
+            if keyword in upper_out:
+                warnings.append(f"⚠️  {msg}")
+
+        return transpiled, warnings
+
+    except ImportError:
+        return sql, ["sqlglot not installed — run: pip install sqlglot"]
+    except Exception as e:
+        return sql, [f"sqlglot transpile error: {e}"]
+
+
 # ── Skills ────────────────────────────────────────────────────────────────────
+
+
+class TranspileSQL(BaseSkill):
+    name = "transpile_sql"
+    description = (
+        "Run sqlglot to mechanically transpile Oracle SQL to Trino SQL. "
+        "Handles ~50% of common syntax differences automatically (DECODE→CASE, TO_DATE, TRUNC, etc.). "
+        "Returns transpiled SQL + warnings for constructs that need manual attention. "
+        "Always run this FIRST before asking AI to review or fix remaining issues."
+    )
+    group = "oracle2trino"
+    args = [
+        Arg(
+            name="sql",
+            type="str",
+            description="Oracle SQL statement(s) to transpile",
+            required=True,
+        ),
+    ]
+
+    def run(self, sql: str = "") -> str:
+        transpiled, warnings = _sqlglot_transpile(sql)
+
+        lines: list[str] = ["=== sqlglot Oracle→Trino Transpile ===", ""]
+        lines.append("--- Input ---")
+        lines.append(sql[:2000] + ("..." if len(sql) > 2000 else ""))
+        lines.append("")
+        lines.append("--- Transpiled Output ---")
+        lines.append(transpiled[:2000] + ("..." if len(transpiled) > 2000 else ""))
+        lines.append("")
+
+        if warnings:
+            lines.append("--- Warnings (needs AI review) ---")
+            for w in warnings:
+                lines.append(w)
+        else:
+            lines.append("✅ No known gaps detected in transpiled output.")
+
+        lines.append("")
+        lines.append(
+            "Next step: review the transpiled output above. "
+            "Fix any warnings using lookup_oracle_function / lookup_oracle_type, "
+            "then produce the final Trino SQL with inline change annotations."
+        )
+        return "\n".join(lines)
 
 
 class LookupOracleFunction(BaseSkill):
     name = "lookup_oracle_function"
     description = (
         "Look up how to convert an Oracle SQL function or syntax to Trino equivalent. "
-        "Returns the Trino equivalent, an example, and migration notes."
+        "Returns the Trino equivalent, an example, and migration notes. "
+        "Use this for constructs that sqlglot left unchanged or converted incorrectly."
     )
     group = "oracle2trino"
     args = [
@@ -63,7 +166,7 @@ class LookupOracleFunction(BaseSkill):
             )
 
         lines: list[str] = []
-        for r in results[:3]:  # cap at 3 matches
+        for r in results[:3]:
             lines.append(f"Oracle: {r['oracle']}")
             trino_eq = r.get("trino") or "No direct equivalent"
             lines.append(f"Trino:  {trino_eq}")
@@ -130,9 +233,10 @@ class ListTrinoLimitations(BaseSkill):
 class AnalyzeOracleSP(BaseSkill):
     name = "analyze_oracle_sp"
     description = (
-        "Analyze an Oracle stored procedure or SQL snippet and return a migration plan. "
-        "Identifies which parts can be converted to Trino SQL, which need orchestration rewrite, "
-        "and which require manual redesign. Outputs structured analysis with confidence score."
+        "Full analysis of an Oracle stored procedure or SQL for Trino migration. "
+        "Automatically runs sqlglot transpile as first pass, detects PL/SQL constructs, "
+        "and provides structured context for the AI to complete the migration. "
+        "Use this as the entry point for any Oracle→Trino migration task."
     )
     group = "oracle2trino"
     args = [
@@ -153,78 +257,98 @@ class AnalyzeOracleSP(BaseSkill):
     ]
 
     def run(self, sql: str = "", connector: str = "iceberg") -> str:
-        """
-        This skill provides context to the AI — the actual analysis is done by the LLM.
-        We return structured hints about what to look for, plus the SQL for the AI to process.
-        """
         db = _load_db()
         limits = db.get("trino_limitations", [])
-        limits_text = "\n".join(f"- {l}" for l in limits)
+        limits_text = "\n".join(f"- {lim}" for lim in limits)
 
-        # Detect obvious PL/SQL constructs
+        # ── Step 1: sqlglot auto-transpile ────────────────────────────────────
+        transpiled, transpile_warnings = _sqlglot_transpile(sql)
+        changed = transpiled.strip() != sql.strip()
+
+        transpile_section = "--- Step 1: sqlglot Auto-Transpile ---\n"
+        if changed:
+            transpile_section += f"✅ sqlglot converted some constructs.\n\n"
+            transpile_section += f"Transpiled output:\n{transpiled[:2000]}{'...' if len(transpiled) > 2000 else ''}\n"
+        else:
+            transpile_section += "⚠️  sqlglot made no changes (likely pure PL/SQL or unsupported syntax).\n"
+
+        if transpile_warnings:
+            transpile_section += "\nRemaining issues after sqlglot:\n"
+            for w in transpile_warnings:
+                transpile_section += f"  {w}\n"
+
+        # ── Step 2: PL/SQL construct detection ────────────────────────────────
         upper_sql = sql.upper()
         flags: list[str] = []
 
         plsql_keywords = [
-            ("BEGIN", "PL/SQL block detected"),
-            ("DECLARE", "Variable declarations detected"),
-            ("CURSOR", "Cursor usage detected — rewrite as Python loop + Trino queries"),
-            ("FOR ", "FOR loop detected — may need orchestration rewrite"),
-            ("LOOP", "LOOP construct detected — rewrite as orchestration logic"),
-            ("EXCEPTION", "Exception handling detected — move to Python try/except"),
-            ("EXECUTE IMMEDIATE", "Dynamic SQL detected — move to Python layer"),
-            ("DBMS_", "Oracle DBMS package call detected — no Trino equivalent"),
-            ("CONNECT BY", "Hierarchical query detected — rewrite as recursive CTE"),
-            ("ROWNUM", "ROWNUM usage — rewrite as ROW_NUMBER() window function"),
-            ("MERGE INTO", f"MERGE detected — only supported on Iceberg with Trino 420+ (target: {connector})"),
-            ("(+)", "Oracle outer join syntax (+) — rewrite as ANSI LEFT/RIGHT JOIN"),
-            ("PIVOT", "PIVOT detected — rewrite as manual CASE-WHEN aggregation"),
-            ("UNPIVOT", "UNPIVOT detected — rewrite as CROSS JOIN UNNEST"),
-            ("LISTAGG", "LISTAGG — convert to ARRAY_JOIN(ARRAY_AGG(...), ',')"),
-            ("WM_CONCAT", "WM_CONCAT (deprecated) — convert to ARRAY_JOIN(ARRAY_AGG(...), ',')"),
+            ("BEGIN",            "PL/SQL block — wrap queries in Python, remove procedural shell"),
+            ("DECLARE",          "Variable declarations — replace with CTEs or Python variables"),
+            ("CURSOR",           "Cursor — rewrite as Python loop + multiple Trino queries"),
+            ("FOR ",             "FOR loop — move iteration to Python/Airflow orchestration"),
+            ("LOOP",             "LOOP — move to Python orchestration"),
+            ("EXCEPTION",        "Exception handling — move to Python try/except"),
+            ("EXECUTE IMMEDIATE","Dynamic SQL — move to Python f-string + Trino execute"),
+            ("DBMS_",            "Oracle DBMS package — no Trino equivalent, move to Python"),
+            ("CONNECT BY",       "Hierarchical query — rewrite as WITH RECURSIVE CTE (sqlglot may be wrong)"),
+            ("ROWNUM",           "ROWNUM — rewrite as ROW_NUMBER() subquery or FETCH FIRST n ROWS"),
+            ("MERGE INTO",       f"MERGE — Iceberg only (Trino 420+), verify connector={connector}"),
+            ("(+)",              "Oracle outer join (+) — rewrite as ANSI LEFT/RIGHT JOIN"),
+            ("PIVOT",            "PIVOT — rewrite as CASE-WHEN aggregation"),
+            ("UNPIVOT",          "UNPIVOT — rewrite as CROSS JOIN UNNEST"),
+            ("LISTAGG",          "LISTAGG — rewrite as ARRAY_JOIN(ARRAY_AGG(...), ',')"),
+            ("WM_CONCAT",        "WM_CONCAT (deprecated) — rewrite as ARRAY_JOIN(ARRAY_AGG(...), ',')"),
+            ("MONTHS_BETWEEN",   "MONTHS_BETWEEN — rewrite as DATE_DIFF('month', d2, d1)"),
         ]
 
         for keyword, message in plsql_keywords:
             if keyword in upper_sql:
-                flags.append(f"⚠️  {message}")
+                flags.append(f"⚠️  [{keyword}] {message}")
 
-        flags_text = "\n".join(flags) if flags else "✅ No obvious PL/SQL constructs detected — likely pure SQL."
+        flags_text = "\n".join(flags) if flags else "✅ No PL/SQL constructs detected — likely pure SQL."
 
         connector_notes = {
-            "hive": "Hive connector: no DML (INSERT only via CTAS), no MERGE, no DELETE/UPDATE.",
-            "iceberg": "Iceberg connector: supports INSERT/UPDATE/DELETE, limited MERGE (Trino 420+).",
-            "delta": "Delta connector: supports INSERT, limited UPDATE/DELETE, no MERGE.",
-            "generic": "Generic connector: assume read-only; no DML support.",
+            "hive":    "Hive: read-heavy, no UPDATE/DELETE/MERGE, INSERT only via CTAS.",
+            "iceberg": "Iceberg: INSERT/UPDATE/DELETE supported, limited MERGE (Trino 420+).",
+            "delta":   "Delta: INSERT supported, limited UPDATE/DELETE, no MERGE.",
+            "generic": "Generic: assume read-only, no DML.",
         }.get(connector, "")
 
-        return f"""=== Oracle SP Analysis Context ===
+        # ── Assemble output ───────────────────────────────────────────────────
+        return f"""=== Oracle SP Migration Analysis ===
 
-Target connector: {connector}
-{connector_notes}
+Target connector : {connector}
+Connector notes  : {connector_notes}
 
---- Detected Constructs ---
+{transpile_section}
+--- Step 2: Detected Constructs ---
 {flags_text}
 
 --- Trino Hard Limits (reference) ---
 {limits_text}
 
---- SQL to Analyze ---
+--- Original SQL ---
 {sql[:3000]}{"..." if len(sql) > 3000 else ""}
 
 --- Instructions for AI ---
-Using the above context, provide a structured migration report:
+Using the transpiled output from Step 1 as your starting point (not the original Oracle SQL),
+complete the migration by fixing the remaining warnings and constructs:
 
 1. ANALYSIS
-   - Estimated convertibility: X% (pure SQL queries vs. procedural logic ratio)
-   - Breakdown of detected constructs and complexity
+   - Estimated convertibility: X% (pure SQL ratio vs. procedural logic)
+   - Which constructs were auto-converted by sqlglot ✅
+   - Which constructs still need attention ⚠️
+   - Which constructs require full manual redesign ❌
 
-2. CONVERTED SQL
-   - Trino-compatible SQL for the convertible parts
-   - Annotate each change with a comment like -- [Oracle→Trino: NVL→COALESCE]
+2. FINAL TRINO SQL
+   - Start from the sqlglot transpiled output
+   - Fix each remaining warning manually
+   - Annotate every change: -- [Oracle→Trino: ROWNUM→ROW_NUMBER()]
+   - For PL/SQL blocks: extract only the SELECT/INSERT queries and mark the rest as [ORCHESTRATION NEEDED]
 
 3. MIGRATION NOTES
-   - List of constructs that need orchestration rewrite (with suggested approach)
-   - List of constructs that need manual redesign
-   - Connector-specific warnings (based on {connector})
-   - Questions to clarify with the original SP owner
+   - Orchestration rewrite items (what Python/Airflow needs to handle)
+   - Manual redesign items (architecture-level changes)
+   - Connector-specific risks for {connector}
+   - Open questions for the original SP owner
 """
