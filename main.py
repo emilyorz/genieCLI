@@ -3,12 +3,14 @@
 TGenie CLI — AI browser agent powered by Chrome CDP.
 
 Usage:
-    python main.py chat                     # interactive chat (default)
-    python main.py chat --skills --debug    # with tools + debug output
+    python main.py                          # interactive chat (default)
+    python main.py --skills --debug         # with tools + debug output
+    python main.py --skills chat            # same (options before subcommand)
     python main.py sessions                 # list saved conversations
     python main.py config                   # show current config
 """
 import sys
+import json
 from typing import Optional
 from enum import Enum
 
@@ -130,12 +132,13 @@ def print_history(session):
     for msg in visible:
         text = msg["content"][0]["text"]
         role = msg["role"]
-        if role == "user":
+        # FIX M1: check tool result BEFORE generic user check
+        if role == "user" and text.startswith("[Tool result:"):
+            print(c("  [Tool] ", YELLOW) + text[:120] + ("..." if len(text) > 120 else ""))
+        elif role == "user":
             print(c("  [You]  ", CYAN) + text)
         elif role == "assistant":
             print(c("  [AI]   ", GREEN) + text)
-        elif role == "user" and text.startswith("[Tool result:"):
-            print(c("  [Tool] ", YELLOW) + text[:120] + ("..." if len(text) > 120 else ""))
         print(c("  ──────────────────────────────────────", GRAY))
     print()
 
@@ -187,7 +190,8 @@ def cmd_new(cfg, use_skills, reasoning="disable"):
     return session
 
 
-def cmd_load(args, cfg, use_skills):
+# FIX L1: remove unused `cfg` parameter
+def cmd_load(args, use_skills):
     sessions = sess.list_sessions()
     print_sessions_list(sessions)
     if not sessions:
@@ -216,6 +220,23 @@ def cmd_load(args, cfg, use_skills):
 MAX_TOOL_LOOPS = 15
 
 
+def _normalize_result(result) -> str:
+    """FIX H1: normalize run_tool() return value to str."""
+    if result is None:
+        return ""
+    if not isinstance(result, str):
+        return str(result)
+    return result
+
+
+def _normalize_tool_args(tool_call: dict) -> dict:
+    """FIX H2: ensure tool args is always a dict."""
+    args = tool_call.get("args")
+    if isinstance(args, dict):
+        return args
+    return {}
+
+
 def send_with_tools(cfg, session, model, reasoning):
     _last_memory = ""
     recent_actions = []
@@ -230,10 +251,10 @@ def send_with_tools(cfg, session, model, reasoning):
             return reply
 
         tool_name = tool_call.get("tool", "?")
-        tool_args = tool_call.get("args", {})
+        tool_args = _normalize_tool_args(tool_call)  # FIX H2
 
-        # Loop detection
-        action_key = tool_name + str(sorted(tool_args.items()))
+        # Loop detection — FIX H2: use json.dumps for canonical key
+        action_key = tool_name + json.dumps(tool_args, sort_keys=True, default=str)
         recent_actions.append(action_key)
         if len(recent_actions) > 20:
             recent_actions.pop(0)
@@ -247,13 +268,26 @@ def send_with_tools(cfg, session, model, reasoning):
         else:
             print()
 
-        result = skill_runner.run_tool(tool_call)
+        result = _normalize_result(skill_runner.run_tool(tool_call))  # FIX H1
         session["history"].append(new_msg("assistant", reply))
 
         # Screenshot: send as files attachment on next request
         if result.startswith("__SCREENSHOT__:"):
-            _, filename, b64_data = result.split(":", 2)
-            img_bytes = __import__("base64").b64decode(b64_data)
+            # FIX M2: wrap screenshot parsing in try/except
+            try:
+                _, filename, b64_data = result.split(":", 2)
+                import base64 as _b64
+                img_bytes = _b64.b64decode(b64_data)
+            except (ValueError, Exception) as e:
+                print(c(f"  [ERROR] Invalid screenshot payload: {e}", RED))
+                err_msg = f"Screenshot capture failed: {e}"
+                mem_prefix = f"[Previous step memory]: {_last_memory}\n\n" if _last_memory else ""
+                session["history"].append(
+                    new_msg("user", f"{mem_prefix}[Tool result: {tool_name}]\n{err_msg}\n\nPlease continue.")
+                )
+                sess.save_session(session)
+                continue
+
             print(c(f"  [Screenshot] {filename} ({len(img_bytes)//1024}KB) — sending to AI", YELLOW))
             mem_prefix = f"[Previous step memory]: {_last_memory}\n\n" if _last_memory else ""
             session["history"].append(
@@ -274,9 +308,20 @@ def send_with_tools(cfg, session, model, reasoning):
                 tool_call2 = skill_runner.parse_tool_call(img_reply)
                 if not tool_call2:
                     return img_reply
+                # FIX C2: actually execute tool_call2, don't just parse and discard
                 session["history"].append(new_msg("assistant", img_reply))
-                reply  = img_reply
-                result = img_reply
+                tool_name2 = tool_call2.get("tool", "?")
+                tool_args2 = _normalize_tool_args(tool_call2)
+                print(c(f"  [Tool] {tool_name2}", YELLOW))
+                result2 = _normalize_result(skill_runner.run_tool(tool_call2))
+                preview2 = result2[:100] + ("..." if len(result2) > 100 else "")
+                print(c(f"  [Result] {preview2}", GRAY))
+                mem_prefix2 = f"[Previous step memory]: {_last_memory}\n\n" if _last_memory else ""
+                session["history"].append(
+                    new_msg("user", f"{mem_prefix2}[Tool result: {tool_name2}]\n{result2}\n\nPlease continue based on this result.")
+                )
+                _last_memory = tool_call2.get("memory", "")
+                sess.save_session(session)
             else:
                 print(c(f"  [ERROR] AI returned empty (model may lack vision support or image too large)", RED))
             continue
@@ -332,7 +377,7 @@ def chat_loop(cfg, model, reasoning, use_skills):
             print_sessions_list(sess.list_sessions())
 
         elif cmd == "/load":
-            loaded = cmd_load(args, cfg, use_skills)
+            loaded = cmd_load(args, use_skills)  # FIX L1: removed cfg
             if loaded:
                 session = loaded
 
@@ -343,7 +388,7 @@ def chat_loop(cfg, model, reasoning, use_skills):
             if use_skills:
                 print_skills_list()
             else:
-                print(c("  Skills not enabled. Run with --skills", YELLOW))
+                print(c("  Skills not enabled. Restart with --skills", YELLOW))
 
         elif cmd == "/clear":
             session["history"] = []
@@ -405,22 +450,22 @@ def chat_loop(cfg, model, reasoning, use_skills):
 
 # ── Commands ──────────────────────────────────────────────────────────────────
 
+# FIX C1: chat command no longer declares its own options.
+# All global options (--model, --reasoning, --skills, --debug) are declared
+# ONLY on the root callback, stored in ctx.obj, and read here.
+# Usage: python main.py [OPTIONS] [SUBCOMMAND]
+#   python main.py --skills          → chat with skills
+#   python main.py --skills chat     → same
+#   python main.py chat              → chat with defaults
 @app.command()
-def chat(
-    model: Optional[str] = Option(
-        None, "-m", "--model",
-        help="Model name (overrides config defaultModel)"),
-    reasoning: ReasoningLevel = Option(
-        ReasoningLevel.disable, "-r", "--reasoning",
-        help="Reasoning effort level"),
-    skills: bool = Option(
-        False, "-s", "--skills",
-        help="Enable browser/file skill tools"),
-    debug: bool = Option(
-        False, "-d", "--debug",
-        help="Print raw HTTP request/response for debugging"),
-):
+def chat(ctx: typer.Context):
     """Start an interactive AI chat session (default command)."""
+    ctx.ensure_object(dict)
+    model      = ctx.obj.get("model")
+    reasoning  = ctx.obj.get("reasoning", ReasoningLevel.disable)
+    use_skills = ctx.obj.get("skills", False)
+    debug      = ctx.obj.get("debug", False)
+
     if debug:
         api.DEBUG = True
         print(c("  [DEBUG MODE] HTTP request/response will be printed", YELLOW))
@@ -432,7 +477,8 @@ def chat(
         raise typer.Exit(1)
 
     resolved_model = model or cfg.get("defaultModel", "gemini-2.5-flash")
-    chat_loop(cfg, resolved_model, reasoning.value, use_skills=skills)
+    reasoning_val  = reasoning.value if isinstance(reasoning, ReasoningLevel) else reasoning
+    chat_loop(cfg, resolved_model, reasoning_val, use_skills=use_skills)
 
 
 @app.command()
@@ -476,20 +522,47 @@ def renew():
     result = subprocess.run([sys.executable, "grab_auth.py"])
     if result.returncode == 0:
         print(c("  [OK] Token refreshed.", GREEN))
+        raise typer.Exit(0)  # FIX L2: explicit exit code
     else:
         print(c("  [ERROR] Token refresh failed.", RED))
         raise typer.Exit(1)
 
 
+# FIX M3: guard skills import in tools command
 @app.command()
 def tools():
     """List all available skill tools."""
-    print_skills_list()
+    try:
+        print_skills_list()
+    except ImportError as e:
+        print(c(f"  [ERROR] Skills not available: {e}", RED))
+        raise typer.Exit(1)
 
 
+# FIX C1: root callback is the single source of truth for global options.
+# Stores values in ctx.obj so subcommands (chat) can read them.
 @app.callback(invoke_without_command=True)
-def default(ctx: typer.Context):
-    """Default: run chat if no subcommand given."""
+def default(
+    ctx: typer.Context,
+    model: Optional[str] = Option(
+        None, "-m", "--model",
+        help="Model name (overrides config defaultModel)"),
+    reasoning: ReasoningLevel = Option(
+        ReasoningLevel.disable, "-r", "--reasoning",
+        help="Reasoning effort level"),
+    skills: bool = Option(
+        False, "-s", "--skills",
+        help="Enable browser/file skill tools"),
+    debug: bool = Option(
+        False, "-d", "--debug",
+        help="Print raw HTTP request/response for debugging"),
+):
+    """TGenie CLI — global options apply to all subcommands."""
+    ctx.ensure_object(dict)
+    ctx.obj["model"]     = model
+    ctx.obj["reasoning"] = reasoning
+    ctx.obj["skills"]    = skills
+    ctx.obj["debug"]     = debug
     if ctx.invoked_subcommand is None:
         ctx.invoke(chat)
 
