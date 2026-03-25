@@ -37,7 +37,7 @@ except ImportError:
     print("  [ERROR] rich not installed. Run: pip install rich")
     sys.exit(1)
 
-console = Console()
+console = Console(force_terminal=True, highlight=False)
 
 # ── prompt_toolkit ────────────────────────────────────────────────────────────
 
