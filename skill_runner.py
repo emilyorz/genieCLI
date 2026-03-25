@@ -1,10 +1,65 @@
 import json
 import re
+from pathlib import Path
+
+import yaml
+
 from skills import ALL_SKILLS
 from skills._registry import SkillRegistry
 
 SKILL_MAP = SkillRegistry._skills
 
+# ── Oracle→Trino cheat sheet (injected into system prompt) ───────────────────
+
+def _build_oracle2trino_cheatsheet() -> str:
+    """Load oracle_trino_functions.yaml and render a compact cheat sheet for LLM context."""
+    yaml_path = Path(__file__).parent / "data" / "oracle_trino_functions.yaml"
+    try:
+        with open(yaml_path, encoding="utf-8") as f:
+            db = yaml.safe_load(f)
+    except Exception as e:
+        return f"(oracle2trino YAML unavailable: {e})"
+
+    lines: list[str] = []
+
+    # Function mapping — compact format
+    lines.append("### Oracle → Trino Function Mapping (quick reference)")
+    for entry in db.get("functions", []):
+        oracle = entry.get("oracle", "")
+        trino = entry.get("trino") or "❌ No direct equivalent"
+        example = entry.get("example", "")
+        notes = entry.get("notes", "")
+        line = f"- {oracle} → {trino}"
+        if example:
+            line += f"  |  e.g. {example}"
+        if notes:
+            line += f"  |  ⚠️ {notes}"
+        lines.append(line)
+
+    lines.append("")
+
+    # Type mapping
+    lines.append("### Oracle → Trino Data Type Mapping")
+    for entry in db.get("types", []):
+        oracle_t = entry.get("oracle", "")
+        trino_t = entry.get("trino", "")
+        notes = entry.get("notes", "")
+        line = f"- {oracle_t} → {trino_t}"
+        if notes:
+            line += f"  |  ⚠️ {notes}"
+        lines.append(line)
+
+    lines.append("")
+
+    # Hard limits
+    lines.append("### Trino Hard Limits (PL/SQL constructs with NO direct equivalent)")
+    for lim in db.get("trino_limitations", []):
+        lines.append(f"- {lim}")
+
+    return "\n".join(lines)
+
+
+# ── System prompt builder ─────────────────────────────────────────────────────
 
 def build_system_prompt() -> str:
     # Build tool list
@@ -25,7 +80,49 @@ def build_system_prompt() -> str:
         tool_lines.append(f"- {skill.name}({args_str}): {skill.description}")
     tools_block = "\n".join(tool_lines)
 
-    return f"""You are a helpful AI assistant. You have access to tools for browser control and file operations.
+    oracle2trino_cheatsheet = _build_oracle2trino_cheatsheet()
+
+    return f"""You are a helpful AI assistant with expertise in SQL migration, browser control, and file operations.
+
+## ORACLE → TRINO MIGRATION EXPERTISE
+
+You are an expert in migrating Oracle SQL and PL/SQL stored procedures to Trino SQL.
+When users ask you to convert Oracle SQL, analyze stored procedures, or discuss Oracle→Trino migration:
+
+### Migration Classification
+Classify each Oracle SP/query into three buckets:
+1. **Direct Convert** — Pure SQL (SELECT/JOIN/aggregation) with only function/syntax differences → convert with tool lookup
+2. **Orchestration Rewrite** — Procedural logic (IF/LOOP/CURSOR/EXCEPTION) + ETL flow → extract queries, wrap in Python
+3. **Manual Redesign** — System calls (DBMS_*, packages), dynamic SQL, transactions → architect from scratch
+
+### Output Format (always use this 3-section structure)
+**[1] Analysis**
+- Convertibility score: X% (rough estimate)
+- Detected constructs and their migration category
+- Connector-specific risks (Hive/Iceberg/Delta)
+
+**[2] Converted SQL**
+- Trino-compatible SQL with inline change annotations:
+  `-- [Oracle→Trino: NVL→COALESCE]`
+
+**[3] Migration Notes**
+- What needs orchestration rewrite (and how)
+- What needs manual redesign (and why)
+- Open questions for the SP owner
+
+### Key Rules
+- ALWAYS use `lookup_oracle_function` tool before converting a function you're unsure about
+- ALWAYS use `lookup_oracle_type` tool when encountering Oracle-specific data types
+- ALWAYS use `list_trino_limitations` when a PL/SQL construct is detected
+- Never guess — use the tools first, then convert
+- Set realistic expectations: complex SPs may only be 10-50% auto-convertible
+- Mention connector type impact (Hive vs Iceberg vs Delta) when DML is involved
+
+{oracle2trino_cheatsheet}
+
+---
+
+## GENERAL CAPABILITIES — Browser & File Tools
 
 ## HOW TO USE TOOLS
 
