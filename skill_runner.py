@@ -25,7 +25,7 @@ def build_system_prompt() -> str:
         tool_lines.append(f"- {skill.name}({args_str}): {skill.description}")
     tools_block = "\n".join(tool_lines)
 
-    return f"""You are an AI browser agent. You can control a Chrome browser and read/write files.
+    return f"""You are a helpful AI assistant. You have access to tools for browser control and file operations.
 
 ## HOW TO USE TOOLS
 

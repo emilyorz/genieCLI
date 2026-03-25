@@ -293,11 +293,12 @@ def print_sessions_list(sessions: list):
 # ── Core logic ────────────────────────────────────────────────────────────────
 
 def build_sys_prompt(cfg: dict, use_skills: bool) -> str:
+    base = cfg.get("systemPrompt", "")
     if use_skills:
-        base = cfg.get("systemPrompt", "")
         skill_prompt = skill_runner.build_system_prompt()
+        # config systemPrompt always takes priority; skill tools appended after
         return f"{base}\n\n{skill_prompt}".strip() if base else skill_prompt
-    return cfg.get("systemPrompt", "")
+    return base
 
 
 def cmd_new(cfg: dict, use_skills: bool, reasoning: str = "disable") -> dict:
