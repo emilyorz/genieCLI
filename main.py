@@ -185,17 +185,10 @@ def read_editor_mode() -> str:
 # ── Display helpers ───────────────────────────────────────────────────────────
 
 def print_ai_reply(reply: str):
-    """Render AI reply as Markdown; use pager if taller than terminal (TTY only)."""
+    """Render AI reply as Markdown. Always print directly — pager causes ANSI escape code
+    garbage when less/more doesn't support color (no -R flag)."""
     md = Markdown(reply)
-    if (
-        reply.count("\n") + 1 > console.height
-        and sys.stdout.isatty()
-        and console.is_terminal
-    ):
-        with console.pager(styles=True):
-            console.print(md)
-    else:
-        console.print(md)
+    console.print(md)
 
 
 def print_banner(session: dict, use_skills: bool, reasoning: str = "disable"):
