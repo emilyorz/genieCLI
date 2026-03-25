@@ -158,15 +158,17 @@ def _send_openai(cfg: dict, history: list, model: str, files: list = None) -> st
             )
         return result
 
-    # Regular JSON response
-    raw_text = resp.text.strip()
+    # Regular JSON response — but stream=True means resp.text may be empty;
+    # consume iter_lines() to get the full body regardless of content-type
+    raw_lines_list = [line for line in resp.iter_lines(decode_unicode=True) if line]
+    raw_text = "\n".join(raw_lines_list).strip()
     _dbg(f"body preview: {raw_text[:300]}")
 
     if not raw_text:
         raise RuntimeError("Empty response from server (no body)")
 
     # Fallback: some servers send SSE without correct content-type header
-    if raw_text.startswith("data:"):
+    if any(l.startswith("data:") for l in raw_lines_list):
         _dbg("Detected SSE body (no SSE content-type), switching to parse_sse()")
         return parse_sse(raw_text)
 
@@ -229,8 +231,8 @@ def parse_sse(raw: str) -> str:
             choice = chunk.get("choices", [{}])[0]
             delta  = choice.get("delta", {})
             # Primary: final answer content
-            text = delta.get("content") or ""
-            if text:
+            text = delta.get("content") or None
+            if text and isinstance(text, str):
                 full += text
             # Secondary: reasoning/thinking tokens (collect as fallback)
             rtext = (
