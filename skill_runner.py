@@ -12,7 +12,12 @@ SKILL_MAP = SkillRegistry._skills
 # ── Oracle→Trino cheat sheet (injected into system prompt) ───────────────────
 
 def _build_oracle2trino_cheatsheet() -> str:
-    """Load oracle_trino_functions.yaml and render a compact cheat sheet for LLM context."""
+    """Build a compact cheat sheet for LLM context.
+
+    H3: Only include the ~30 most important differences (functions that CHANGE names)
+    and key gotchas. Same-name functions (LENGTH, ROUND, etc.) are omitted to save tokens.
+    The full mapping is always available via lookup_oracle_function / lookup_oracle_type tools.
+    """
     yaml_path = Path(__file__).parent / "data" / "oracle_trino_functions.yaml"
     try:
         with open(yaml_path, encoding="utf-8") as f:
@@ -22,37 +27,32 @@ def _build_oracle2trino_cheatsheet() -> str:
 
     lines: list[str] = []
 
-    # Function mapping — compact format
-    lines.append("### Oracle → Trino Function Mapping (quick reference)")
+    # Function mapping — ONLY include entries where oracle != trino (actual differences)
+    lines.append("### Oracle → Trino Key Differences (use `lookup_oracle_function` for full list)")
     for entry in db.get("functions", []):
         oracle = entry.get("oracle", "")
-        trino = entry.get("trino") or "❌ No direct equivalent"
-        example = entry.get("example", "")
-        notes = entry.get("notes", "")
+        trino = entry.get("trino") or "❌ No equivalent"
+        # Skip same-name functions (no conversion needed)
+        if trino and oracle.upper() == trino.upper():
+            continue
+        # Compact: name → equivalent only
         line = f"- {oracle} → {trino}"
-        if example:
-            line += f"  |  e.g. {example}"
-        if notes:
-            line += f"  |  ⚠️ {notes}"
+        if entry.get("notes"):
+            line += f"  | {entry['notes']}"
         lines.append(line)
 
     lines.append("")
 
-    # Type mapping
-    lines.append("### Oracle → Trino Data Type Mapping")
+    # Type mapping — only entries with notes (gotchas)
+    lines.append("### Data Type Gotchas (use `lookup_oracle_type` for full list)")
     for entry in db.get("types", []):
-        oracle_t = entry.get("oracle", "")
-        trino_t = entry.get("trino", "")
-        notes = entry.get("notes", "")
-        line = f"- {oracle_t} → {trino_t}"
-        if notes:
-            line += f"  |  ⚠️ {notes}"
-        lines.append(line)
+        if entry.get("notes"):
+            lines.append(f"- {entry['oracle']} → {entry['trino']}: {entry['notes']}")
 
     lines.append("")
 
-    # Hard limits
-    lines.append("### Trino Hard Limits (PL/SQL constructs with NO direct equivalent)")
+    # Hard limits — always include all
+    lines.append("### Trino Hard Limits")
     for lim in db.get("trino_limitations", []):
         lines.append(f"- {lim}")
 

@@ -10,11 +10,16 @@ Tools:
 """
 from __future__ import annotations
 
+import re
 from pathlib import Path
 
 import yaml
 
 from .base import Arg, BaseSkill
+
+# ── Constants ─────────────────────────────────────────────────────────────────
+
+MAX_SQL_DISPLAY = 3000  # M3: unified truncation limit across all tools
 
 # ── YAML loader (lazy, cached) ────────────────────────────────────────────────
 
@@ -30,6 +35,12 @@ def _load_db() -> dict:
     return _DB
 
 
+def _truncate(text: str, limit: int = MAX_SQL_DISPLAY) -> str:
+    if len(text) > limit:
+        return text[:limit] + "..."
+    return text
+
+
 # ── sqlglot helper ────────────────────────────────────────────────────────────
 
 def _sqlglot_transpile(sql: str) -> tuple[str, list[str]]:
@@ -43,22 +54,15 @@ def _sqlglot_transpile(sql: str) -> tuple[str, list[str]]:
         import sqlglot.errors as sge
 
         warnings: list[str] = []
-        errors_caught: list[str] = []
 
-        # Collect parse/transpile errors as warnings (don't crash, suppress stderr noise)
-        import io, sys
-        _stderr_capture = io.StringIO()
-        _old_stderr = sys.stderr
-        sys.stderr = _stderr_capture
-        try:
-            results = sqlglot.transpile(
-                sql,
-                read="oracle",
-                write="trino",
-                error_level=sge.ErrorLevel.WARN,
-            )
-        finally:
-            sys.stderr = _old_stderr
+        # C1: Use IGNORE level — we don't need parse warnings,
+        # and this avoids the thread-unsafe stderr redirect entirely.
+        results = sqlglot.transpile(
+            sql,
+            read="oracle",
+            write="trino",
+            error_level=sge.ErrorLevel.IGNORE,
+        )
         transpiled = results[0] if results else sql
 
         # Detect constructs sqlglot leaves unchanged (known gaps)
@@ -111,10 +115,10 @@ class TranspileSQL(BaseSkill):
 
         lines: list[str] = ["=== sqlglot Oracle→Trino Transpile ===", ""]
         lines.append("--- Input ---")
-        lines.append(sql[:2000] + ("..." if len(sql) > 2000 else ""))
+        lines.append(_truncate(sql))
         lines.append("")
         lines.append("--- Transpiled Output ---")
-        lines.append(transpiled[:2000] + ("..." if len(transpiled) > 2000 else ""))
+        lines.append(_truncate(transpiled))
         lines.append("")
 
         if warnings:
@@ -153,11 +157,14 @@ class LookupOracleFunction(BaseSkill):
     def run(self, oracle_name: str = "") -> str:
         db = _load_db()
         needle = oracle_name.strip().upper()
-        results: list[dict] = []
+        funcs = db.get("functions", [])
 
-        for entry in db.get("functions", []):
-            if needle in str(entry.get("oracle", "")).upper():
-                results.append(entry)
+        # H1: Exact match first, fallback to substring only if no exact match
+        exact = [e for e in funcs if needle == str(e.get("oracle", "")).upper()]
+        if exact:
+            results = exact
+        else:
+            results = [e for e in funcs if needle in str(e.get("oracle", "")).upper()]
 
         if not results:
             return (
@@ -166,7 +173,7 @@ class LookupOracleFunction(BaseSkill):
             )
 
         lines: list[str] = []
-        for r in results[:3]:
+        for r in results[:5]:  # allow up to 5 for substring fallback
             lines.append(f"Oracle: {r['oracle']}")
             trino_eq = r.get("trino") or "No direct equivalent"
             lines.append(f"Trino:  {trino_eq}")
@@ -267,8 +274,8 @@ class AnalyzeOracleSP(BaseSkill):
 
         transpile_section = "--- Step 1: sqlglot Auto-Transpile ---\n"
         if changed:
-            transpile_section += f"✅ sqlglot converted some constructs.\n\n"
-            transpile_section += f"Transpiled output:\n{transpiled[:2000]}{'...' if len(transpiled) > 2000 else ''}\n"
+            transpile_section += "✅ sqlglot converted some constructs.\n\n"
+            transpile_section += f"Transpiled output:\n{_truncate(transpiled)}\n"
         else:
             transpile_section += "⚠️  sqlglot made no changes (likely pure PL/SQL or unsupported syntax).\n"
 
@@ -278,32 +285,35 @@ class AnalyzeOracleSP(BaseSkill):
                 transpile_section += f"  {w}\n"
 
         # ── Step 2: PL/SQL construct detection ────────────────────────────────
+        # H2: Use regex word boundaries and contextual patterns to reduce false positives
         upper_sql = sql.upper()
         flags: list[str] = []
 
-        plsql_keywords = [
-            ("BEGIN",            "PL/SQL block — wrap queries in Python, remove procedural shell"),
-            ("DECLARE",          "Variable declarations — replace with CTEs or Python variables"),
-            ("CURSOR",           "Cursor — rewrite as Python loop + multiple Trino queries"),
-            ("FOR ",             "FOR loop — move iteration to Python/Airflow orchestration"),
-            ("LOOP",             "LOOP — move to Python orchestration"),
-            ("EXCEPTION",        "Exception handling — move to Python try/except"),
-            ("EXECUTE IMMEDIATE","Dynamic SQL — move to Python f-string + Trino execute"),
-            ("DBMS_",            "Oracle DBMS package — no Trino equivalent, move to Python"),
-            ("CONNECT BY",       "Hierarchical query — rewrite as WITH RECURSIVE CTE (sqlglot may be wrong)"),
-            ("ROWNUM",           "ROWNUM — rewrite as ROW_NUMBER() subquery or FETCH FIRST n ROWS"),
-            ("MERGE INTO",       f"MERGE — Iceberg only (Trino 420+), verify connector={connector}"),
-            ("(+)",              "Oracle outer join (+) — rewrite as ANSI LEFT/RIGHT JOIN"),
-            ("PIVOT",            "PIVOT — rewrite as CASE-WHEN aggregation"),
-            ("UNPIVOT",          "UNPIVOT — rewrite as CROSS JOIN UNNEST"),
-            ("LISTAGG",          "LISTAGG — rewrite as ARRAY_JOIN(ARRAY_AGG(...), ',')"),
-            ("WM_CONCAT",        "WM_CONCAT (deprecated) — rewrite as ARRAY_JOIN(ARRAY_AGG(...), ',')"),
-            ("MONTHS_BETWEEN",   "MONTHS_BETWEEN — rewrite as DATE_DIFF('month', d2, d1)"),
+        # Patterns: (regex_pattern, keyword_label, message)
+        # Using \b word boundaries and context-aware patterns
+        plsql_patterns: list[tuple[str, str, str]] = [
+            (r'(?:^|\s)BEGIN\b',               "BEGIN",            "PL/SQL block — wrap queries in Python, remove procedural shell"),
+            (r'(?:^|\s)DECLARE\b',             "DECLARE",          "Variable declarations — replace with CTEs or Python variables"),
+            (r'\bCURSOR\b',                    "CURSOR",           "Cursor — rewrite as Python loop + multiple Trino queries"),
+            (r'\bFOR\s+\w+\s+IN\b',            "FOR...IN",         "FOR loop — move iteration to Python/Airflow orchestration"),
+            (r'(?:^|\s)LOOP\b|\bEND\s+LOOP\b', "LOOP",            "LOOP — move to Python orchestration"),
+            (r'\bEXCEPTION\b',                 "EXCEPTION",        "Exception handling — move to Python try/except"),
+            (r'\bEXECUTE\s+IMMEDIATE\b',       "EXECUTE IMMEDIATE","Dynamic SQL — move to Python f-string + Trino execute"),
+            (r'\bDBMS_\w+',                    "DBMS_*",           "Oracle DBMS package — no Trino equivalent, move to Python"),
+            (r'\bCONNECT\s+BY\b',             "CONNECT BY",       "Hierarchical query — rewrite as WITH RECURSIVE CTE (sqlglot may be wrong)"),
+            (r'\bROWNUM\b',                    "ROWNUM",           "ROWNUM — rewrite as ROW_NUMBER() subquery or FETCH FIRST n ROWS"),
+            (r'\bMERGE\s+INTO\b',             "MERGE INTO",       f"MERGE — Iceberg only (Trino 420+), verify connector={connector}"),
+            (r'\(\+\)',                        "(+)",              "Oracle outer join (+) — rewrite as ANSI LEFT/RIGHT JOIN"),
+            (r'(?:^|\s)PIVOT\b',              "PIVOT",            "PIVOT — rewrite as CASE-WHEN aggregation"),
+            (r'(?:^|\s)UNPIVOT\b',            "UNPIVOT",          "UNPIVOT — rewrite as CROSS JOIN UNNEST"),
+            (r'\bLISTAGG\b',                  "LISTAGG",          "LISTAGG — rewrite as ARRAY_JOIN(ARRAY_AGG(...), ',')"),
+            (r'\bWM_CONCAT\b',               "WM_CONCAT",        "WM_CONCAT (deprecated) — rewrite as ARRAY_JOIN(ARRAY_AGG(...), ',')"),
+            (r'\bMONTHS_BETWEEN\b',          "MONTHS_BETWEEN",   "MONTHS_BETWEEN — rewrite as DATE_DIFF('month', d2, d1)"),
         ]
 
-        for keyword, message in plsql_keywords:
-            if keyword in upper_sql:
-                flags.append(f"⚠️  [{keyword}] {message}")
+        for pattern, label, message in plsql_patterns:
+            if re.search(pattern, upper_sql):
+                flags.append(f"⚠️  [{label}] {message}")
 
         flags_text = "\n".join(flags) if flags else "✅ No PL/SQL constructs detected — likely pure SQL."
 
@@ -328,7 +338,7 @@ Connector notes  : {connector_notes}
 {limits_text}
 
 --- Original SQL ---
-{sql[:3000]}{"..." if len(sql) > 3000 else ""}
+{_truncate(sql)}
 
 --- Instructions for AI ---
 Using the transpiled output from Step 1 as your starting point (not the original Oracle SQL),
