@@ -15,6 +15,7 @@ import sys
 import json
 import os
 import argparse
+import shlex
 import subprocess
 import tempfile
 from pathlib import Path
@@ -49,9 +50,14 @@ except ImportError:
     sys.exit(1)
 
 _history_path = Path.home() / ".tgenie_history"
-prompt_session: PromptSession = PromptSession(
-    history=FileHistory(str(_history_path)),
-)
+_prompt_session: Optional["PromptSession"] = None
+
+
+def _get_prompt_session() -> "PromptSession":
+    global _prompt_session
+    if _prompt_session is None:
+        _prompt_session = PromptSession(history=FileHistory(str(_history_path)))
+    return _prompt_session
 
 
 # ── Constants ─────────────────────────────────────────────────────────────────
@@ -113,7 +119,7 @@ def build_parser() -> argparse.ArgumentParser:
 def read_input() -> str:
     """Single-line input with history and bracketed-paste support."""
     try:
-        return prompt_session.prompt("  You > ")
+        return _get_prompt_session().prompt("  You > ")
     except EOFError:
         return "/exit"
     except KeyboardInterrupt:
@@ -130,7 +136,7 @@ def read_paste_mode() -> str:
 
     console.print("  [dim](paste mode — Ctrl-D to send, Ctrl-C to cancel)[/dim]")
     try:
-        return prompt_session.prompt(
+        return _get_prompt_session().prompt(
             "  ... ",
             multiline=True,
             key_bindings=kb,
@@ -141,16 +147,18 @@ def read_paste_mode() -> str:
 
 def read_editor_mode() -> str:
     """Open $EDITOR (fallback vim/nano), return file contents after save+close."""
-    editor = os.environ.get("EDITOR", "")
-    chosen = ""
-    for candidate in [editor, "vim", "nano"]:
-        if candidate and subprocess.run(
-            ["which", candidate], capture_output=True
+    editor_env = os.environ.get("EDITOR", "")
+    editor_parts = shlex.split(editor_env) if editor_env else []
+
+    chosen_parts: list[str] = []
+    for candidate_parts in [editor_parts, ["vim"], ["nano"]]:
+        if candidate_parts and subprocess.run(
+            ["which", candidate_parts[0]], capture_output=True
         ).returncode == 0:
-            chosen = candidate
+            chosen_parts = candidate_parts
             break
 
-    if not chosen:
+    if not chosen_parts:
         console.print("  [red][ERROR] No editor found. Set $EDITOR, or install vim/nano.[/red]")
         return ""
 
@@ -158,8 +166,11 @@ def read_editor_mode() -> str:
         tmpfile = f.name
 
     try:
-        subprocess.run([chosen, tmpfile])
-        content = Path(tmpfile).read_text().strip()
+        result = subprocess.run(chosen_parts + [tmpfile])
+        if result.returncode != 0:
+            console.print(f"  [red][ERROR] Editor exited with code {result.returncode} — aborting.[/red]")
+            return ""
+        content = Path(tmpfile).read_text(encoding="utf-8", errors="replace").strip()
         return content
     except Exception as e:
         console.print(f"  [red][ERROR] Editor failed: {escape(str(e))}[/red]")
@@ -174,9 +185,13 @@ def read_editor_mode() -> str:
 # ── Display helpers ───────────────────────────────────────────────────────────
 
 def print_ai_reply(reply: str):
-    """Render AI reply as Markdown; use pager if taller than terminal."""
+    """Render AI reply as Markdown; use pager if taller than terminal (TTY only)."""
     md = Markdown(reply)
-    if reply.count("\n") + 1 > console.height:
+    if (
+        reply.count("\n") + 1 > console.height
+        and sys.stdout.isatty()
+        and console.is_terminal
+    ):
         with console.pager(styles=True):
             console.print(md)
     else:
@@ -300,7 +315,7 @@ def cmd_load(args: list, use_skills: bool) -> Optional[dict]:
         return None
     if not args:
         try:
-            raw = prompt_session.prompt("  Load number > ").strip()
+            raw = _get_prompt_session().prompt("  Load number > ").strip()
             n = int(raw)
         except (ValueError, EOFError, KeyboardInterrupt):
             return None
@@ -633,6 +648,10 @@ def main():
     parser = build_parser()
     args = parser.parse_args()
 
+    # 'chat' is an explicit alias for interactive mode — treat same as no target
+    if args.target == "chat":
+        args.target = None
+
     # Handle subcommands that don't need AI/config
     if args.target in SUBCOMMANDS:
         if args.target == "sessions":
@@ -664,7 +683,11 @@ def main():
         if not path.exists():
             console.print(f"  [red][ERROR] File not found: {escape(args.target)}[/red]")
             sys.exit(1)
-        query = path.read_text()
+        try:
+            query = path.read_text(encoding="utf-8", errors="replace")
+        except Exception as e:
+            console.print(f"  [red][ERROR] Cannot read file: {escape(str(e))}[/red]")
+            sys.exit(1)
         run_single_shot(cfg, resolved_model, reasoning_val, args.skills, query)
         return
 
