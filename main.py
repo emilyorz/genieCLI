@@ -552,9 +552,11 @@ def default(
         help="Reasoning effort level"),
     skills: bool = Option(
         False, "-s", "--skills",
+        is_flag=True,
         help="Enable browser/file skill tools"),
     debug: bool = Option(
         False, "-d", "--debug",
+        is_flag=True,
         help="Print raw HTTP request/response for debugging"),
 ):
     """TGenie CLI — global options apply to all subcommands."""
