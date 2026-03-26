@@ -1,0 +1,44 @@
+[build-system]
+requires = ["setuptools>=68", "wheel"]
+build-backend = "setuptools.backends.legacy:build"
+
+[project]
+name = "genie-cli"
+version = "4.0.0"
+description = "Plugin-based AI agent CLI"
+requires-python = ">=3.10"
+dependencies = [
+    "requests>=2.28.0",
+    "urllib3>=1.26.0",
+    "rich>=13.0.0",
+    "typer>=0.12.0",
+    "prompt_toolkit>=3.0.0",
+    "pyyaml>=6.0",
+    "websocket-client>=1.6.0",
+    "sqlglot>=23.0",
+]
+
+[project.optional-dependencies]
+dev = [
+    "pytest>=8.0",
+    "pytest-cov",
+]
+toml = [
+    "tomli>=2.0;python_version<'3.11'",
+]
+
+[project.scripts]
+genie = "genie.cli:main"
+
+[tool.setuptools.packages.find]
+where = ["."]
+include = ["genie*"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+python_files = ["test_*.py"]
+python_functions = ["test_*"]
+
+[tool.ruff]
+line-length = 100
+target-version = "py310"

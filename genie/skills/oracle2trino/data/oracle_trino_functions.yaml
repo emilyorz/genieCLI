@@ -1,0 +1,424 @@
+# Oracle → Trino 函數/型別對照表
+# 格式：oracle_name, trino_equivalent, notes
+# Category: string | numeric | date | conversion | aggregate | analytic | null | unsupported
+
+functions:
+
+  # ── String Functions ──────────────────────────────────────────────────────
+  - oracle: NVL
+    trino: COALESCE
+    example: "NVL(x, 0) → COALESCE(x, 0)"
+    category: null
+
+  - oracle: NVL2
+    trino: "CASE WHEN x IS NOT NULL THEN a ELSE b END"
+    example: "NVL2(x, a, b) → CASE WHEN x IS NOT NULL THEN a ELSE b END"
+    category: null
+
+  - oracle: DECODE
+    trino: "CASE WHEN ... THEN ... ELSE ... END"
+    example: "DECODE(col, 1, 'A', 2, 'B', 'C') → CASE col WHEN 1 THEN 'A' WHEN 2 THEN 'B' ELSE 'C' END"
+    category: conversion
+
+  - oracle: SUBSTR
+    trino: SUBSTRING
+    example: "SUBSTR(str, 1, 3) → SUBSTRING(str, 1, 3)"
+    notes: "Same semantics, just rename"
+    category: string
+
+  - oracle: INSTR
+    trino: STRPOS
+    example: "INSTR(str, 'x') → STRPOS(str, 'x')"
+    notes: "INSTR(str,sub,start,occ) multi-arg version has no direct equivalent; rewrite manually"
+    category: string
+
+  - oracle: LENGTH
+    trino: LENGTH
+    example: "LENGTH(str) → LENGTH(str)"
+    category: string
+
+  - oracle: LTRIM
+    trino: LTRIM
+    example: "LTRIM(str) → LTRIM(str)"
+    category: string
+
+  - oracle: RTRIM
+    trino: RTRIM
+    example: "RTRIM(str) → RTRIM(str)"
+    category: string
+
+  - oracle: TRIM
+    trino: TRIM
+    example: "TRIM(str) → TRIM(str)"
+    category: string
+
+  - oracle: LPAD
+    trino: LPAD
+    example: "LPAD(str, 10, '0') → LPAD(str, 10, '0')"
+    category: string
+
+  - oracle: RPAD
+    trino: RPAD
+    example: "RPAD(str, 10, ' ') → RPAD(str, 10, ' ')"
+    category: string
+
+  - oracle: UPPER
+    trino: UPPER
+    example: "UPPER(str) → UPPER(str)"
+    category: string
+
+  - oracle: LOWER
+    trino: LOWER
+    example: "LOWER(str) → LOWER(str)"
+    category: string
+
+  - oracle: REPLACE
+    trino: REPLACE
+    example: "REPLACE(str, 'a', 'b') → REPLACE(str, 'a', 'b')"
+    category: string
+
+  - oracle: REGEXP_LIKE
+    trino: REGEXP_LIKE
+    example: "REGEXP_LIKE(str, '^[0-9]+$') → REGEXP_LIKE(str, '^[0-9]+$')"
+    notes: "Oracle uses POSIX regex; Trino uses Java regex — minor syntax differences"
+    category: string
+
+  - oracle: REGEXP_REPLACE
+    trino: REGEXP_REPLACE
+    example: "REGEXP_REPLACE(str, '[0-9]', '#') → REGEXP_REPLACE(str, '[0-9]', '#')"
+    category: string
+
+  - oracle: REGEXP_SUBSTR
+    trino: REGEXP_EXTRACT
+    example: "REGEXP_SUBSTR(str, '[0-9]+') → REGEXP_EXTRACT(str, '[0-9]+')"
+    category: string
+
+  - oracle: CONCAT
+    trino: "CONCAT or ||"
+    example: "CONCAT(a, b) → CONCAT(a, b)  or  a || b"
+    category: string
+
+  - oracle: CHR
+    trino: CHR
+    example: "CHR(65) → CHR(65)"
+    category: string
+
+  - oracle: ASCII
+    trino: CODEPOINT
+    example: "ASCII('A') → CODEPOINT('A')"
+    category: string
+
+  - oracle: TO_CHAR
+    trino: "CAST(x AS VARCHAR) or FORMAT_DATETIME / DATE_FORMAT"
+    example: "TO_CHAR(col) → CAST(col AS VARCHAR)"
+    notes: "For dates: TO_CHAR(dt, 'YYYY-MM-DD') → DATE_FORMAT(dt, '%Y-%m-%d')"
+    category: conversion
+
+  - oracle: TO_NUMBER
+    trino: "CAST(x AS DECIMAL)"
+    example: "TO_NUMBER(str) → TRY_CAST(str AS DECIMAL)"
+    notes: "Use TRY_CAST to avoid errors on bad data"
+    category: conversion
+
+  # ── Numeric Functions ─────────────────────────────────────────────────────
+  - oracle: ROUND
+    trino: ROUND
+    example: "ROUND(x, 2) → ROUND(x, 2)"
+    category: numeric
+
+  - oracle: TRUNC
+    trino: "TRUNCATE (for numbers) / DATE_TRUNC (for dates)"
+    example: "TRUNC(x, 2) → TRUNCATE(x, 2)"
+    category: numeric
+
+  - oracle: CEIL
+    trino: CEIL
+    example: "CEIL(x) → CEIL(x)"
+    category: numeric
+
+  - oracle: FLOOR
+    trino: FLOOR
+    example: "FLOOR(x) → FLOOR(x)"
+    category: numeric
+
+  - oracle: MOD
+    trino: MOD
+    example: "MOD(x, y) → MOD(x, y)"
+    category: numeric
+
+  - oracle: ABS
+    trino: ABS
+    example: "ABS(x) → ABS(x)"
+    category: numeric
+
+  - oracle: POWER
+    trino: POWER
+    example: "POWER(x, 2) → POWER(x, 2)"
+    category: numeric
+
+  - oracle: SQRT
+    trino: SQRT
+    example: "SQRT(x) → SQRT(x)"
+    category: numeric
+
+  # ── Date / Time Functions ─────────────────────────────────────────────────
+  - oracle: SYSDATE
+    trino: CURRENT_TIMESTAMP
+    example: "SYSDATE → CURRENT_TIMESTAMP"
+    notes: "SYSDATE returns DATE, CURRENT_TIMESTAMP returns TIMESTAMP WITH TIME ZONE"
+    category: date
+
+  - oracle: SYSTIMESTAMP
+    trino: CURRENT_TIMESTAMP
+    example: "SYSTIMESTAMP → CURRENT_TIMESTAMP"
+    category: date
+
+  - oracle: CURRENT_DATE
+    trino: CURRENT_DATE
+    example: "CURRENT_DATE → CURRENT_DATE"
+    category: date
+
+  - oracle: ADD_MONTHS
+    trino: "date + INTERVAL '1' MONTH  or  date_add('month', n, date)"
+    example: "ADD_MONTHS(dt, 3) → date_add('month', 3, dt)"
+    category: date
+
+  - oracle: MONTHS_BETWEEN
+    trino: "DATE_DIFF('month', start, end)"
+    example: "MONTHS_BETWEEN(d1, d2) → DATE_DIFF('month', d2, d1)"
+    notes: "Trino result is integer; Oracle returns fractional months"
+    category: date
+
+  - oracle: LAST_DAY
+    trino: "date_trunc('month', date) + INTERVAL '1' MONTH - INTERVAL '1' DAY"
+    example: "LAST_DAY(dt) → CAST(date_trunc('month', dt) + INTERVAL '1' MONTH - INTERVAL '1' DAY AS DATE)"
+    category: date
+
+  - oracle: TRUNC(date)
+    trino: DATE_TRUNC
+    example: "TRUNC(dt, 'MM') → DATE_TRUNC('month', dt)"
+    notes: "Oracle fmt: 'YYYY'/'MM'/'DD'/'HH' → Trino: 'year'/'month'/'day'/'hour'"
+    category: date
+
+  - oracle: TO_DATE
+    trino: "DATE_PARSE(str, fmt) or CAST(str AS DATE)"
+    example: "TO_DATE('2024-01-01', 'YYYY-MM-DD') → DATE_PARSE('2024-01-01', '%Y-%m-%d')"
+    notes: "Format strings differ: Oracle YYYY-MM-DD → Trino %Y-%m-%d"
+    category: date
+
+  - oracle: TO_TIMESTAMP
+    trino: TIMESTAMP_PARSE
+    example: "TO_TIMESTAMP(str, 'YYYY-MM-DD HH24:MI:SS') → TIMESTAMP_PARSE(str, '%Y-%m-%d %H:%i:%s')"
+    category: date
+
+  - oracle: EXTRACT
+    trino: EXTRACT
+    example: "EXTRACT(YEAR FROM dt) → EXTRACT(YEAR FROM dt)"
+    category: date
+
+  # ── Aggregate Functions ───────────────────────────────────────────────────
+  - oracle: COUNT
+    trino: COUNT
+    category: aggregate
+
+  - oracle: SUM
+    trino: SUM
+    category: aggregate
+
+  - oracle: AVG
+    trino: AVG
+    category: aggregate
+
+  - oracle: MAX
+    trino: MAX
+    category: aggregate
+
+  - oracle: MIN
+    trino: MIN
+    category: aggregate
+
+  - oracle: LISTAGG
+    trino: ARRAY_JOIN(ARRAY_AGG(...), ',')
+    example: "LISTAGG(col, ',') WITHIN GROUP (ORDER BY col) → ARRAY_JOIN(ARRAY_AGG(col ORDER BY col), ',')"
+    category: aggregate
+
+  - oracle: WM_CONCAT
+    trino: ARRAY_JOIN(ARRAY_AGG(...), ',')
+    example: "WM_CONCAT(col) → ARRAY_JOIN(ARRAY_AGG(col), ',')"
+    notes: "WM_CONCAT is deprecated in Oracle; same migration as LISTAGG"
+    category: aggregate
+
+  - oracle: MEDIAN
+    trino: "APPROX_PERCENTILE(col, 0.5)"
+    example: "MEDIAN(col) → APPROX_PERCENTILE(col, 0.5)"
+    notes: "APPROX_PERCENTILE is approximate; for exact use PERCENTILE_CONT"
+    category: aggregate
+
+  # ── Analytic / Window Functions ───────────────────────────────────────────
+  - oracle: ROWNUM
+    trino: "ROW_NUMBER() OVER (ORDER BY ...)"
+    example: "WHERE ROWNUM <= 10 → WHERE rn <= 10 (subquery with ROW_NUMBER())"
+    notes: "ROWNUM must be rewritten as subquery with ROW_NUMBER(); FETCH FIRST n ROWS also works for simple top-n"
+    category: analytic
+
+  - oracle: ROW_NUMBER
+    trino: ROW_NUMBER
+    category: analytic
+
+  - oracle: RANK
+    trino: RANK
+    category: analytic
+
+  - oracle: DENSE_RANK
+    trino: DENSE_RANK
+    category: analytic
+
+  - oracle: LAG
+    trino: LAG
+    category: analytic
+
+  - oracle: LEAD
+    trino: LEAD
+    category: analytic
+
+  - oracle: FIRST_VALUE
+    trino: FIRST_VALUE
+    category: analytic
+
+  - oracle: LAST_VALUE
+    trino: LAST_VALUE
+    category: analytic
+
+  - oracle: NTILE
+    trino: NTILE
+    category: analytic
+
+  - oracle: PERCENT_RANK
+    trino: PERCENT_RANK
+    category: analytic
+
+  - oracle: CUME_DIST
+    trino: CUME_DIST
+    category: analytic
+
+  # ── Join Syntax ───────────────────────────────────────────────────────────
+  - oracle: "(+) outer join"
+    trino: "LEFT JOIN / RIGHT JOIN"
+    example: "FROM a, b WHERE a.id = b.id(+) → FROM a LEFT JOIN b ON a.id = b.id"
+    notes: "Oracle (+) syntax not supported; always rewrite to ANSI JOIN"
+    category: join
+
+  # ── Unsupported / Needs Manual Rewrite ───────────────────────────────────
+  - oracle: CONNECT BY (hierarchical query)
+    trino: "WITH RECURSIVE (recursive CTE)"
+    example: "CONNECT BY PRIOR id = parent_id → WITH RECURSIVE cte AS (base UNION ALL recursive)"
+    notes: "Complex to rewrite; logic must be fully restructured"
+    category: unsupported
+
+  - oracle: PIVOT
+    trino: "CASE WHEN aggregation (manual pivot)"
+    example: "PIVOT(SUM(val) FOR col IN ('A','B','C')) → SUM(CASE WHEN col='A' THEN val END) AS A, ..."
+    category: unsupported
+
+  - oracle: UNPIVOT
+    trino: CROSS JOIN UNNEST
+    example: "UNPIVOT(val FOR col IN (a,b,c)) → CROSS JOIN UNNEST(ARRAY[a,b,c], ARRAY['a','b','c']) AS t(val, col)"
+    category: unsupported
+
+  - oracle: MERGE INTO
+    trino: "No direct equivalent — split into INSERT + UPDATE or use Iceberg MERGE (limited)"
+    notes: "Trino 420+ has MERGE but only on Iceberg tables with limited support"
+    category: unsupported
+
+  - oracle: DBMS_OUTPUT.PUT_LINE
+    trino: null
+    notes: "Move to Python logging layer"
+    category: unsupported
+
+  - oracle: EXECUTE IMMEDIATE (dynamic SQL)
+    trino: null
+    notes: "Move to Python/orchestration layer — Trino has no dynamic SQL execution"
+    category: unsupported
+
+  - oracle: CURSOR / OPEN / FETCH / CLOSE
+    trino: null
+    notes: "Rewrite as Python loop + multiple Trino queries"
+    category: unsupported
+
+  - oracle: "FOR LOOP (PL/SQL)"
+    trino: null
+    notes: "Rewrite as orchestration logic in Python/Airflow"
+    category: unsupported
+
+  - oracle: "EXCEPTION / RAISE_APPLICATION_ERROR"
+    trino: null
+    notes: "Move error handling to Python try/except"
+    category: unsupported
+
+  - oracle: "Package variables / global state"
+    trino: null
+    notes: "No equivalent; redesign as stateless queries or push state to Python"
+    category: unsupported
+
+# ── Data Type Mapping ─────────────────────────────────────────────────────────
+types:
+  - oracle: VARCHAR2
+    trino: VARCHAR
+
+  - oracle: NVARCHAR2
+    trino: VARCHAR
+
+  - oracle: CHAR
+    trino: CHAR
+
+  - oracle: NUMBER
+    trino: DECIMAL
+    notes: "NUMBER(p, s) → DECIMAL(p, s); plain NUMBER → DECIMAL or DOUBLE"
+
+  - oracle: INTEGER
+    trino: INTEGER
+
+  - oracle: FLOAT
+    trino: DOUBLE
+
+  - oracle: BINARY_FLOAT
+    trino: REAL
+
+  - oracle: BINARY_DOUBLE
+    trino: DOUBLE
+
+  - oracle: DATE
+    trino: TIMESTAMP
+    notes: "Oracle DATE includes time; Trino DATE is date-only. Use TIMESTAMP to preserve time."
+
+  - oracle: TIMESTAMP
+    trino: TIMESTAMP
+
+  - oracle: TIMESTAMP WITH TIME ZONE
+    trino: TIMESTAMP WITH TIME ZONE
+
+  - oracle: CLOB
+    trino: VARCHAR
+    notes: "Large text; Trino VARCHAR has no hard limit in most connectors"
+
+  - oracle: BLOB
+    trino: VARBINARY
+    notes: "Binary data; may need to reconsider storage strategy"
+
+  - oracle: BOOLEAN
+    trino: BOOLEAN
+    notes: "Oracle has no native BOOLEAN in SQL; typically emulated with NUMBER(1)"
+
+# ── Trino Hard Limits (context for migration planning) ────────────────────────
+trino_limitations:
+  - "No procedural language (PL/SQL has no equivalent)"
+  - "No session variables (use CTEs or subqueries)"
+  - "No MERGE on non-Iceberg tables"
+  - "No LOOP / CURSOR / EXCEPTION blocks"
+  - "No COMMIT / ROLLBACK (no transaction support in most connectors)"
+  - "No EXECUTE IMMEDIATE (no dynamic SQL)"
+  - "No Oracle-specific packages (DBMS_*, UTL_*)"
+  - "CONNECT BY not supported — use recursive CTE"
+  - "ROWNUM not supported — use ROW_NUMBER() window function"
+  - "DATE type is date-only (no time component)"
+  - "Regex engine is Java-based (not POSIX like Oracle)"

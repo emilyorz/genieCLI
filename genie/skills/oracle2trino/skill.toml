@@ -1,0 +1,8 @@
+[skill]
+name = "oracle2trino"
+version = "1.0.0"
+description = "Oracle SQL to Trino SQL migration tools"
+group = "oracle2trino"
+
+[skill.requires]
+python = ["sqlglot", "pyyaml"]

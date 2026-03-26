@@ -1,0 +1,145 @@
+"""SkillRegistry — plugin discovery and dispatch."""
+from __future__ import annotations
+
+import importlib
+import importlib.util
+import sys
+from pathlib import Path
+from typing import TYPE_CHECKING
+
+if TYPE_CHECKING:
+    from genie.core.context import SkillContext
+
+
+class BaseSkill:
+    """Base class for all skills (bundled and external)."""
+
+    name: str = ""
+    description: str = ""
+    group: str = "generic"
+    args: list = []
+
+    def run(self, **kwargs) -> str:
+        raise NotImplementedError
+
+    def validate(self, kwargs: dict) -> tuple[bool, str | None]:
+        for arg in self.args:
+            if arg.required and arg.name not in kwargs:
+                return False, f"Missing required argument: '{arg.name}'"
+            if arg.choices and arg.name in kwargs:
+                if kwargs[arg.name] not in arg.choices:
+                    return (
+                        False,
+                        f"Invalid value for '{arg.name}': "
+                        f"got '{kwargs[arg.name]}', must be one of {arg.choices}",
+                    )
+        return True, None
+
+    def spec(self) -> dict:
+        return {
+            "name": self.name,
+            "description": self.description,
+            "group": self.group,
+            "args": [
+                {
+                    "name": arg.name,
+                    "type": arg.type,
+                    "description": arg.description,
+                    "required": arg.required,
+                    "default": arg.default,
+                    "choices": arg.choices,
+                }
+                for arg in self.args
+            ],
+        }
+
+    def tools(self) -> list[dict]:
+        return [self.spec()]
+
+    def run_tool(self, name: str, args: dict, ctx: "SkillContext") -> str:
+        if name == self.name:
+            ok, err = self.validate(args)
+            if not ok:
+                return f"Validation error for '{name}': {err}"
+            try:
+                return self.run(**args)
+            except TypeError as exc:
+                import inspect
+                sig = inspect.signature(self.run)
+                return f"Wrong args for {name}: {exc}. Expected: {sig}"
+            except Exception as exc:
+                return f"Tool error ({name}): {exc}"
+        return f"Unknown tool: '{name}'"
+
+    def contribute_commands(self, app) -> None:
+        """Hook for skills to register Typer subcommands. Default: no-op."""
+
+
+class SkillRegistry:
+    _skills: dict[str, BaseSkill] = {}
+
+    @classmethod
+    def register(cls, skill: BaseSkill) -> None:
+        cls._skills[skill.name] = skill
+
+    @classmethod
+    def get(cls, name: str) -> BaseSkill | None:
+        return cls._skills.get(name)
+
+    @classmethod
+    def all(cls) -> list[BaseSkill]:
+        return list(cls._skills.values())
+
+    @classmethod
+    def all_tools(cls) -> list[dict]:
+        tools = []
+        for skill in cls._skills.values():
+            tools.extend(skill.tools())
+        return tools
+
+    @classmethod
+    def run_tool(cls, name: str, args: dict, ctx: "SkillContext") -> str:
+        skill = cls._skills.get(name)
+        if not skill:
+            available = ", ".join(cls._skills.keys())
+            return f"Unknown tool: '{name}'. Available: {available}"
+        return skill.run_tool(name, args, ctx)
+
+    @classmethod
+    def discover(cls, paths: list[Path]) -> None:
+        """Scan directories for skill.toml + __init__.py packages."""
+        for base in paths:
+            base = Path(base)
+            if not base.is_dir():
+                continue
+            for skill_dir in sorted(base.iterdir()):
+                if not skill_dir.is_dir():
+                    continue
+                init_file = skill_dir / "__init__.py"
+                toml_file = skill_dir / "skill.toml"
+                if not init_file.exists() or not toml_file.exists():
+                    continue
+                _load_skill_package(skill_dir)
+
+    @classmethod
+    def discover_legacy(cls, module_name: str) -> None:
+        """Import a legacy module that registers skills via SkillRegistry.register()."""
+        try:
+            importlib.import_module(module_name)
+        except ImportError:
+            pass
+
+
+def _load_skill_package(skill_dir: Path) -> None:
+    """Import a skill package and call its register() function if present."""
+    pkg_name = f"genie.skills.{skill_dir.name}"
+
+    # Do NOT add genie/ to sys.path — it would shadow the legacy `skills` package.
+    # genie is already importable because its root is in sys.path at startup.
+    try:
+        mod = importlib.import_module(pkg_name)
+        if hasattr(mod, "register"):
+            mod.register(SkillRegistry)
+    except Exception as exc:
+        import warnings
+        warnings.warn(f"Failed to load skill '{skill_dir.name}': {exc}", stacklevel=2)

@@ -1,0 +1,26 @@
+"""SkillContext and OutputSink Protocol."""
+from __future__ import annotations
+
+from dataclasses import dataclass, field
+from typing import Any, Protocol, runtime_checkable
+
+from genie.core.provider import Provider
+
+
+@runtime_checkable
+class OutputSink(Protocol):
+    def progress(self, msg: str) -> None: ...
+    def result(self, data: Any) -> None: ...
+    def stream(self, text: str) -> None: ...
+    def error(self, msg: str, code: int = 1) -> None: ...
+    def table(self, rows: list[dict], headers: list[str] | None = None) -> None: ...
+    def confirm(self, prompt: str) -> bool: ...
+    def markdown(self, text: str) -> None: ...
+
+
+@dataclass
+class SkillContext:
+    provider: Provider
+    output: OutputSink
+    config: dict
+    session: dict | None = None
