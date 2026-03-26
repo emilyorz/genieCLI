@@ -213,18 +213,19 @@ def print_session_info(session: dict, use_skills: bool = False, reasoning: str =
 
 def print_help():
     cmds = [
-        ("/new",        "Start a new conversation"),
-        ("/sessions",   "List saved conversations"),
-        ("/load <n>",   "Load conversation by number"),
-        ("/history",    "Show current conversation"),
-        ("/skills",     "List available skills/tools"),
-        ("/clear",      "Clear current conversation"),
-        ("/paste",      "Multiline paste mode (Ctrl-D to send)"),
-        ("/editor",     "Open editor for input (.sql), save & close to send"),
-        ("/help",       "Show this help"),
-        ("/reasoning",  "Toggle reasoning: disable/low/medium/high"),
-        ("/renew",      "Refresh auth token"),
-        ("/exit",       "Quit"),
+        ("/new",           "Start a new conversation"),
+        ("/sessions",      "List saved conversations"),
+        ("/load <n>",      "Load conversation by number"),
+        ("/history",       "Show current conversation"),
+        ("/skills",        "List available skills/tools"),
+        ("/clear",         "Clear current conversation"),
+        ("/paste",         "Multiline paste mode (Ctrl-D to send)"),
+        ("/editor",        "Open editor for input (.sql), save & close to send"),
+        ("/autoresearch",  "Start autonomous iteration loop"),
+        ("/help",          "Show this help"),
+        ("/reasoning",     "Toggle reasoning: disable/low/medium/high"),
+        ("/renew",         "Refresh auth token"),
+        ("/exit",          "Quit"),
     ]
     console.print()
     console.print("  [yellow]Commands:[/yellow]")
@@ -469,6 +470,246 @@ def _do_send(cfg: dict, session: dict, model: str, reasoning: str, user_input: s
         session["history"].pop()
 
 
+def _prompt_autoresearch_config():
+    """Interactively collect autoresearch configuration from the user.
+
+    Returns (RunConfig, max_iterations) or (None, 0) if user cancels.
+    """
+    from runtime.run_manager import RunConfig
+
+    console.print()
+    console.print("  [cyan]== Autoresearch Setup ==[/cyan]")
+    console.print("  [dim]Press Enter to accept defaults shown in brackets.[/dim]")
+    console.print()
+
+    def _ask(question: str, default: str = "") -> str:
+        suffix = f" [{default}]" if default else ""
+        try:
+            val = _get_prompt_session().prompt(f"  {question}{suffix}: ").strip()
+            return val if val else default
+        except (EOFError, KeyboardInterrupt):
+            return default
+
+    goal = _ask("1. Goal — what to improve")
+    if not goal:
+        console.print("  [red]Goal is required.[/red]")
+        return None, 0
+
+    scope_raw = _ask("2. Scope — file globs (space-separated)", "**/*.py")
+    scope = scope_raw.split() if scope_raw else ["**/*.py"]
+
+    verify = _ask("3. Verify command — shell command whose stdout contains the metric")
+    if not verify:
+        console.print("  [red]Verify command is required.[/red]")
+        return None, 0
+
+    direction = ""
+    while direction not in ("higher", "lower"):
+        direction = _ask("4. Direction — which is better", "higher").lower()
+        if direction not in ("higher", "lower"):
+            console.print("  [red]Enter 'higher' or 'lower'.[/red]")
+
+    guard = _ask("5. Guard command — must exit 0 to keep change (optional)", "") or None
+
+    iterations_raw = _ask("6. Max iterations", "10")
+    try:
+        max_iter = int(iterations_raw)
+        if max_iter < 1:
+            max_iter = 10
+    except ValueError:
+        max_iter = 10
+
+    run_cfg = RunConfig(
+        goal=goal,
+        scope=scope,
+        metric_direction=direction,
+        verify_command=verify,
+        guard_command=guard,
+    )
+
+    console.print()
+    console.print("  [green]Configuration confirmed:[/green]")
+    console.print(f"  Goal      : {escape(goal)}")
+    console.print(f"  Scope     : {escape(' '.join(scope))}")
+    console.print(f"  Verify    : {escape(verify)}")
+    console.print(f"  Direction : {direction} is better")
+    if guard:
+        console.print(f"  Guard     : {escape(guard)}")
+    console.print(f"  Iterations: {max_iter}")
+    console.print()
+
+    return run_cfg, max_iter
+
+
+def _build_iteration_context(state, iteration: int) -> str:
+    """Build the user-role context message for each autoresearch iteration."""
+    last = state.history[-1] if state.history else None
+
+    if last:
+        delta_str = f"{last.delta:+.4f}" if last.delta is not None else "N/A"
+        last_iter_str = f"{last.status} (metric={last.metric}, delta={delta_str})"
+    else:
+        last_iter_str = "N/A (first iteration)"
+
+    try:
+        git_result = subprocess.run(
+            ["git", "log", "--oneline", "-5"],
+            capture_output=True,
+            text=True,
+            cwd=state.cwd,
+        )
+        git_log = git_result.stdout.strip() or "(no commits)"
+    except Exception:
+        git_log = "(git log unavailable)"
+
+    return (
+        f"[Autoresearch Iteration {iteration}]\n"
+        f"Goal: {state.config.goal}\n"
+        f"Baseline metric: {state.baseline_metric}\n"
+        f"Current best: {state.current_best}\n"
+        f"Last iteration: {last_iter_str}\n"
+        f"Direction: {state.config.metric_direction} is better\n"
+        f"\nRecent git log:\n{git_log}\n"
+        f"\nWhat would you like to try next? Remember: ONE focused change."
+    )
+
+
+def run_autoresearch(cfg: dict, model: str, reasoning: str, session: dict):
+    """
+    Autoresearch loop:
+    1. Collect config from user (goal / scope / verify / direction / guard / iterations)
+    2. Load workflow markdown, inject into a dedicated session system prompt
+    3. Initialize RunManager, measure baseline
+    4. Loop: send context → parse file_patch → execute → step() → report → repeat
+    5. Print summary (also on KeyboardInterrupt)
+    """
+    from runtime.run_manager import RunManager
+    from workflows.loader import WorkflowLoader
+
+    run_cfg, max_iter = _prompt_autoresearch_config()
+    if run_cfg is None:
+        return
+
+    # Build system prompt: workflow SOP + skill definitions
+    loader = WorkflowLoader()
+    workflow_body = loader.inject_prompt("autoresearch") or ""
+    skill_defs = skill_runner.build_system_prompt()
+    sys_prompt = f"{workflow_body}\n\n{skill_defs}".strip()
+
+    ar_session = sess.new_session(sys_prompt)
+
+    cwd = str(Path.cwd())
+    run_cfg.max_iterations = max_iter
+    manager = RunManager()
+
+    console.print("  [dim]Measuring baseline metric...[/dim]")
+    state = manager.start(run_cfg, cwd)
+    if state.status == "failed":
+        console.print("  [red][ERROR] Run initialisation failed.[/red]")
+        console.print("  [dim]Check that you are inside a git repo and the verify command works.[/dim]")
+        return
+
+    console.print(f"  [green]Baseline: {state.baseline_metric}[/green]")
+    console.print(f"  [dim]Journal : {escape(state.journal_path or '')}[/dim]")
+    console.print()
+
+    try:
+        while manager.should_continue(state):
+            iteration = state.iteration + 1
+            console.print(f"  [cyan]── Iteration {iteration}/{max_iter} ──────────────────[/cyan]")
+
+            # Build and send context to LLM
+            context = _build_iteration_context(state, iteration)
+            ar_session["history"].append(new_msg("user", context))
+
+            console.print("  [dim]AI thinking...[/dim]")
+            reply = api.send(cfg, ar_session["history"], model, reasoning)
+            if not reply:
+                console.print("  [red][ERROR] Empty response from AI — stopping.[/red]")
+                break
+
+            ar_session["history"].append(new_msg("assistant", reply))
+
+            # Parse tool call; if missing, give the LLM one retry
+            tool_call = skill_runner.parse_tool_call(reply)
+            if not tool_call:
+                reminder = (
+                    "Please make exactly ONE file_patch tool call now. "
+                    "Use the JSON format: "
+                    '{"memory": "hypothesis", "tool": "file_patch", "args": {...}}'
+                )
+                ar_session["history"].append(new_msg("user", reminder))
+                reply2 = api.send(cfg, ar_session["history"], model, reasoning)
+                if reply2:
+                    ar_session["history"].append(new_msg("assistant", reply2))
+                    tool_call = skill_runner.parse_tool_call(reply2)
+
+            if not tool_call:
+                console.print("  [yellow][WARN] No tool call received — skipping iteration.[/yellow]")
+                continue
+
+            tool_name = tool_call.get("tool", "?")
+            hypothesis = tool_call.get("memory", "No hypothesis provided")
+            tool_args = tool_call.get("args", {})
+
+            args_preview = ", ".join(f"{k}={repr(v)[:40]}" for k, v in tool_args.items())
+            console.print(f"  [yellow][Tool] {escape(tool_name)}[/yellow] [dim]({escape(args_preview)})[/dim]")
+            console.print(f"  [dim]Hypothesis: {escape(hypothesis[:120])}[/dim]")
+
+            # Execute the tool (expected: file_patch)
+            patch_result = _normalize_result(skill_runner.run_tool(tool_call))
+            preview = patch_result[:120] + ("..." if len(patch_result) > 120 else "")
+            console.print(f"  [dim][Result] {escape(preview)}[/dim]")
+
+            if patch_result.startswith("ERROR"):
+                # Patch failed — report and continue without stepping
+                ar_session["history"].append(new_msg(
+                    "user",
+                    f"[Tool result: {tool_name}]\n{patch_result}\n\n"
+                    "The patch failed. Please try a different approach.",
+                ))
+                continue
+
+            # Step: checkpoint → guard → verify → keep/revert
+            state = manager.step(state, hypothesis, [])
+            last = state.history[-1] if state.history else None
+
+            if last:
+                delta_str = f"{last.delta:+.4f}" if last.delta is not None else "N/A"
+                kept = last.status == "improved"
+                color = "green" if kept else ("yellow" if last.status in ("same", "guard_failed") else "red")
+                console.print(
+                    f"  [{color}][{last.status.upper()}][/{color}] "
+                    f"metric={last.metric}  delta={delta_str}"
+                )
+
+                result_msg = (
+                    f"[Tool result: {tool_name}]\n{patch_result}\n\n"
+                    f"[Iteration {state.iteration} result]\n"
+                    f"Status : {last.status}\n"
+                    f"Metric : {last.metric}\n"
+                    f"Delta  : {delta_str}\n"
+                    f"{'Change KEPT — improvement detected.' if kept else 'Change REVERTED — no improvement.'}"
+                )
+                ar_session["history"].append(new_msg("user", result_msg))
+
+            if state.status == "failed":
+                console.print("  [red][ERROR] Run manager failed (restore error) — stopping.[/red]")
+                break
+
+    except KeyboardInterrupt:
+        console.print("\n  [yellow][INTERRUPTED] Stopping autoresearch loop...[/yellow]")
+        state.status = "stopped"
+
+    # Summary
+    console.print()
+    console.print("  [cyan]══ Autoresearch Complete ══════════════════[/cyan]")
+    print_ai_reply(manager.summary(state))
+    if state.journal_path:
+        console.print(f"  [dim]Journal saved: {escape(state.journal_path)}[/dim]")
+    console.print()
+
+
 def chat_loop(cfg: dict, model: str, reasoning: str, use_skills: bool):
     current_reasoning = reasoning
     session = sess.new_session(build_sys_prompt(cfg, use_skills))
@@ -546,6 +787,12 @@ def chat_loop(cfg: dict, model: str, reasoning: str, use_skills: bool):
                 console.print("  [green][OK] Token refreshed.[/green]")
             else:
                 console.print("  [red][ERROR] Token refresh failed.[/red]")
+
+        elif cmd == "/autoresearch":
+            if not use_skills:
+                console.print("  [yellow]Skills must be enabled for autoresearch. Restart with --skills[/yellow]")
+            else:
+                run_autoresearch(cfg, model, current_reasoning, session)
 
         elif cmd == "/paste":
             pasted = read_paste_mode()
