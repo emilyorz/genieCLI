@@ -36,6 +36,8 @@ from genie.session.manager import (
     save_session, update_title,
 )
 
+__version__ = "4.0.0"
+
 app = typer.Typer(
     name="genie",
     help="GenieCLI — plugin-based AI agent",
@@ -44,6 +46,12 @@ app = typer.Typer(
 )
 
 REASONING_LEVELS = ["disable", "low", "medium", "high"]
+
+
+def _version_callback(value: bool) -> None:
+    if value:
+        print(f"genie {__version__}")
+        raise typer.Exit()
 MAX_TOOL_LOOPS = 15
 
 
@@ -68,7 +76,13 @@ def _make_provider(cfg: dict, debug: bool = False):
 
 # ── Skill discovery ───────────────────────────────────────────────────────────
 
+_skills_discovered = False
+
+
 def _discover_skills(skill_dirs: list[Path] | None = None, legacy: bool = False) -> None:
+    global _skills_discovered
+    if _skills_discovered:
+        return
     bundled = Path(__file__).parent / "skills"
     paths = [bundled]
     if skill_dirs:
@@ -78,6 +92,7 @@ def _discover_skills(skill_dirs: list[Path] | None = None, legacy: bool = False)
     if legacy:
         # Also register skills from the old skills/ directory
         SkillRegistry.discover_legacy("skills")
+    _skills_discovered = True
 
 
 # ── System prompt builder ─────────────────────────────────────────────────────
@@ -708,6 +723,7 @@ def _chat_loop(
 @app.callback()
 def callback(
     ctx: typer.Context,
+    version: bool = typer.Option(False, "--version", callback=_version_callback, is_eager=True, help="Show version"),
     json_output: bool = typer.Option(False, "--json", help="Machine-readable JSON output"),
     no_color: bool = typer.Option(False, "--no-color", help="Disable color output"),
     model: Optional[str] = typer.Option(None, "-m", "--model", help="Model name"),

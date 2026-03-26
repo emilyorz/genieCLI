@@ -34,3 +34,19 @@ class MachineSink:
     def markdown(self, text: str) -> None:
         # Emit raw text; the consumer can render it however they like
         print(text)
+
+    def print(self, msg: str) -> None:
+        # In machine mode, print goes to stderr (not data output)
+        import re
+        # Strip Rich markup tags for machine output
+        clean = re.sub(r"\[/?[^\]]*\]", "", msg).strip()
+        if clean:
+            print(clean, file=sys.stderr)
+
+    def tool_call(self, name: str, args: dict) -> None:
+        payload = json.dumps({"event": "tool_call", "tool": name, "args": args}, ensure_ascii=False)
+        print(payload, file=sys.stderr)
+
+    def tool_result(self, result: str) -> None:
+        # Swallowed in machine mode — result is part of the tool loop, not user output
+        pass

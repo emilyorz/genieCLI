@@ -59,6 +59,15 @@ class NullSink:
     def markdown(self, text: str) -> None:
         self.captured.append(text)
 
+    def print(self, msg: str) -> None:
+        pass
+
+    def tool_call(self, name: str, args: dict) -> None:
+        pass
+
+    def tool_result(self, result: str) -> None:
+        pass
+
 
 @pytest.fixture
 def fake_provider():
