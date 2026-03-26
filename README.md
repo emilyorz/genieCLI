@@ -219,9 +219,108 @@ python main.py tools           # 列出所有 skill tools
 | `/clear` | 清除目前對話 |
 | `/reasoning` | 切換 reasoning 等級（disable/low/medium/high） |
 | `/renew` | 重新抓 auth token |
+| `/autoresearch` | 啟動自主迭代 loop（需加 `--skills`） |
 | `/help` | 顯示說明 |
 | `/exit` | 結束（自動儲存對話） |
 | `"""` | 進入多行輸入模式 |
+
+---
+
+## Autoresearch — 自主迭代 Loop
+
+讓 AI 自動迭代改善你的程式碼。設定目標和 metric，AI 會反覆嘗試修改 → 驗證 → 保留/回退，直到達標或用完次數。
+
+### 前置條件
+
+- 必須在 **git repo** 內執行（會用 git 做 checkpoint/revert）
+- 必須有一個能輸出數字的 **verify 指令**（例如 `pytest --tb=no -q | tail -1`）
+- 加 `--skills` 啟動
+
+### 快速開始
+
+```bash
+cd your-project
+python main.py --skills
+
+# 輸入
+/autoresearch
+```
+
+接著會問 6 個問題：
+
+```
+1. Goal — what to improve
+   → 例：Increase test pass rate
+
+2. Scope — file globs (space-separated) [**/*.py]
+   → 例：src/**/*.py tests/**/*.py
+
+3. Verify command — shell command whose stdout contains the metric
+   → 例：pytest --tb=no -q 2>&1 | tail -1 | grep -oP '\d+'
+
+4. Direction — which is better [higher]
+   → higher 或 lower
+
+5. Guard command — must exit 0 to keep change (optional)
+   → 例：ruff check .（留空跳過）
+
+6. Max iterations [10]
+   → 要跑幾輪
+```
+
+### 運作原理
+
+```
+Loop（每輪）：
+  1. AI 讀目前狀態 + git history + metric 趨勢
+  2. AI 提出 hypothesis，用 file_patch 做 ONE atomic 修改
+  3. Runtime 自動：
+     a. git commit（checkpoint）
+     b. 跑 guard command（有設的話）
+     c. 跑 verify command → 抽 metric
+     d. 比較：improved → 保留 / same or worse → git revert
+  4. 回報結果給 AI，進入下一輪
+```
+
+### 範例：提升測試通過率
+
+```
+Goal: Increase pytest pass count
+Scope: src/**/*.py
+Verify: pytest --tb=no -q 2>&1 | grep -oP '(\d+) passed' | grep -oP '\d+'
+Direction: higher
+Guard: ruff check .
+Iterations: 15
+```
+
+### 範例：縮小 bundle size
+
+```
+Goal: Reduce JavaScript bundle size
+Scope: src/**/*.js
+Verify: npx esbuild src/index.js --bundle --minify | wc -c
+Direction: lower
+Iterations: 10
+```
+
+### 輸出
+
+每輪會顯示：
+```
+── Iteration 3/10 ──────────────────
+[Tool] file_patch (path='src/utils.py', ...)
+Hypothesis: 移除未使用的 import 以減少 bundle size
+[IMPROVED] metric=45230  delta=-1200.0000
+```
+
+結束後印 summary + journal 路徑（`autoresearch_journal.tsv`）。
+
+### 注意事項
+
+- **Ctrl+C** 隨時中斷，會印到目前為止的 summary
+- 每輪只改一件事，改壞了自動 revert，不會弄髒你的 repo
+- Journal 記錄每輪的 metric / status / hypothesis，方便回顧
+- Verify 指令的 stdout 裡必須有數字，metric 取最後一個 float
 
 ---
 
