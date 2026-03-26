@@ -1,7 +1,8 @@
 """
 runtime/metric.py — Metric extraction and directional comparison.
 
-Runs a shell command and parses a float metric from its combined output.
+Runs a shell command and parses a float metric from its stdout.
+Non-zero exit codes are treated as failures.
 Comparison supports both "higher is better" and "lower is better" directions.
 
 Design: pure functions only; no global state.
@@ -26,12 +27,14 @@ def extract_metric(
     command: str,
     cwd: str,
     timeout: int = 60,
+    metric_pattern: str | None = None,
 ) -> MetricResult:
     """
-    Run command and extract the last float value from combined stdout + stderr.
+    Run command and extract the last float value from stdout.
 
-    The last float found in output is used as the metric (common for test
-    pass-rates, benchmark scores, coverage percentages, etc.).
+    Non-zero exit codes result in success=False regardless of output.
+    Only stdout is parsed for the metric; stderr is excluded.
+    metric_pattern: optional regex with one capture group for custom extraction.
     Raw output is capped at 2 000 characters to keep downstream logs compact.
     """
     try:
@@ -43,9 +46,33 @@ def extract_metric(
             text=True,
             timeout=timeout,
         )
-        combined = result.stdout + result.stderr
-        floats = re.findall(r"[-+]?\d+(?:\.\d+)?", combined)
-        raw = combined[:2000]
+        raw = result.stdout[:2000]
+
+        if result.returncode != 0:
+            return MetricResult(
+                value=None,
+                raw_output=raw,
+                success=False,
+                error=f"Command exited with code {result.returncode}",
+            )
+
+        if metric_pattern:
+            match = re.search(metric_pattern, result.stdout)
+            if match:
+                try:
+                    return MetricResult(
+                        value=float(match.group(1)), raw_output=raw, success=True
+                    )
+                except (IndexError, ValueError):
+                    pass
+            return MetricResult(
+                value=None,
+                raw_output=raw,
+                success=False,
+                error=f"metric_pattern '{metric_pattern}' not found in output",
+            )
+
+        floats = re.findall(r"[-+]?\d+(?:\.\d+)?", result.stdout)
         if not floats:
             return MetricResult(
                 value=None,

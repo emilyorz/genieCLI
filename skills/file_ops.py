@@ -4,6 +4,9 @@ skills/file_ops.py — File mutation primitive for the autoresearch loop.
 Provides a safe search-and-replace patch that validates old_text exists
 (exactly once) before modifying the file, preventing silent no-ops and
 accidental multi-site replacements.
+
+Path boundary enforcement prevents writes outside the working directory,
+including via symlinks that resolve to external paths.
 """
 from __future__ import annotations
 
@@ -17,7 +20,8 @@ class FilePatch(BaseSkill):
     description = (
         "Apply a search-and-replace patch to a file. "
         "Fails if old_text is not found, or if it appears more than once "
-        "(use more context to make it unique in that case)."
+        "(use more context to make it unique in that case). "
+        "The target path must resolve within the working directory."
     )
     group = "file"
     args = [
@@ -39,12 +43,31 @@ class FilePatch(BaseSkill):
             description="Replacement text",
             required=True,
         ),
+        Arg(
+            name="cwd",
+            type="string",
+            description="Working directory used as the path boundary (default: '.')",
+            required=False,
+            default=".",
+        ),
     ]
 
     def run(self, **kwargs) -> str:
         path = Path(kwargs["path"])
         old_text: str = kwargs["old_text"]
         new_text: str = kwargs["new_text"]
+        cwd_path = Path(kwargs.get("cwd", ".")).resolve()
+
+        # Enforce path boundary: resolve follows symlinks, so external symlinks
+        # are caught here too.
+        try:
+            resolved = path.resolve()
+            resolved.relative_to(cwd_path)
+        except ValueError:
+            return (
+                f"ERROR: Path '{path}' resolves to '{resolved}', "
+                f"which is outside working directory '{cwd_path}'"
+            )
 
         if not path.exists():
             return f"ERROR: File not found: {path}"

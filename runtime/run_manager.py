@@ -10,6 +10,7 @@ RunConfig and RunState are plain dataclasses.
 """
 from __future__ import annotations
 
+import shlex
 import subprocess
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -87,17 +88,26 @@ class RunManager:
         journal_path = str(Path(cwd) / "autoresearch_journal.tsv")
         journal = JournalWriter(journal_path)
 
-        if baseline.success:
-            journal.write_baseline(
-                metric=baseline.value,
-                description=f"goal: {config.goal}",
-            )
-        else:
+        if not baseline.success:
             journal.write_baseline(
                 metric=None,
                 description=f"baseline error: {baseline.error}",
             )
+            return RunState(
+                config=config,
+                iteration=0,
+                baseline_metric=None,
+                current_best=None,
+                status="failed",
+                history=[],
+                journal_path=journal_path,
+                cwd=cwd,
+            )
 
+        journal.write_baseline(
+            metric=baseline.value,
+            description=f"goal: {config.goal}",
+        )
         return RunState(
             config=config,
             iteration=0,
@@ -120,13 +130,14 @@ class RunManager:
 
         Mutates and returns the updated RunState.
         The caller is responsible for having already applied file changes before
-        calling step(); step() measures the result and decides keep/revert.
+        calling step(); step() commits them, measures the result, and decides
+        keep/revert.
         """
         state.iteration += 1
         iteration = state.iteration
         journal = JournalWriter(state.journal_path)
 
-        # 1. Checkpoint current state so we can revert if needed
+        # 1. Commit current (already-modified) state; record original_head for revert
         checkpoint = checkpoint_create(f"iter{iteration}", state.cwd)
         if "error" in checkpoint:
             result = IterationResult(
@@ -150,13 +161,13 @@ class RunManager:
             )
             return state
 
-        # 2. Optional guard check (e.g. linter, type-checker)
+        # 2. Optional guard check (e.g. linter, type-checker) on candidate state
         guard_passed = True
         if state.config.guard_command:
             try:
                 guard_proc = subprocess.run(
-                    state.config.guard_command,
-                    shell=True,
+                    shlex.split(state.config.guard_command),
+                    shell=False,
                     cwd=state.cwd,
                     capture_output=True,
                     text=True,
@@ -167,7 +178,31 @@ class RunManager:
                 guard_passed = False
 
         if not guard_passed:
-            checkpoint_restore(checkpoint, state.cwd)
+            restore_result = checkpoint_restore(checkpoint, state.cwd)
+            if "error" in restore_result:
+                state.status = "failed"
+                result = IterationResult(
+                    iteration=iteration,
+                    hypothesis=hypothesis,
+                    metric=None,
+                    delta=None,
+                    guard_passed=False,
+                    status="error",
+                    checkpoint=checkpoint,
+                    error=f"Restore failed after guard failure: {restore_result['error']}",
+                )
+                state.history.append(result)
+                journal.write_iteration(
+                    iteration=iteration,
+                    commit=checkpoint.get("commit_sha", ""),
+                    metric=None,
+                    delta=None,
+                    guard="fail",
+                    status="error",
+                    description=hypothesis,
+                )
+                return state
+
             result = IterationResult(
                 iteration=iteration,
                 hypothesis=hypothesis,
@@ -180,7 +215,7 @@ class RunManager:
             state.history.append(result)
             journal.write_iteration(
                 iteration=iteration,
-                commit=checkpoint.get("branch", ""),
+                commit=checkpoint.get("commit_sha", ""),
                 metric=None,
                 delta=None,
                 guard="fail",
@@ -189,7 +224,7 @@ class RunManager:
             )
             return state
 
-        # 3. Measure metric after changes
+        # 3. Measure metric on the committed candidate state
         metric_result = extract_metric(state.config.verify_command, state.cwd)
         current_value = metric_result.value
 
@@ -211,7 +246,30 @@ class RunManager:
             state.current_best = current_value
         else:
             # Changes did not improve — revert to pre-step state
-            checkpoint_restore(checkpoint, state.cwd)
+            restore_result = checkpoint_restore(checkpoint, state.cwd)
+            if "error" in restore_result:
+                state.status = "failed"
+                result = IterationResult(
+                    iteration=iteration,
+                    hypothesis=hypothesis,
+                    metric=current_value,
+                    delta=delta,
+                    guard_passed=guard_passed,
+                    status="error",
+                    checkpoint=checkpoint,
+                    error=f"Restore failed: {restore_result['error']}",
+                )
+                state.history.append(result)
+                journal.write_iteration(
+                    iteration=iteration,
+                    commit=checkpoint.get("commit_sha", ""),
+                    metric=current_value,
+                    delta=delta,
+                    guard="pass",
+                    status="error",
+                    description=hypothesis,
+                )
+                return state
 
         result = IterationResult(
             iteration=iteration,
@@ -225,7 +283,7 @@ class RunManager:
         state.history.append(result)
         journal.write_iteration(
             iteration=iteration,
-            commit=checkpoint.get("branch", ""),
+            commit=checkpoint.get("commit_sha", ""),
             metric=current_value,
             delta=delta,
             guard="pass",

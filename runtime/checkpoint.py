@@ -9,6 +9,7 @@ instead of raising exceptions, keeping error handling structural.
 """
 from __future__ import annotations
 
+import re
 import subprocess
 import time
 from pathlib import Path
@@ -29,10 +30,9 @@ def _run_git(args: list[str], cwd: str) -> tuple[int, str, str]:
     return result.returncode, result.stdout.strip(), result.stderr.strip()
 
 
-def _get_current_branch(cwd: str) -> str | None:
-    """Return the current branch name, or None on failure."""
-    code, stdout, _ = _run_git(["rev-parse", "--abbrev-ref", "HEAD"], cwd)
-    return stdout if code == 0 else None
+def _sanitize_label(label: str) -> str:
+    """Replace characters outside [a-zA-Z0-9_-] with underscores."""
+    return re.sub(r"[^a-zA-Z0-9_-]", "_", label)
 
 
 # ---------------------------------------------------------------------------
@@ -53,47 +53,41 @@ def git_is_clean(cwd: str | Path) -> bool:
 
 def checkpoint_create(label: str, cwd: str | Path) -> dict:
     """
-    Commit current changes to a checkpoint branch.
+    Commit current changes on the current branch without switching branches.
 
-    Creates branch autoresearch-{label}-{timestamp}, stages all changes,
-    commits, then returns to the original branch.
+    Records the HEAD SHA before committing (original_head) so that
+    checkpoint_restore() can reset back to that exact state.
 
-    Returns {"label", "branch", "original_branch", "timestamp", "cwd"}
+    Returns {"label", "original_head", "commit_sha", "timestamp", "cwd"}
     or {"error": "..."} on failure.
     """
     cwd = str(cwd)
     timestamp = int(time.time())
-    branch_name = f"autoresearch-{label}-{timestamp}"
+    label = _sanitize_label(label)
 
-    original_branch = _get_current_branch(cwd)
-    if original_branch is None:
-        return {"error": "Could not determine current branch"}
-
-    code, _, err = _run_git(["checkout", "-b", branch_name], cwd)
+    # Record HEAD before staging so restore can return here
+    code, original_head, err = _run_git(["rev-parse", "HEAD"], cwd)
     if code != 0:
-        return {"error": f"Failed to create branch '{branch_name}': {err}"}
+        return {"error": f"Could not determine current HEAD: {err}"}
 
     code, _, err = _run_git(["add", "-A"], cwd)
     if code != 0:
-        # Try to get back before bailing
-        _run_git(["checkout", original_branch], cwd)
         return {"error": f"Failed to stage changes: {err}"}
 
     code, _, err = _run_git(
         ["commit", "--allow-empty", "-m", f"checkpoint: {label}"], cwd
     )
     if code != 0:
-        _run_git(["checkout", original_branch], cwd)
         return {"error": f"Failed to commit checkpoint: {err}"}
 
-    code, _, err = _run_git(["checkout", original_branch], cwd)
+    code, commit_sha, err = _run_git(["rev-parse", "HEAD"], cwd)
     if code != 0:
-        return {"error": f"Failed to return to original branch '{original_branch}': {err}"}
+        return {"error": f"Could not read new HEAD SHA: {err}"}
 
     return {
         "label": label,
-        "branch": branch_name,
-        "original_branch": original_branch,
+        "original_head": original_head,
+        "commit_sha": commit_sha,
         "timestamp": timestamp,
         "cwd": cwd,
     }
@@ -101,24 +95,20 @@ def checkpoint_create(label: str, cwd: str | Path) -> dict:
 
 def checkpoint_restore(checkpoint_info: dict, cwd: str | Path) -> dict:
     """
-    Restore the working tree to the state before a checkpoint was created.
+    Restore the working tree to the state before the checkpoint was created.
 
-    Checks out original_branch and resets --hard to HEAD, discarding any
-    changes made after the checkpoint.
+    Resets --hard to original_head, discarding the checkpoint commit and any
+    subsequent changes.
 
-    Returns {"ok": True, "restored_branch": str} or {"error": "..."}.
+    Returns {"ok": True, "restored_head": str} or {"error": "..."}.
     """
     cwd = str(cwd)
-    original_branch = checkpoint_info.get("original_branch")
-    if not original_branch:
-        return {"error": "checkpoint_info missing 'original_branch'"}
+    original_head = checkpoint_info.get("original_head")
+    if not original_head:
+        return {"error": "checkpoint_info missing 'original_head'"}
 
-    code, _, err = _run_git(["checkout", original_branch], cwd)
+    code, _, err = _run_git(["reset", "--hard", original_head], cwd)
     if code != 0:
-        return {"error": f"Failed to checkout '{original_branch}': {err}"}
+        return {"error": f"Failed to reset --hard to {original_head}: {err}"}
 
-    code, _, err = _run_git(["reset", "--hard", "HEAD"], cwd)
-    if code != 0:
-        return {"error": f"Failed to reset --hard: {err}"}
-
-    return {"ok": True, "restored_branch": original_branch}
+    return {"ok": True, "restored_head": original_head}

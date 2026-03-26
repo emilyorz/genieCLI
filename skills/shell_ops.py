@@ -2,12 +2,13 @@
 skills/shell_ops.py — Safe shell execution skill for the autoresearch loop.
 
 Provides profile-based command execution with a whitelist that prevents
-arbitrary command injection.  Custom commands must match ALLOWED_PATTERNS.
-All executions are bounded by timeout and a 10 KB output cap.
+arbitrary command injection.  Custom commands are parsed with shlex and
+executed with shell=False, so chained operators like && cannot bypass the
+whitelist.
 """
 from __future__ import annotations
 
-import fnmatch
+import shlex
 import subprocess
 
 from .base import Arg, BaseSkill
@@ -24,21 +25,10 @@ PROFILES: dict[str, str] = {
     "build": "npm run build",
 }
 
-# Patterns for custom_command whitelist (fnmatch syntax).
-ALLOWED_PATTERNS = [
-    "pytest",
-    "pytest *",
-    "python -m pytest",
-    "python -m pytest *",
-    "npm test",
-    "npm test *",
-    "npm run *",
-    "ruff *",
-    "eslint *",
-    "make *",
-    "cargo test",
-    "cargo test *",
-]
+ALLOWED_EXECUTABLES = {"pytest", "python", "python3", "npm", "ruff", "eslint", "make", "cargo"}
+
+# Tokens that indicate shell chaining — reject any command containing these
+_SHELL_OPERATORS = {"&&", "||", ";", "|", ">", ">>", "<", "&"}
 
 OUTPUT_LIMIT = 10 * 1024  # 10 KB
 
@@ -48,16 +38,31 @@ OUTPUT_LIMIT = 10 * 1024  # 10 KB
 # ---------------------------------------------------------------------------
 
 def _is_allowed(command: str) -> bool:
-    """Return True if command matches any entry in ALLOWED_PATTERNS."""
-    command = command.strip()
-    for pattern in ALLOWED_PATTERNS:
-        if fnmatch.fnmatch(command, pattern):
-            return True
-        # Exact match or prefix match for patterns without wildcards
-        bare = pattern.rstrip("*").rstrip()
-        if command == bare or command.startswith(bare + " "):
-            return True
-    return False
+    """
+    Return True if command is safe to execute.
+
+    Parses with shlex and rejects any token that is a shell operator, so
+    chained commands like `pytest && rm -rf /` are blocked even though shlex
+    tokenises them without error.  Only whitelisted executables are permitted;
+    python/python3 are further restricted to `python -m pytest` invocations.
+    """
+    try:
+        parts = shlex.split(command)
+    except ValueError:
+        return False
+    if not parts:
+        return False
+    # Reject any shell operator tokens regardless of position
+    if _SHELL_OPERATORS.intersection(parts):
+        return False
+    exe = parts[0]
+    if exe not in ALLOWED_EXECUTABLES:
+        return False
+    # python/python3 only allowed as: python -m pytest [args...]
+    if exe in ("python", "python3"):
+        if not (len(parts) >= 3 and parts[1] == "-m" and parts[2] == "pytest"):
+            return False
+    return True
 
 
 # ---------------------------------------------------------------------------
@@ -85,7 +90,7 @@ class CommandRun(BaseSkill):
             type="string",
             description=(
                 "Command to run (only when profile=custom). "
-                "Must match ALLOWED_PATTERNS whitelist."
+                "Must match the executable whitelist."
             ),
             required=False,
             default=None,
@@ -118,7 +123,7 @@ class CommandRun(BaseSkill):
             if not _is_allowed(custom_command):
                 return (
                     f"ERROR: Command not in whitelist: '{custom_command}'\n"
-                    f"Allowed patterns: {ALLOWED_PATTERNS}"
+                    f"Allowed executables: {sorted(ALLOWED_EXECUTABLES)}"
                 )
             command = custom_command
         elif profile in PROFILES:
@@ -128,8 +133,8 @@ class CommandRun(BaseSkill):
 
         try:
             result = subprocess.run(
-                command,
-                shell=True,
+                shlex.split(command),
+                shell=False,
                 cwd=cwd,
                 capture_output=True,
                 text=True,
