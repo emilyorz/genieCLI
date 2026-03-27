@@ -1,0 +1,5 @@
+[skill]
+name = "git_ops"
+version = "1.0.0"
+description = "Git status, diff, log, and checkpoint operations"
+group = "git"

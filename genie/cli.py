@@ -1,0 +1,299 @@
+#!/usr/bin/env python3
+"""
+GenieCLI — plugin-based AI agent CLI.
+
+Usage:
+    python -m genie                         # interactive chat (default)
+    python -m genie chat                    # same as above
+    python -m genie query.sql               # file, non-interactive
+    cat query.sql | python -m genie        # stdin pipe
+    python -m genie --json tools           # machine-readable tool list
+    python -m genie --skills --debug       # tools + debug output
+    python -m genie sessions               # list saved conversations
+    python -m genie config                 # show config
+    python -m genie tools                  # list available tools
+"""
+from __future__ import annotations
+
+import sys
+from functools import partial
+from pathlib import Path
+from typing import Optional
+
+import typer
+
+from genie.core.config import load as load_config
+from genie.core.registry import SkillRegistry
+from genie.output.human import HumanSink
+from genie.output.machine import MachineSink
+from genie.session.manager import list_sessions, new_msg, new_session
+
+__version__ = "4.0.0"
+
+app = typer.Typer(
+    name="genie",
+    help="GenieCLI — plugin-based AI agent",
+    add_completion=False,
+    invoke_without_command=True,
+)
+
+REASONING_LEVELS = ["disable", "low", "medium", "high"]
+
+
+def _version_callback(value: bool) -> None:
+    if value:
+        print(f"genie {__version__}")
+        raise typer.Exit()
+
+
+# ── Provider factory ──────────────────────────────────────────────────────────
+
+def _make_provider(cfg: dict, debug: bool = False):
+    interface = cfg.get("interface", "tgenie")
+
+    if interface == "openai":
+        from genie.providers.openai import OpenAIProvider, set_debug
+        set_debug(debug)
+        return OpenAIProvider(cfg)
+    elif interface == "anthropic":
+        from genie.providers.anthropic import AnthropicProvider, set_debug
+        set_debug(debug)
+        return AnthropicProvider(cfg)
+    else:
+        from genie.providers.tgenie import TGenieProvider, set_debug
+        set_debug(debug)
+        return TGenieProvider(cfg)
+
+
+# ── Skill discovery ───────────────────────────────────────────────────────────
+
+_skills_discovered = False
+
+
+def _discover_skills(skill_dirs: list[Path] | None = None, legacy: bool = False) -> None:
+    global _skills_discovered
+    if _skills_discovered:
+        return
+    bundled = Path(__file__).parent / "skills"
+    paths = [bundled]
+    if skill_dirs:
+        paths.extend(skill_dirs)
+    SkillRegistry.discover(paths)
+
+    if legacy:
+        SkillRegistry.discover_legacy("skills")
+    _skills_discovered = True
+
+
+# ── System prompt builder ─────────────────────────────────────────────────────
+
+def _build_system_prompt(cfg: dict, use_skills: bool) -> str:
+    base = cfg.get("systemPrompt", "")
+    if not use_skills:
+        return base
+
+    skills = SkillRegistry.all()
+    tool_lines = []
+    for skill in skills:
+        if skill.args:
+            parts = []
+            for arg in skill.args:
+                part = f"{arg.name}: {arg.description}"
+                if not arg.required:
+                    part += f" (optional, default: {arg.default})"
+                if arg.choices:
+                    part += f" [{'/'.join(arg.choices)}]"
+                parts.append(part)
+            args_str = ", ".join(parts)
+        else:
+            args_str = "no args"
+        tool_lines.append(f"- {skill.name}({args_str}): {skill.description}")
+
+    tools_block = "\n".join(tool_lines)
+
+    skill_prompt = f"""## HOW TO USE TOOLS
+
+When you need a tool, output ONLY this JSON (no explanation, no markdown):
+{{"memory": "1-2 sentence summary of progress.", "tool": "tool_name", "args": {{"key": "value"}}}}
+
+When the task is complete and no more tools are needed, output:
+{{"memory": "Task complete.", "tool": null, "args": {{}}}}
+
+## AVAILABLE TOOLS
+
+{tools_block}
+"""
+    return f"{base}\n\n{skill_prompt}".strip() if base else skill_prompt
+
+
+# ── Typer commands ────────────────────────────────────────────────────────────
+
+@app.callback()
+def callback(
+    ctx: typer.Context,
+    version: bool = typer.Option(False, "--version", callback=_version_callback, is_eager=True, help="Show version"),
+    json_output: bool = typer.Option(False, "--json", help="Machine-readable JSON output"),
+    no_color: bool = typer.Option(False, "--no-color", help="Disable color output"),
+    model: Optional[str] = typer.Option(None, "-m", "--model", help="Model name"),
+    provider_name: Optional[str] = typer.Option(None, "--provider", help="Provider: tgenie/openai/anthropic"),
+    skill_dir: Optional[str] = typer.Option(None, "--skill-dir", help="Additional skill directory"),
+    debug: bool = typer.Option(False, "-d", "--debug", help="Debug HTTP output"),
+    skills: bool = typer.Option(False, "-s", "--skills", help="Enable skill tools"),
+    reasoning: str = typer.Option("disable", "-r", "--reasoning", help="Reasoning level"),
+    target: Optional[str] = typer.Argument(None),
+) -> None:
+    """GenieCLI — plugin-based AI agent."""
+    if ctx.invoked_subcommand is not None:
+        return
+
+    is_tty = sys.stdout.isatty()
+    output: HumanSink | MachineSink = MachineSink() if (json_output or not is_tty) else HumanSink()
+
+    overrides: dict = {}
+    if provider_name:
+        overrides["interface"] = provider_name
+    cfg = load_config(overrides)
+
+    resolved_model = model or cfg.get("defaultModel", "gemini-2.5-flash")
+
+    extra_dirs = [Path(skill_dir)] if skill_dir else None
+    _discover_skills(extra_dirs, legacy=skills)
+
+    if target == "sessions":
+        _cmd_sessions(output)
+        return
+    if target == "config":
+        _cmd_config(cfg, output)
+        return
+    if target == "tools":
+        _cmd_tools(output, skills)
+        return
+
+    if cfg.get("interface", "tgenie") == "tgenie" and not cfg.get("authToken"):
+        output.error("No auth token. Run: python grab_auth.py")
+        raise typer.Exit(1)
+
+    provider = _make_provider(cfg, debug=debug)
+
+    if target and target not in ("chat",):
+        path = Path(target)
+        if not path.exists():
+            output.error(f"File not found: {target}")
+            raise typer.Exit(1)
+        query = path.read_text(encoding="utf-8", errors="replace")
+        session = new_session(_build_system_prompt(cfg, skills))
+        from genie.chat import _do_send
+        from genie.core.context import SkillContext
+        ctx_obj = SkillContext(provider=provider, output=output, config=cfg)
+        _do_send(provider, session, resolved_model, reasoning, query, output, ctx_obj)
+        return
+
+    if not sys.stdin.isatty():
+        query = sys.stdin.read()
+        if not query.strip():
+            output.error("Empty stdin")
+            raise typer.Exit(1)
+        session = new_session(_build_system_prompt(cfg, skills))
+        from genie.chat import _do_send
+        from genie.core.context import SkillContext
+        ctx_obj = SkillContext(provider=provider, output=output, config=cfg)
+        _do_send(provider, session, resolved_model, reasoning, query, output, ctx_obj)
+        return
+
+    if not isinstance(output, HumanSink):
+        output = HumanSink()
+    from genie.chat import _chat_loop
+    build_prompt = partial(_build_system_prompt, cfg)
+    _chat_loop(provider, cfg, resolved_model, reasoning, use_skills=skills, output=output, build_prompt=build_prompt)
+
+
+@app.command("sessions")
+def cmd_sessions_sub() -> None:
+    """List saved conversations."""
+    _cmd_sessions(HumanSink())
+
+
+@app.command("config")
+def cmd_config_sub() -> None:
+    """Show current configuration."""
+    cfg = load_config()
+    _cmd_config(cfg, HumanSink())
+
+
+@app.command("tools")
+def cmd_tools_sub(
+    json_output: bool = typer.Option(False, "--json"),
+    skills: bool = typer.Option(True, "--skills/--no-skills"),
+) -> None:
+    """List available skill tools."""
+    output: HumanSink | MachineSink = MachineSink() if json_output else HumanSink()
+    _discover_skills(legacy=skills)
+    _cmd_tools(output, skills)
+
+
+# ── Subcommand implementations ────────────────────────────────────────────────
+
+def _cmd_sessions(output: HumanSink | MachineSink) -> None:
+    sessions = list_sessions()
+    if isinstance(output, MachineSink):
+        output.result(sessions)
+        return
+    if not sessions:
+        output.print("  [dim]No saved sessions yet.[/dim]")
+        return
+    for i, s in enumerate(sessions, 1):
+        output.print(
+            f"  [cyan]{i}[/cyan]. [{s.get('created', '')[:15]}] "
+            f"{s['title'][:40]:<42} [dim]{s['turns']} turns[/dim]"
+        )
+
+
+def _cmd_config(cfg: dict, output: HumanSink | MachineSink) -> None:
+    if isinstance(output, MachineSink):
+        safe = {k: v for k, v in cfg.items() if k not in ("authToken", "openaiApiKey", "cookies")}
+        output.result(safe)
+        return
+    from rich.markup import escape
+    output.print("\n  [yellow]Current config:[/yellow]")
+    safe_keys = ["interface", "endpoint", "frontendUrl", "defaultModel",
+                 "openaiBaseUrl", "openaiContentArray", "systemPrompt"]
+    secret_keys = ["authToken", "openaiApiKey", "customHeader"]
+    for k in safe_keys:
+        if k in cfg and cfg[k]:
+            val = str(cfg[k])
+            if len(val) > 60:
+                val = val[:57] + "..."
+            output.print(f"  [cyan]{k:<28}[/cyan] {escape(val)}")
+    for k in secret_keys:
+        if k in cfg and cfg[k]:
+            v = str(cfg[k])
+            masked = v[:4] + "****" + v[-4:] if len(v) > 12 else "****"
+            output.print(f"  [cyan]{k:<28}[/cyan] {masked}")
+
+
+def _cmd_tools(output: HumanSink | MachineSink, use_skills: bool = True) -> None:
+    if use_skills:
+        _discover_skills(legacy=True)
+    skills = SkillRegistry.all()
+    if isinstance(output, MachineSink):
+        output.result([s.spec() for s in skills])
+        return
+    if not skills:
+        output.print("  [dim]No skills registered.[/dim]")
+        return
+    from rich.markup import escape
+    output.print("\n  [yellow]Available skills:[/yellow]")
+    for s in skills:
+        output.print(f"  [cyan]{s.name:<30}[/cyan] {escape(s.description)}")
+        if s.args:
+            for arg in s.args:
+                detail = arg.description
+                if not arg.required:
+                    detail += f" (default: {arg.default})"
+                output.print(f"  {'':30} [dim]{arg.name}[/dim]: {detail}")
+
+
+# ── Entry point ───────────────────────────────────────────────────────────────
+
+def main() -> None:
+    app()
