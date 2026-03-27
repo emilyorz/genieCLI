@@ -13,15 +13,10 @@ AI then operates on element IDs, not selectors.
 
 import json
 import re
-import sys
-import os
 
-# Import shared CDP singleton from skills package
+
 def _get_cdp():
-    root = os.path.dirname(os.path.abspath(__file__))
-    if root not in sys.path:
-        sys.path.insert(0, root)
-    from skills._cdp import get_shared_cdp
+    from genie.skills.browser.cdp import get_shared_cdp
     return get_shared_cdp()
 
 
