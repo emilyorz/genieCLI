@@ -40,8 +40,11 @@ requires:
 每輪只輸出一個 tool call，格式如下：
 
 ```json
-{"memory": "Hypothesis: 改動原因和預期效果", "tool": "file_patch", "args": {"path": "相對路徑", "old_text": "原始程式碼", "new_text": "修改後程式碼"}}
+{"memory": "Hypothesis: 改動原因和預期效果", "tool": "file_patch", "args": {"path": "相對路徑", "patch": "--- a/相對路徑\\n+++ b/相對路徑\\n@@ ..."}} 
 ```
+
+`file_patch` 接受的是 unified diff patch，不是 `old_text` / `new_text`。
+`path` 必須對應要套用 patch 的檔案，`patch` 內容則是該檔案的 unified diff。
 
 修改完成後，runtime 會自動跑 verify 並回報結果給你。
 
@@ -63,7 +66,7 @@ requires:
 - 移除重複程式碼
 
 ## 失敗時的應對
-- `error`：file_patch 失敗 → 檢查路徑、old_text 是否正確
+- `error`：file_patch 失敗 → 檢查路徑、patch 格式與 hunks 是否正確
 - `guard_failed`：lint/type check 失敗 → 修正語法錯誤
 - `worse` 連續出現 → 換方向，考慮之前成功的策略
 - `same` 連續出現 → 嘗試更大幅度的改動

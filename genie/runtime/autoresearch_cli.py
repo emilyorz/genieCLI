@@ -23,6 +23,19 @@ def _normalize_result(result) -> str:
     return result if isinstance(result, str) else str(result)
 
 
+def _is_tool_failure(result: str) -> bool:
+    failure_prefixes = (
+        "ERROR",
+        "Validation error",
+        "Wrong args",
+        "Tool error",
+        "Unknown tool",
+        "Patch failed",
+        "Error applying patch",
+    )
+    return result.startswith(failure_prefixes)
+
+
 def _run_autoresearch(
     provider,
     cfg: dict,
@@ -173,7 +186,7 @@ def _run_autoresearch(
             patch_result = _normalize_result(SkillRegistry.run_tool(tool_name, tool_args, ctx))
             output.progress(f"[Result] {patch_result[:80]}")
 
-            if patch_result.startswith("ERROR"):
+            if _is_tool_failure(patch_result):
                 ar_session["history"].append(new_msg(
                     "user",
                     f"[Tool result: {tool_name}]\n{patch_result}\n\nPatch failed. Try a different approach.",
