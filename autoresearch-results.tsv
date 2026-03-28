@@ -1,7 +1,0 @@
-iter	action	metric	delta	status	note
-0	baseline	34	—	—	baseline
-1	add test_openai_provider.py	37	+3	keep	OpenAI provider 90% covered, 20 tests
-2	add test_anthropic_provider.py	40	+3	keep	Anthropic provider 82% covered, 14 tests
-3	add test_tgenie_provider.py	42	+2	keep	TGenie provider 85% covered, 15 tests
-4	add test_cli_commands.py	56	+14	keep	cli.py 68% covered, 24 tests
-5	add test_cli_coverage.py	58	+2	keep	cli 84%, providers 84-95%, base 93%, 19 tests

@@ -23,3 +23,6 @@ element.png
 .DS_Store
 .vscode/
 .idea/
+.autoresearch-starred
+.coverage
+autoresearch-results.tsv
