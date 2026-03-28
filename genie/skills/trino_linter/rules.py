@@ -5,6 +5,8 @@ import re
 from dataclasses import dataclass
 from typing import Any
 
+from genie.skills.oracle2trino.patterns import get_construct_meta
+
 
 @dataclass
 class Finding:
@@ -77,14 +79,15 @@ def _strip_comments_and_strings(sql: str) -> str:
 
 def check_nvl(sql: str, statements: list) -> list[Finding]:
     """oracle-residual-nvl: NVL() → COALESCE()"""
+    _m = get_construct_meta("NVL") or {}
     stripped = _strip_comments_and_strings(sql)
     return [
         Finding(
-            severity="high",
+            severity=_m.get("severity", "high"),
             line=line,
             rule="oracle-residual-nvl",
-            message="NVL() is an Oracle function not supported in Trino",
-            suggestion="Replace NVL(a, b) with COALESCE(a, b)",
+            message=_m.get("message", "NVL() is an Oracle function not supported in Trino"),
+            suggestion=_m.get("suggestion", "Replace NVL(a, b) with COALESCE(a, b)"),
         )
         for line in _all_lines_of(stripped, r"\bNVL\s*\(")
     ]
@@ -92,14 +95,15 @@ def check_nvl(sql: str, statements: list) -> list[Finding]:
 
 def check_decode(sql: str, statements: list) -> list[Finding]:
     """oracle-residual-decode: DECODE() → CASE WHEN"""
+    _m = get_construct_meta("DECODE") or {}
     stripped = _strip_comments_and_strings(sql)
     return [
         Finding(
-            severity="high",
+            severity=_m.get("severity", "high"),
             line=line,
             rule="oracle-residual-decode",
-            message="DECODE() is an Oracle function not supported in Trino",
-            suggestion="Replace DECODE(expr, s1, r1, ..., def) with CASE WHEN expr=s1 THEN r1 ... ELSE def END",
+            message=_m.get("message", "DECODE() is an Oracle function not supported in Trino"),
+            suggestion=_m.get("suggestion", "Replace DECODE(expr, s1, r1, ..., def) with CASE WHEN expr=s1 THEN r1 ... ELSE def END"),
         )
         for line in _all_lines_of(stripped, r"\bDECODE\s*\(")
     ]
@@ -107,14 +111,15 @@ def check_decode(sql: str, statements: list) -> list[Finding]:
 
 def check_plus_join(sql: str, statements: list) -> list[Finding]:
     """oracle-residual-plus-join: (+) outer join syntax"""
+    _m = get_construct_meta("(+)") or {}
     stripped = _strip_comments_and_strings(sql)
     return [
         Finding(
-            severity="high",
+            severity=_m.get("severity", "high"),
             line=line,
             rule="oracle-residual-plus-join",
-            message="Oracle outer join syntax (+) is not supported in Trino",
-            suggestion="Rewrite as ANSI LEFT JOIN or RIGHT JOIN",
+            message=_m.get("message", "Oracle outer join syntax (+) is not supported in Trino"),
+            suggestion=_m.get("suggestion", "Rewrite as ANSI LEFT JOIN or RIGHT JOIN"),
         )
         for line in _all_lines_of(stripped, r"\(\s*\+\s*\)")
     ]
@@ -122,14 +127,15 @@ def check_plus_join(sql: str, statements: list) -> list[Finding]:
 
 def check_rownum(sql: str, statements: list) -> list[Finding]:
     """oracle-residual-rownum: ROWNUM → LIMIT / ROW_NUMBER()"""
+    _m = get_construct_meta("ROWNUM") or {}
     stripped = _strip_comments_and_strings(sql)
     return [
         Finding(
-            severity="high",
+            severity=_m.get("severity", "high"),
             line=line,
             rule="oracle-residual-rownum",
-            message="ROWNUM is an Oracle pseudo-column not supported in Trino",
-            suggestion="Replace with ROW_NUMBER() OVER (...) in a subquery, or use FETCH FIRST n ROWS ONLY",
+            message=_m.get("message", "ROWNUM is an Oracle pseudo-column not supported in Trino"),
+            suggestion=_m.get("suggestion", "Replace with ROW_NUMBER() OVER (...) in a subquery, or use FETCH FIRST n ROWS ONLY"),
         )
         for line in _all_lines_of(stripped, r"\bROWNUM\b")
     ]
@@ -137,14 +143,15 @@ def check_rownum(sql: str, statements: list) -> list[Finding]:
 
 def check_sysdate(sql: str, statements: list) -> list[Finding]:
     """oracle-residual-sysdate: SYSDATE → CURRENT_TIMESTAMP"""
+    _m = get_construct_meta("SYSDATE") or {}
     stripped = _strip_comments_and_strings(sql)
     return [
         Finding(
-            severity="high",
+            severity=_m.get("severity", "high"),
             line=line,
             rule="oracle-residual-sysdate",
-            message="SYSDATE is an Oracle keyword not supported in Trino",
-            suggestion="Replace SYSDATE with CURRENT_TIMESTAMP or NOW()",
+            message=_m.get("message", "SYSDATE is an Oracle keyword not supported in Trino"),
+            suggestion=_m.get("suggestion", "Replace SYSDATE with CURRENT_TIMESTAMP or NOW()"),
         )
         for line in _all_lines_of(stripped, r"\bSYSDATE\b")
     ]
