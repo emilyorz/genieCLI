@@ -53,7 +53,7 @@
 
 ### 前置需求
 
-- Python 3.9+
+- Python 3.10+
 - Chrome 開啟 remote debugging：
 
   ```bash
