@@ -1,0 +1,8 @@
+[skill]
+name = "trino_linter"
+version = "1.0.0"
+description = "Static SQL linter for Trino queries — detects Oracle residuals and Trino anti-patterns"
+group = "trino_linter"
+
+[skill.requires]
+python = ["sqlglot"]
