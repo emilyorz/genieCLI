@@ -312,3 +312,40 @@ def test_compute_confidence_mixed():
 def test_compute_confidence_clamped_at_zero():
     items = [UnsupportedConstruct(str(i), "high", "m", "s") for i in range(10)]
     assert compute_confidence(items) == 0.0
+
+
+# ── comment/string stripping regression tests (H1 / M2) ──────────────────────
+
+def test_nvl_in_line_comment_not_flagged():
+    # NVL only appears in a line comment — must not be reported as unsupported
+    result = _run_transpile("SELECT 1 -- NVL(a,0)\nFROM t")
+    assert "NVL" not in _constructs(result)
+
+
+def test_rownum_in_string_literal_not_flagged():
+    # ROWNUM only appears inside a string literal — must not be reported
+    result = _run_transpile("SELECT 'ROWNUM' AS x FROM t")
+    assert "ROWNUM" not in _constructs(result)
+
+
+def test_analyze_sp_nvl_in_comment_not_flagged():
+    # analyze_oracle_sp must also strip comments before construct detection
+    result = _run_analyze("SELECT 1 /* NVL(a,0) is the Oracle function */ FROM t")
+    assert "NVL" not in _constructs(result)
+
+
+def test_linter_and_converter_agree_on_comment_sql():
+    """Both linter and converter must produce zero Oracle-residual findings for SQL
+    where Oracle keywords only appear inside comments."""
+    from genie.skills.trino_linter.rules import check_nvl, check_rownum, check_sysdate
+
+    sql = "SELECT id -- ROWNUM NVL SYSDATE\nFROM t WHERE id = 1"
+
+    # Converter: no unsupported constructs
+    result = _run_transpile(sql)
+    assert _constructs(result).isdisjoint({"NVL", "ROWNUM", "SYSDATE"})
+
+    # Linter: no findings for the same keywords
+    assert check_nvl(sql, []) == []
+    assert check_rownum(sql, []) == []
+    assert check_sysdate(sql, []) == []

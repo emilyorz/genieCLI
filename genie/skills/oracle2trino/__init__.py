@@ -11,6 +11,7 @@ from genie.core.arg import Arg
 from genie.core.registry import BaseSkill
 from .models import ConversionResult, UnsupportedConstruct
 from .patterns import ORACLE_CONSTRUCTS, compute_confidence
+from genie.skills.trino_linter.rules import _strip_comments_and_strings
 
 MAX_SQL_DISPLAY = 3000
 
@@ -59,14 +60,17 @@ def _detect_unsupported(sql: str) -> list[UnsupportedConstruct]:
     """Scan *sql* against the shared ORACLE_CONSTRUCTS catalog.
 
     Returns one UnsupportedConstruct per matched construct (no duplicates).
+    Comments and string literals are stripped before matching so that Oracle
+    keywords inside them are not false-positively flagged.
     """
+    stripped = _strip_comments_and_strings(sql)
     seen: set[str] = set()
     result: list[UnsupportedConstruct] = []
     for entry in ORACLE_CONSTRUCTS:
         name = entry["construct"]
         if name in seen:
             continue
-        if re.search(entry["pattern"], sql, re.IGNORECASE):
+        if re.search(entry["pattern"], stripped, re.IGNORECASE):
             seen.add(name)
             result.append(UnsupportedConstruct(
                 construct=name,
