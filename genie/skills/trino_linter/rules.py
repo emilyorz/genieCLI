@@ -6,6 +6,7 @@ from dataclasses import dataclass
 from typing import Any
 
 from genie.skills.oracle2trino.patterns import get_construct_meta
+from genie.skills.oracle2trino.sql_utils import strip_comments_and_strings as _strip_comments_and_strings
 
 
 @dataclass
@@ -26,53 +27,6 @@ def _line_of(sql: str, pattern: str, flags: int = re.IGNORECASE) -> int:
 
 def _all_lines_of(sql: str, pattern: str, flags: int = re.IGNORECASE) -> list[int]:
     return [sql[: m.start()].count("\n") + 1 for m in re.finditer(pattern, sql, flags)]
-
-
-def _strip_comments_and_strings(sql: str) -> str:
-    """Replace comment/string content with spaces, preserving newlines and character positions."""
-    chars = list(sql)
-    i = 0
-    n = len(sql)
-    while i < n:
-        if sql[i:i+2] == '--':
-            # Line comment: replace up to (but not including) newline
-            while i < n and sql[i] != '\n':
-                chars[i] = ' '
-                i += 1
-        elif sql[i:i+2] == '/*':
-            # Block comment: replace until */
-            chars[i] = ' '
-            chars[i + 1] = ' '
-            i += 2
-            while i < n:
-                if sql[i:i+2] == '*/':
-                    chars[i] = ' '
-                    chars[i + 1] = ' '
-                    i += 2
-                    break
-                if sql[i] != '\n':
-                    chars[i] = ' '
-                i += 1
-        elif sql[i] == "'":
-            # String literal: replace content (keep newlines)
-            chars[i] = ' '
-            i += 1
-            while i < n:
-                if sql[i] == "'":
-                    chars[i] = ' '
-                    i += 1
-                    if i < n and sql[i] == "'":
-                        # Escaped quote ''
-                        chars[i] = ' '
-                        i += 1
-                        continue
-                    break
-                if sql[i] != '\n':
-                    chars[i] = ' '
-                i += 1
-        else:
-            i += 1
-    return ''.join(chars)
 
 
 # ── Oracle residuals (rules 1-5) ───────────────────────────────────────────────
