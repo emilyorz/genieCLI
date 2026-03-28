@@ -6,28 +6,61 @@
 - **語言**: Python 3.10+
 - **架構**: Plugin-based，genie/ package
 
-## 當前狀態（2026-03-27）
+## 產品方向（2026-03-28 定案）
+
+**GenieCLI 定位：Trino-centric Data Platform Tool**
+不做通用 AI CLI，收斂為 TSMC Tooling Team 的 Trino 工具。
+
+### User 痛點（優先序）
+1. 自己轉 Oracle → Trino，但寫得不好（最常見）
+2. 不知道怎麼優化 Trino query 降低 resource
+3. 不熟 Trino 語法，不知道怎麼寫
+
+### Roadmap
+詳見 `workflow-notes/2026-03-28-genieCLI-trino-roadmap.md`
+
+| Phase | 內容 | 需要 Trino 連線 |
+|-------|------|:--------------:|
+| 1 | Trino SQL Linter（靜態分析 + pattern matching） | ❌ |
+| 2 | Oracle → Trino 轉換器加強 | ❌ |
+| 3 | MCP 接 Trino（mcp-trino-python） | ✅ |
+| 4 | Query Optimizer（plan-aware） | ✅ |
+| 5 | Self-iterating 修正 loop | ✅ |
+| 6 | HTTP API + Web UI | ❌ |
+
+### 關鍵決策
+- **不 fork Goose/Aider/OpenCode** — moat 在 domain logic 不在 agent shell
+- **MCP server 選型** — alaturqua/mcp-trino-python（Python, Apache 2.0）
+- **Stored procedure 不做全自動轉換** — Trino 沒有 SP，這是重構問題
+- **Self-iterating 用狀態機** — 不做自由 agent loop，validator 主導 LLM 輔助
+
+### Blocker
+- Trino 內網連線環境尚未就緒（等人建好），Phase 3+ 被 block
+
+---
+
+## 當前狀態（2026-03-28）
 
 ### main 分支最新進度
-- **HEAD**: `21b72bf` — refactor: split cli.py and browser tools (Phase 2 H1+H3) (#13)
-- 剛完成 Phase 2 H1+H3 重構（cli.py 149行、browser tools 拆成 5 個子模組）
+- **HEAD**: `33b3dd4` — merge: PR #11 plugin architecture（fast-forward merge）
+- 270 tests pass（3 個 provider test 因缺 `responses` 套件跳過）
+- PR #11 branch `refactor/core-architecture` 已刪除
 
-### 已上线的功能
+### 已上線的功能
 - `genie/` plugin 架構（core/providers/output/runtime/skills/session）
 - 5 個內建 skills：browser、file_ops、git_ops、oracle2trino、shell_ops
 - Autoresearch workflow runtime
 - Dual-mode output（HumanSink + MachineSink）
 - Typer CLI（`python -m genie`）
 - Provider: OpenAI、Anthropic、TGenie
+- chat.py 分離（cli.py 瘦身）
+- 58% test coverage
 
-### 測試狀態
-- `pytest tests/` — 44 passed（/opt/homebrew/bin/python3）
-
-### 待辨事項（下一步）
-1. **Phase 2 H4**: cli.py 還可再拆分（bootstrap/prompting/cli_support 已拆出，但 cli.py 149行還可再薄）
-2. **Phase 2 H5**: 測試覆蓋率仍可擴大（autoresearch smoke test、browser registration smoke test）
-3. **文件更新**: README 需更新架构圖以反映新結構
-4. **CI/CD**: 尚未設定 GitHub Actions
+### 待辦事項（下一步）
+1. **Phase 1 Spec** — Trino SQL Linter 詳細規格
+2. **Phase 2 Spec** — oracle2trino skill 加強規格
+3. **CI/CD** — 尚未設定 GitHub Actions
+4. **README** — 需更新架構圖 + 產品定位
 
 ### 過去重要决策
 - Autoresearch workflow 使用 unified diff patch（`path` + `patch`），不是 `old_text`/`new_text`
