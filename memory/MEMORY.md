@@ -42,9 +42,10 @@
 ## 當前狀態（2026-03-28）
 
 ### main 分支最新進度
-- **HEAD**: `33b3dd4` — merge: PR #11 plugin architecture（fast-forward merge）
-- 270 tests pass（3 個 provider test 因缺 `responses` 套件跳過）
-- PR #11 branch `refactor/core-architecture` 已刪除
+- **HEAD**: `319a42a` — Phase 1 + Phase 2 完成
+- 97 linter+converter tests + 270 原有 tests
+- Phase 1: Trino SQL Linter（11 rules, 56 tests）
+- Phase 2: Oracle→Trino 結構化輸出 + 共用 pattern catalog（41 tests）
 
 ### 已上線的功能
 - `genie/` plugin 架構（core/providers/output/runtime/skills/session）
@@ -57,8 +58,8 @@
 - 58% test coverage
 
 ### 待辦事項（下一步）
-1. **Phase 1 Spec** — Trino SQL Linter 詳細規格
-2. **Phase 2 Spec** — oracle2trino skill 加強規格
+1. **Phase 3** — MCP 接 Trino（等內網環境就緒）
+2. **Tech debt** — linter/converter regex 統一（M1 from Phase 2 review）
 3. **CI/CD** — 尚未設定 GitHub Actions
 4. **README** — 需更新架構圖 + 產品定位
 
