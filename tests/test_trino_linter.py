@@ -385,6 +385,49 @@ def test_skill_spec_has_sql_arg():
     assert "sql" in arg_names
 
 
+# ── H1/H2/H3/M1/M2 regression tests ──────────────────────────────────────────
+
+def test_nvl_in_line_comment_not_flagged():
+    """H1: NVL inside -- comment must not trigger oracle-residual-nvl."""
+    result = analyze("-- NVL(a,0)\nSELECT 1")
+    assert "oracle-residual-nvl" not in _rules(result)
+
+
+def test_sysdate_in_string_literal_not_flagged():
+    """H1: SYSDATE inside string literal must not trigger oracle-residual-sysdate."""
+    result = analyze("SELECT 'SYSDATE' FROM t")
+    assert "oracle-residual-sysdate" not in _rules(result)
+
+
+def test_rownum_in_block_comment_not_flagged():
+    """H1: ROWNUM inside block comment must not trigger oracle-residual-rownum."""
+    result = analyze("/* ROWNUM */ SELECT id FROM t")
+    assert "oracle-residual-rownum" not in _rules(result)
+
+
+def test_invalid_sql_returns_parse_error_and_score_f():
+    """H2: truly invalid SQL (unrecognized tokens) must set parse_error and return score F."""
+    result = analyze("THIS IS NOT SQL @@@")
+    assert result.parse_error is not None
+    assert result.score == "F"
+
+
+def test_uncorrelated_subquery_not_flagged():
+    """H3: subquery in WHERE with no outer-scope column reference is not correlated."""
+    result = analyze("SELECT * FROM t WHERE id IN (SELECT id FROM u)")
+    assert "correlated-subquery" not in _rules(result)
+
+
+def test_multi_statement_select_star_line_numbers_differ():
+    """M2: each statement's select-star finding should reference its own line."""
+    sql = "SELECT * FROM a;\nSELECT * FROM b;"
+    result = analyze(sql)
+    star_findings = [f for f in result.findings if f.rule == "select-star"]
+    assert len(star_findings) == 2
+    lines = {f.line for f in star_findings}
+    assert len(lines) == 2  # line 1 and line 2
+
+
 # ── combined oracle-residual scenario ─────────────────────────────────────────
 
 def test_all_oracle_residuals_detected():

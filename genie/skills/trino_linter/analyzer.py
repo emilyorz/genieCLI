@@ -63,7 +63,33 @@ def analyze(sql: str) -> LintResult:
         import sqlglot
         import sqlglot.errors as sge
 
-        statements = sqlglot.parse(sql, read="trino", error_level=sge.ErrorLevel.IGNORE)
+        # Try strict parse first — catches truly invalid SQL
+        parse_exc = None
+        try:
+            statements = sqlglot.parse(sql, read="trino", error_level=sge.ErrorLevel.RAISE)
+        except sge.ParseError as exc:
+            parse_exc = exc
+            # Fall back to lenient parse (handles valid-but-unsupported-dialect syntax)
+            try:
+                statements = sqlglot.parse(sql, read="trino", error_level=sge.ErrorLevel.IGNORE)
+            except Exception:
+                statements = []
+
+        # If strict parse failed and lenient parse yielded no meaningful query statements,
+        # declare failure (e.g. completely invalid input like "THIS IS NOT SQL @@@")
+        if parse_exc is not None and not any(
+            s is not None and isinstance(s, (
+                sqlglot.exp.Select, sqlglot.exp.Insert, sqlglot.exp.Update,
+                sqlglot.exp.Delete, sqlglot.exp.Create, sqlglot.exp.Drop,
+            ))
+            for s in statements
+        ):
+            return LintResult(
+                findings=[],
+                score="F",
+                summary="0 high, 0 medium, 0 low",
+                parse_error=f"SQL parse failed: {parse_exc}",
+            )
     except Exception as exc:
         return LintResult(
             findings=[],
