@@ -57,21 +57,20 @@ def test_load_db_caches():
 # ── _sqlglot_transpile ────────────────────────────────────────────────────────
 
 def test_sqlglot_transpile_not_installed():
+    """_sqlglot_transpile returns 3-tuple (sql, errors, success)."""
     with patch.dict("sys.modules", {"sqlglot": None}):
-        # Force ImportError branch
-        import importlib
         with patch("builtins.__import__", side_effect=lambda n, *a, **k: (_ for _ in ()).throw(ImportError()) if n == "sqlglot" else __import__(n, *a, **k)):
-            result, warnings = _sqlglot_transpile("SELECT 1 FROM DUAL")
-    # When sqlglot not available, returns original SQL with a warning
+            result, errors, success = _sqlglot_transpile("SELECT 1 FROM DUAL")
     assert "SELECT 1 FROM DUAL" in result
-    # warnings may or may not be set depending on the mock path
+    assert not success
 
 def test_sqlglot_transpile_import_error_branch():
     """Test the ImportError path directly."""
     with patch("builtins.__import__", side_effect=ImportError("no module")):
-        result, warnings = _sqlglot_transpile("SELECT NVL(a, 0) FROM t")
+        result, errors, success = _sqlglot_transpile("SELECT NVL(a, 0) FROM t")
     assert isinstance(result, str)
-    assert any("sqlglot" in w.lower() for w in warnings)
+    assert not success
+    assert any("sqlglot" in e.lower() for e in errors)
 
 
 def test_sqlglot_transpile_exception_branch():
@@ -82,20 +81,22 @@ def test_sqlglot_transpile_exception_branch():
     mock_errors.ErrorLevel.IGNORE = "IGNORE"
 
     with patch.dict("sys.modules", {"sqlglot": mock_sqlglot, "sqlglot.errors": mock_errors}):
-        result, warnings = _sqlglot_transpile("INVALID SQL @#$")
-    assert any("transpile error" in w for w in warnings)
+        result, errors, success = _sqlglot_transpile("INVALID SQL @#$")
+    assert not success
+    assert any("transpile error" in e for e in errors)
 
 
 def test_sqlglot_transpile_known_gap_detection():
-    """Test that known gaps produce warnings in the output string."""
+    """_sqlglot_transpile itself does NOT detect gaps — that's _detect_unsupported's job."""
     mock_sqlglot = MagicMock()
     mock_sqlglot.transpile.return_value = ["SELECT ROWNUM FROM t"]
     mock_errors = MagicMock()
     mock_errors.ErrorLevel.IGNORE = "IGNORE"
 
     with patch.dict("sys.modules", {"sqlglot": mock_sqlglot, "sqlglot.errors": mock_errors}):
-        result, warnings = _sqlglot_transpile("SELECT ROWNUM FROM t")
-    assert any("ROWNUM" in w for w in warnings)
+        result, errors, success = _sqlglot_transpile("SELECT ROWNUM FROM t")
+    assert success
+    assert result == "SELECT ROWNUM FROM t"
 
 
 def test_sqlglot_transpile_no_gaps():
@@ -105,13 +106,16 @@ def test_sqlglot_transpile_no_gaps():
     mock_errors.ErrorLevel.IGNORE = "IGNORE"
 
     with patch.dict("sys.modules", {"sqlglot": mock_sqlglot, "sqlglot.errors": mock_errors}):
-        result, warnings = _sqlglot_transpile("SELECT col FROM t")
-    assert warnings == []
+        result, errors, success = _sqlglot_transpile("SELECT col FROM t")
+    assert success
+    assert errors == []
 
 
 # ── TranspileSQL ──────────────────────────────────────────────────────────────
 
 def test_transpile_sql_run_no_warnings():
+    """TranspileSQL.run() now returns JSON ConversionResult."""
+    import json
     mock_sqlglot = MagicMock()
     mock_sqlglot.transpile.return_value = ["SELECT col FROM t"]
     mock_errors = MagicMock()
@@ -120,8 +124,10 @@ def test_transpile_sql_run_no_warnings():
     with patch.dict("sys.modules", {"sqlglot": mock_sqlglot, "sqlglot.errors": mock_errors}):
         skill = TranspileSQL()
         result = skill.run(sql="SELECT col FROM t")
-    assert "sqlglot Oracle" in result
-    assert "No known gaps" in result
+    data = json.loads(result)
+    assert data["converted_sql"] == "SELECT col FROM t"
+    assert data["unsupported"] == []
+    assert data["confidence"] == 1.0
 
 
 def test_transpile_sql_run_with_warning():
@@ -217,6 +223,8 @@ def test_list_trino_limitations_handles_empty_db():
 # ── AnalyzeOracleSP ───────────────────────────────────────────────────────────
 
 def test_analyze_oracle_sp_pure_sql():
+    """AnalyzeOracleSP.run() now returns JSON ConversionResult."""
+    import json
     mock_sqlglot = MagicMock()
     mock_sqlglot.transpile.return_value = ["SELECT col FROM t"]
     mock_errors = MagicMock()
@@ -225,9 +233,11 @@ def test_analyze_oracle_sp_pure_sql():
     with patch.dict("sys.modules", {"sqlglot": mock_sqlglot, "sqlglot.errors": mock_errors}):
         skill = AnalyzeOracleSP()
         result = skill.run(sql="SELECT col FROM t", connector="iceberg")
-    assert "Oracle SP Migration" in result
-    assert "iceberg" in result.lower()
-    assert "No PL/SQL constructs" in result
+    data = json.loads(result)
+    assert data["converted_sql"] == "SELECT col FROM t"
+    assert data["unsupported"] == []
+    assert data["confidence"] == 1.0
+    assert any("iceberg" in w.lower() for w in data["warnings"])
 
 
 def test_analyze_oracle_sp_detects_begin_block():
