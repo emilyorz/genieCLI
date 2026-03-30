@@ -13,14 +13,8 @@ from typing import Callable
 
 from genie.core.context import SkillContext
 from genie.core.registry import SkillRegistry
-from genie.core.tool_call import parse_tool_call
+from genie.core.tool_call import normalize_result, parse_tool_call
 from genie.session.manager import new_msg, new_session
-
-
-def _normalize_result(result) -> str:
-    if result is None:
-        return ""
-    return result if isinstance(result, str) else str(result)
 
 
 def _is_tool_failure(result: str) -> bool:
@@ -183,7 +177,7 @@ def _run_autoresearch(
             output.progress(f"[Tool] {tool_name}  | Hypothesis: {hypothesis[:80]}")
 
             ctx = SkillContext(provider=provider, output=output, config=cfg)
-            patch_result = _normalize_result(SkillRegistry.run_tool(tool_name, tool_args, ctx))
+            patch_result = normalize_result(SkillRegistry.run_tool(tool_name, tool_args, ctx))
             output.progress(f"[Result] {patch_result[:80]}")
 
             if _is_tool_failure(patch_result):

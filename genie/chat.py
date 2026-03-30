@@ -19,7 +19,7 @@ import sys
 from typing import Callable
 
 from genie.core.registry import SkillRegistry
-from genie.core.tool_call import parse_tool_call
+from genie.core.tool_call import normalize_result, parse_tool_call
 from genie.output.human import HumanSink
 from genie.output.machine import MachineSink
 from genie.session.manager import (
@@ -32,12 +32,6 @@ REASONING_LEVELS = ["disable", "low", "medium", "high"]
 
 
 # ── Pure helpers ──────────────────────────────────────────────────────────────
-
-def _normalize_result(result) -> str:
-    if result is None:
-        return ""
-    return result if isinstance(result, str) else str(result)
-
 
 def _run_tool_call(tool_call: dict, ctx) -> str:
     name = tool_call.get("tool") or ""
@@ -89,7 +83,7 @@ def _send_with_tools(
         else:
             output.progress(f"[Tool] {tool_name}")
 
-        result = _normalize_result(_run_tool_call(tool_call, ctx))
+        result = normalize_result(_run_tool_call(tool_call, ctx))
         session["history"].append(new_msg("assistant", reply))
 
         # Handle screenshot results
@@ -133,7 +127,7 @@ def _send_with_tools(
                     return img_reply
                 session["history"].append(new_msg("assistant", img_reply))
                 tool_name2 = tool_call2.get("tool", "?")
-                result2 = _normalize_result(_run_tool_call(tool_call2, ctx))
+                result2 = normalize_result(_run_tool_call(tool_call2, ctx))
                 if isinstance(output, HumanSink):
                     output.tool_result(result2)
                 mem_prefix2 = f"[Previous step memory]: {_last_memory}\n\n" if _last_memory else ""

@@ -45,3 +45,10 @@ def parse_tool_call(text: str) -> dict | None:
 def extract_memory(text: str) -> str:
     parsed = parse_tool_call(text)
     return parsed.get("memory", "") if parsed else ""
+
+
+def normalize_result(result) -> str:
+    """Coerce a tool result to str — shared by chat loop and autoresearch."""
+    if result is None:
+        return ""
+    return result if isinstance(result, str) else str(result)
