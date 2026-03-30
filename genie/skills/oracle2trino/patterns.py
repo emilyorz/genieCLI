@@ -211,6 +211,12 @@ def get_construct_meta(construct: str) -> dict | None:
     return next((c for c in ORACLE_CONSTRUCTS if c["construct"] == construct), None)
 
 
+def get_construct_pattern(construct: str) -> str | None:
+    """Return the regex pattern for a construct, or None if not found."""
+    meta = get_construct_meta(construct)
+    return meta["pattern"] if meta else None
+
+
 def compute_confidence(unsupported: list) -> float:
     """Calculate conversion confidence (1.0 → 0.0) from unsupported constructs.
 

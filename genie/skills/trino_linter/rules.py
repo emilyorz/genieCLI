@@ -5,7 +5,7 @@ import re
 from dataclasses import dataclass
 from typing import Any
 
-from genie.skills.oracle2trino.patterns import get_construct_meta
+from genie.skills.oracle2trino.patterns import get_construct_meta, get_construct_pattern
 from genie.skills.oracle2trino.sql_utils import strip_comments_and_strings as _strip_comments_and_strings
 
 
@@ -31,84 +31,50 @@ def _all_lines_of(sql: str, pattern: str, flags: int = re.IGNORECASE) -> list[in
 
 # ── Oracle residuals (rules 1-5) ───────────────────────────────────────────────
 
-def check_nvl(sql: str, statements: list) -> list[Finding]:
-    """oracle-residual-nvl: NVL() → COALESCE()"""
-    _m = get_construct_meta("NVL") or {}
+def _check_oracle_residual(
+    sql: str, construct: str, rule_id: str,
+) -> list[Finding]:
+    """Shared implementation for Oracle residual checks — pattern comes from shared catalog."""
+    _m = get_construct_meta(construct) or {}
+    pattern = get_construct_pattern(construct)
+    if not pattern:
+        return []
     stripped = _strip_comments_and_strings(sql)
     return [
         Finding(
             severity=_m.get("severity", "high"),
             line=line,
-            rule="oracle-residual-nvl",
-            message=_m.get("message", "NVL() is an Oracle function not supported in Trino"),
-            suggestion=_m.get("suggestion", "Replace NVL(a, b) with COALESCE(a, b)"),
+            rule=rule_id,
+            message=_m.get("message", f"{construct} is not supported in Trino"),
+            suggestion=_m.get("suggestion", f"Replace {construct} with Trino equivalent"),
         )
-        for line in _all_lines_of(stripped, r"\bNVL\s*\(")
+        for line in _all_lines_of(stripped, pattern)
     ]
+
+
+def check_nvl(sql: str, statements: list) -> list[Finding]:
+    """oracle-residual-nvl: NVL() → COALESCE()"""
+    return _check_oracle_residual(sql, "NVL", "oracle-residual-nvl")
 
 
 def check_decode(sql: str, statements: list) -> list[Finding]:
     """oracle-residual-decode: DECODE() → CASE WHEN"""
-    _m = get_construct_meta("DECODE") or {}
-    stripped = _strip_comments_and_strings(sql)
-    return [
-        Finding(
-            severity=_m.get("severity", "high"),
-            line=line,
-            rule="oracle-residual-decode",
-            message=_m.get("message", "DECODE() is an Oracle function not supported in Trino"),
-            suggestion=_m.get("suggestion", "Replace DECODE(expr, s1, r1, ..., def) with CASE WHEN expr=s1 THEN r1 ... ELSE def END"),
-        )
-        for line in _all_lines_of(stripped, r"\bDECODE\s*\(")
-    ]
+    return _check_oracle_residual(sql, "DECODE", "oracle-residual-decode")
 
 
 def check_plus_join(sql: str, statements: list) -> list[Finding]:
     """oracle-residual-plus-join: (+) outer join syntax"""
-    _m = get_construct_meta("(+)") or {}
-    stripped = _strip_comments_and_strings(sql)
-    return [
-        Finding(
-            severity=_m.get("severity", "high"),
-            line=line,
-            rule="oracle-residual-plus-join",
-            message=_m.get("message", "Oracle outer join syntax (+) is not supported in Trino"),
-            suggestion=_m.get("suggestion", "Rewrite as ANSI LEFT JOIN or RIGHT JOIN"),
-        )
-        for line in _all_lines_of(stripped, r"\(\s*\+\s*\)")
-    ]
+    return _check_oracle_residual(sql, "(+)", "oracle-residual-plus-join")
 
 
 def check_rownum(sql: str, statements: list) -> list[Finding]:
     """oracle-residual-rownum: ROWNUM → LIMIT / ROW_NUMBER()"""
-    _m = get_construct_meta("ROWNUM") or {}
-    stripped = _strip_comments_and_strings(sql)
-    return [
-        Finding(
-            severity=_m.get("severity", "high"),
-            line=line,
-            rule="oracle-residual-rownum",
-            message=_m.get("message", "ROWNUM is an Oracle pseudo-column not supported in Trino"),
-            suggestion=_m.get("suggestion", "Replace with ROW_NUMBER() OVER (...) in a subquery, or use FETCH FIRST n ROWS ONLY"),
-        )
-        for line in _all_lines_of(stripped, r"\bROWNUM\b")
-    ]
+    return _check_oracle_residual(sql, "ROWNUM", "oracle-residual-rownum")
 
 
 def check_sysdate(sql: str, statements: list) -> list[Finding]:
     """oracle-residual-sysdate: SYSDATE → CURRENT_TIMESTAMP"""
-    _m = get_construct_meta("SYSDATE") or {}
-    stripped = _strip_comments_and_strings(sql)
-    return [
-        Finding(
-            severity=_m.get("severity", "high"),
-            line=line,
-            rule="oracle-residual-sysdate",
-            message=_m.get("message", "SYSDATE is an Oracle keyword not supported in Trino"),
-            suggestion=_m.get("suggestion", "Replace SYSDATE with CURRENT_TIMESTAMP or NOW()"),
-        )
-        for line in _all_lines_of(stripped, r"\bSYSDATE\b")
-    ]
+    return _check_oracle_residual(sql, "SYSDATE", "oracle-residual-sysdate")
 
 
 # ── Trino anti-patterns (rules 6-11) ──────────────────────────────────────────
