@@ -76,11 +76,18 @@ class BaseSkill:
 
 
 class SkillRegistry:
+    """Singleton skill registry — all skills live in a shared class-level dict."""
+
     _skills: dict[str, BaseSkill] = {}
 
     @classmethod
     def register(cls, skill: BaseSkill) -> None:
         cls._skills[skill.name] = skill
+
+    @classmethod
+    def clear(cls) -> None:
+        """Remove all registered skills. Primarily for test isolation."""
+        cls._skills.clear()
 
     @classmethod
     def get(cls, name: str) -> BaseSkill | None:
