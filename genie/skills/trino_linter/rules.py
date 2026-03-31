@@ -1,9 +1,12 @@
 """Trino SQL lint rules — 11 checks covering Oracle residuals and Trino anti-patterns."""
 from __future__ import annotations
 
+import logging
 import re
 from dataclasses import dataclass
 from typing import Any
+
+logger = logging.getLogger(__name__)
 
 from genie.skills.oracle2trino.patterns import get_construct_meta, get_construct_pattern
 from genie.skills.oracle2trino.sql_utils import strip_comments_and_strings as _strip_comments_and_strings
@@ -38,7 +41,11 @@ def _check_oracle_residual(
     _m = get_construct_meta(construct) or {}
     pattern = get_construct_pattern(construct)
     if not pattern:
-        return []
+        raise LookupError(
+            f"Oracle residual rule '{rule_id}' references construct '{construct}' "
+            f"which has no pattern in the shared catalog. "
+            f"This is a catalog configuration error — update ORACLE_CONSTRUCTS in patterns.py."
+        )
     stripped = _strip_comments_and_strings(sql)
     return [
         Finding(

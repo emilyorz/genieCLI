@@ -449,3 +449,17 @@ WHERE t.id = other.id(+)
     assert "oracle-residual-plus-join" in rules
     # Score should be D or F (multiple high findings)
     assert result.score in {"D", "F"}
+
+
+# ── catalog integrity: missing pattern raises, not silently returns [] ─────────
+
+def test_oracle_residual_raises_on_missing_catalog_entry():
+    """_check_oracle_residual must raise LookupError when pattern not in catalog.
+
+    This pins the Bug-2 fix: before the fix, a missing catalog entry would
+    silently return [], masking detection failures.  Now it must raise so that
+    catalog drift is caught at development time rather than in production.
+    """
+    from genie.skills.trino_linter.rules import _check_oracle_residual
+    with pytest.raises(LookupError, match="no pattern in the shared catalog"):
+        _check_oracle_residual("SELECT 1", "NON_EXISTENT_CONSTRUCT_XYZ", "test-rule-id")

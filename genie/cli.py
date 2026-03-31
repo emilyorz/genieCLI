@@ -70,6 +70,20 @@ def _make_provider(cfg: dict, debug: bool = False):
 _skills_discovered = False
 
 
+def _reset_discovery_flag() -> None:
+    """Reset the module-level discovery flag.
+
+    Registered as a SkillRegistry clear hook so that SkillRegistry.clear()
+    (used in tests) also resets this flag — otherwise _discover_skills() would
+    return immediately on the next call without repopulating the registry.
+    """
+    global _skills_discovered
+    _skills_discovered = False
+
+
+SkillRegistry.register_clear_hook(_reset_discovery_flag)
+
+
 def _discover_skills(skill_dirs: list[Path] | None = None, legacy: bool = False) -> None:
     global _skills_discovered
     if _skills_discovered:

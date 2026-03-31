@@ -80,3 +80,33 @@ def test_validate_ok():
     ok, err = skill.validate({"a": 1, "b": 2})
     assert ok
     assert err is None
+
+
+# ── clear() hook tests ────────────────────────────────────────────────────────
+
+def test_clear_invokes_registered_hook():
+    """clear() must call all registered hooks."""
+    called = []
+    SkillRegistry.register_clear_hook(lambda: called.append(1))
+    SkillRegistry.register(_AddSkill())
+    SkillRegistry.clear()
+    assert called == [1]
+    assert SkillRegistry.get("_test_add") is None
+
+
+def test_clear_hook_not_duplicated():
+    """Registering the same hook twice must not call it twice."""
+    called = []
+    hook = lambda: called.append(1)
+    SkillRegistry.register_clear_hook(hook)
+    SkillRegistry.register_clear_hook(hook)
+    SkillRegistry.clear()
+    assert called == [1]
+
+
+def test_cli_discovery_flag_reset_on_clear():
+    """SkillRegistry.clear() must also reset cli._skills_discovered via the hook."""
+    import genie.cli as cli_mod
+    cli_mod._skills_discovered = True
+    SkillRegistry.clear()
+    assert cli_mod._skills_discovered is False

@@ -79,15 +79,34 @@ class SkillRegistry:
     """Singleton skill registry — all skills live in a shared class-level dict."""
 
     _skills: dict[str, BaseSkill] = {}
+    _clear_hooks: list = []  # callbacks invoked by clear() for external state reset
 
     @classmethod
     def register(cls, skill: BaseSkill) -> None:
         cls._skills[skill.name] = skill
 
     @classmethod
+    def register_clear_hook(cls, hook) -> None:
+        """Register a callable to be invoked when clear() is called.
+
+        Use this to reset external state (e.g. discovery flags in cli.py) that
+        must stay in sync with the registry contents.  Each hook is called with
+        no arguments immediately after _skills is cleared.
+        """
+        if hook not in cls._clear_hooks:
+            cls._clear_hooks.append(hook)
+
+    @classmethod
     def clear(cls) -> None:
-        """Remove all registered skills. Primarily for test isolation."""
+        """Remove all registered skills and invoke registered clear hooks.
+
+        Primarily for test isolation.  Callers that maintain discovery flags or
+        other state coupled to the registry should register a hook via
+        register_clear_hook() so clear() resets that state too.
+        """
         cls._skills.clear()
+        for hook in cls._clear_hooks:
+            hook()
 
     @classmethod
     def get(cls, name: str) -> BaseSkill | None:
