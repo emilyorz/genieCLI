@@ -399,6 +399,10 @@ def _chat_loop(
                 else:
                     output.print("  [dim]Usage: /trino [use|add|remove|test] [name][/dim]")
 
+            case "/trino-research":
+                from genie.skills.trino_query.research import run_trino_research
+                run_trino_research(provider, cfg, model, current_reasoning, output, build_prompt)
+
             case "/autoresearch":
                 if not use_skills:
                     output.print("  [yellow]Skills must be enabled. Restart with --skills[/yellow]")
@@ -427,6 +431,7 @@ def _chat_loop(
                     ("/editor",       "Open editor for input"),
                     ("/autoresearch", "Start autonomous iteration loop"),
                     ("/trino",        "Trino connection manager"),
+                    ("/trino-research","Optimize SQL via autoresearch loop"),
                     ("/reasoning",    "Toggle reasoning: disable/low/medium/high"),
                     ("/renew",        "Refresh auth token"),
                     ("/exit",         "Quit"),
