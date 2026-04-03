@@ -72,7 +72,7 @@ if errorlevel 1 (
 
 :: 5. �i�J AI agent
 echo.
-%PYTHON% "%SCRIPT_DIR%main.py" chat --skills
+%PYTHON% -m genie chat --skills
 
 echo.
 pause

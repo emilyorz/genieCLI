@@ -131,9 +131,9 @@ fi
 echo
 # Default to chat subcommand with --skills if no subcommand given
 if [ ${#MAIN_ARGS[@]} -eq 0 ]; then
-    "$PYTHON" "$SCRIPT_DIR/main.py" chat --skills
+    "$PYTHON" -m genie chat --skills
 else
-    "$PYTHON" "$SCRIPT_DIR/main.py" "${MAIN_ARGS[@]}"
+    "$PYTHON" -m genie "${MAIN_ARGS[@]}"
 fi
 
 echo
