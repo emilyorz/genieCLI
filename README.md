@@ -4,9 +4,9 @@ Plugin-based AI agent CLI。底層用 Provider Protocol 抽象化多家 LLM back
 
 支援三種 AI 後端：TGenie gateway（公司內部）、**OpenAI-compatible API**（OpenAI、Groq、Ollama、LM Studio 等）、**Anthropic**。
 
-**適用場景：** Oracle → Trino SQL 遷移、Trino query 靜態分析、瀏覽器自動化、自主迭代 (Autoresearch)、Git 操作、Shell 任務。
+**適用場景：** Oracle → Trino SQL 遷移、**Trino query 自動優化（autoresearch）**、Trino query 靜態分析、瀏覽器自動化、Git 操作、Shell 任務。
 
-**v4.1.0** — 44 個 Python 模組、46 個 tools、5741 行 code、420 tests。
+**v4.2.0** — 46 個 Python 模組、46 個 tools、6100+ 行 code、420 tests。
 
 ---
 
@@ -28,19 +28,19 @@ Plugin-based AI agent CLI。底層用 Provider Protocol 抽象化多家 LLM back
 │  Providers      │     │  Core                                │
 │                 │     │  registry.py — SkillRegistry          │
 │  tgenie.py      │     │  provider.py — Provider Protocol      │
-│  openai.py      │     │  context.py  — SkillContext (DI)      │
-│  anthropic.py   │     │  config.py   — 設定讀寫               │
-│  base.py        │     │  arg.py      — Arg descriptor         │
-└─────────────────┘     │  tool_call.py — JSON parse 共用       │
-                        └──────────────┬──────────────────────┘
-                                       │
-          ┌────────────┬───────────────┼────────────┐
-          ▼            ▼               ▼            ▼
-    ┌──────────┐ ┌──────────┐ ┌──────────────┐ ┌──────────┐
-    │ browser  │ │ file_ops │ │ oracle2trino │ │ runtime  │
-    │ (CDP)    │ │ git_ops  │ │ trino_linter │ │ (auto-   │
-    │ 30 tools │ │ shell_ops│ │              │ │ research)│
-    └──────────┘ └──────────┘ └──────────────┘ └──────────┘
+│  openai.py ────────── │  context.py  — SkillContext (DI)      │
+│  anthropic.py   │  │  │  config.py   — 設定讀寫               │
+│  base.py        │  │  │  arg.py      — Arg descriptor         │
+└─────────────────┘  │  │  tool_call.py — JSON parse 共用       │
+                     │  └──────────────┬──────────────────────┘
+  Ollama: native ────┘                 │
+  /api/chat + think=false    ┌─────────┼────────────┐
+                             ▼         ▼            ▼
+    ┌──────────┐ ┌──────────┐ ┌──────────────┐ ┌──────────────┐
+    │ browser  │ │ file_ops │ │ oracle2trino │ │ trino_query  │
+    │ (CDP)    │ │ git_ops  │ │ trino_linter │ │ (optimize +  │
+    │ 30 tools │ │ shell_ops│ │              │ │  research)   │
+    └──────────┘ └──────────┘ └──────────────┘ └──────────────┘
           │
           ▼
 ┌─────────────────────────────────────────────────────────────┐
@@ -71,6 +71,8 @@ Plugin-based AI agent CLI。底層用 Provider Protocol 抽象化多家 LLM back
 | `anthropic.py` | Anthropic API                                           |
 | `base.py`      | 共用 HTTP helpers                                       |
 
+**Ollama 特殊處理：** 偵測到 Ollama（`localhost:11434`）時，自動切換為 native `/api/chat` endpoint 並帶 `think=false`。原因是 Ollama 的 `/v1/chat/completions` 不支援 `think` 參數，Qwen 3/3.5 模型會默認進入 thinking mode 導致回應極慢（2+ 分鐘 vs 4 秒）。需要 vision/files 時才 fallback 到 `/v1`。
+
 #### Skills（`genie/skills/`）— 46 tools
 
 | Skill           | Tools | 說明                                                              |
@@ -81,6 +83,7 @@ Plugin-based AI agent CLI。底層用 Provider Protocol 抽象化多家 LLM back
 | `shell_ops/`    | 1     | Shell 指令執行（whitelisted profiles）                            |
 | `oracle2trino/` | 5     | Oracle → Trino SQL 轉換（sqlglot + AI 補完）                     |
 | `trino_linter/` | 1     | Trino SQL 靜態分析（11 rules：Oracle 殘留 + anti-patterns）      |
+| `trino_query/`  | 2     | Trino query 執行 + **自動優化（trino-research）**                 |
 
 #### Output（`genie/output/`）
 
@@ -96,7 +99,7 @@ Autoresearch 自主迭代引擎，作為 plugin 載入，不耦合 core。
 | 模組                  | 說明                                                  |
 | --------------------- | ----------------------------------------------------- |
 | `eval_loop.py`        | 主迭代 loop（AI propose → verify → commit/revert）    |
-| `run_manager.py`      | 迭代狀態管理                                          |
+| `run_manager.py`      | 迭代狀態管理（compare against current_best）           |
 | `checkpoint.py`       | Git checkpoint + revert                               |
 | `metric.py`           | Metric 提取 + 趨勢比較                                |
 | `journal.py`          | TSV journal 記錄（每輪 metric / status / hypothesis） |
@@ -108,7 +111,7 @@ Autoresearch 自主迭代引擎，作為 plugin 載入，不耦合 core。
 
 ### 前置需求
 
-- Python 3.10+（`match/case` syntax）
+- Python 3.9+（已移除 `match/case` 依賴，支援公司內部機器）
 - Chrome 開啟 remote debugging（browser skills 需要）：
 
   ```bash
@@ -129,29 +132,36 @@ pip install -e .          # 或 pip install -r requirements.txt
 
 ### 設定
 
-編輯 `~/ai-agent-config.json`：
+編輯 `~/.genie/config.toml`：
 
 #### TGenie backend（公司內部，預設）
 
-```json
-{
-  "interface": "tgenie",
-  "endpoint": "https://your-ai-gateway.internal.company.com",
-  "authToken": "your-token",
-  "defaultModel": "gemini-2.5-flash"
-}
+```toml
+interface = "tgenie"
+endpoint = "https://your-ai-gateway.internal.company.com"
+authToken = "your-token"
+defaultModel = "gemini-2.5-flash"
 ```
 
 #### OpenAI-compatible（OpenAI / Groq / Ollama / LM Studio）
 
-```json
-{
-  "interface": "openai",
-  "openaiApiKey": "sk-...",
-  "openaiBaseUrl": "https://api.openai.com/v1",
-  "defaultModel": "gpt-4o"
-}
+```toml
+interface = "openai"
+openaiApiKey = "sk-..."
+openaiBaseUrl = "https://api.openai.com/v1"
+defaultModel = "gpt-4o"
 ```
+
+#### Ollama（本機 LLM）
+
+```toml
+interface = "openai"
+openaiApiKey = "ollama"
+openaiBaseUrl = "http://localhost:11434/v1"
+defaultModel = "qwen3.5:4b"
+```
+
+> **注意：** Ollama 模式下會自動使用 native `/api/chat` endpoint（非 `/v1`），以正確支援 `think=false`。
 
 | 服務              | openaiBaseUrl                    |
 | ----------------- | -------------------------------- |
@@ -190,24 +200,148 @@ python -m genie config               # 顯示目前設定
 
 ### 互動指令
 
-| 指令            | 說明                                           |
-| --------------- | ---------------------------------------------- |
-| `/new`          | 新對話                                         |
-| `/sessions`     | 列出已儲存的對話                               |
-| `/load <n>`     | 載入對話                                       |
-| `/history`      | 顯示目前對話內容                               |
-| `/skills`       | 列出所有可用 tools                             |
-| `/clear`        | 清除目前對話                                   |
-| `/paste`        | 多行貼上模式（Ctrl-D 送出）                    |
-| `/editor`       | 開編輯器輸入                                   |
-| `/autoresearch` | 啟動自主迭代 loop（需 `--skills`）             |
-| `/reasoning`    | 切換 reasoning 等級（disable/low/medium/high） |
-| `/renew`        | 重新抓 auth token（TGenie only）               |
-| `/exit`         | 結束（自動儲存對話）                           |
+| 指令               | 說明                                           |
+| ------------------ | ---------------------------------------------- |
+| `/new`             | 新對話                                         |
+| `/sessions`        | 列出已儲存的對話                               |
+| `/load <n>`        | 載入對話                                       |
+| `/history`         | 顯示目前對話內容                               |
+| `/skills`          | 列出所有可用 tools                             |
+| `/clear`           | 清除目前對話                                   |
+| `/paste`           | 多行貼上模式（Ctrl-D 送出）                    |
+| `/editor`          | 開編輯器輸入                                   |
+| `/autoresearch`    | 啟動自主迭代 loop（需 `--skills`）             |
+| `/trino`           | Trino 連線管理（profiles / test）              |
+| `/trino-research`  | **Trino SQL 自動優化**（見下方）               |
+| `/reasoning`       | 切換 reasoning 等級（disable/low/medium/high） |
+| `/renew`           | 重新抓 auth token（TGenie only）               |
+| `/exit`            | 結束（自動儲存對話）                           |
 
 ---
 
-## Autoresearch — 自主迭代 Loop
+## Trino Query Optimization（`/trino-research`）
+
+AI 驅動的 Trino SQL 自動優化。每輪迭代中，AI 提出優化方案 → 執行驗證 → 通過 guard 才保留。
+
+### 設計原則（v2, 2026-04-04）
+
+1. **AI 回傳完整 SQL**（不依賴 file_patch / diff）
+2. **Result equivalence guard** — 逐行比對查詢結果，確保語義不變
+3. **Median verify** — 每個候選 SQL 跑 N 次取中位數，減少 cache 噪音
+4. **Iterative accumulation** — 每輪以 current_best 為基準，不回到原始 SQL
+5. **History trimming** — 只保留最近 4 條對話，避免 local model context 過長
+
+### 使用方式
+
+#### 互動模式
+
+```bash
+python -m genie --skills
+> /trino-research
+# 貼上 SQL → 選 metric → 設定 iterations → 開始
+```
+
+#### 非互動模式（CLI 參數）
+
+```bash
+> /trino-research --file query.sql --metric cpu_time_ms --iterations 5 --runs 3
+```
+
+| 參數           | 說明                  | 預設        |
+| -------------- | --------------------- | ----------- |
+| `--file`       | SQL 檔案路徑          | 互動貼上    |
+| `--metric`     | 優化目標 metric       | cpu_time_ms |
+| `--iterations` | 最大迭代次數          | 5           |
+| `--runs`       | 每次驗證重複跑幾次    | 3           |
+
+**可選 metric：** `cpu_time_ms` / `wall_time_ms` / `physical_input_bytes` / `processed_rows` / `total_splits`
+
+### Guard 機制（三層防護）
+
+| Guard | 說明 | 失敗時 |
+|-------|------|--------|
+| **Lint** | SQL 必須通過語法分析（lint score ≠ F） | REVERT |
+| **Execution** | SQL 必須在 Trino 上成功執行 | REVERT |
+| **Result equivalence** | 優化後的查詢結果必須與 baseline **逐行一致**（列數、欄數、每格值） | REVERT |
+
+### 測試範例與結果
+
+**環境：** Mac mini M4 16GB, Ollama qwen3.5:4b, Trino in Docker (localhost:8085)
+
+**測試 SQL：**
+
+```sql
+SELECT
+    e.employee_id,
+    e.first_name || ' ' || e.last_name AS full_name,
+    COALESCE(e.commission_pct, 0) AS commission,
+    CASE
+        WHEN e.department_id = 10 THEN 'Admin'
+        WHEN e.department_id = 20 THEN 'Marketing'
+        WHEN e.department_id = 30 THEN 'IT'
+        ELSE 'Other'
+    END AS dept_name,
+    date_diff('day', e.hire_date, CURRENT_DATE) AS days_employed,
+    d.department_name,
+    (SELECT COUNT(*) FROM employees_full e2
+     WHERE e2.manager_id = e.employee_id) AS direct_reports
+FROM employees_full e
+LEFT JOIN departments d ON e.department_id = d.department_id
+ORDER BY e.salary DESC
+FETCH FIRST 100 ROWS ONLY
+```
+
+**結果（5 iterations, 3 verify runs each）：**
+
+| # | Status | Metric (cpu_time_ms) | Delta | 說明 |
+|---|--------|---------------------|-------|------|
+| 1 | exec_failed | — | — | AI 產生的 SQL 有 column reference error |
+| 2 | worse | 21.0 | +0.0 | 沒改善，REVERT |
+| 3 | **improved** | 20.0 | -1.0 | 小幅改善，KEPT |
+| 4 | **improved** | 13.0 | -7.0 | CTE + LEFT JOIN 取代 correlated subquery，KEPT |
+| 5 | semantic_drift | 15.0 | +2.0 | 結果比對發現 `direct_reports` 值改變，REVERT |
+
+**最終：Baseline 21ms → Best 13ms（-38.1%），2/5 kept，結果完全等價。**
+
+**AI 產生的優化 SQL：**
+
+```sql
+WITH direct_reports_count AS (
+    SELECT manager_id, COUNT(*) AS report_count
+    FROM employees_full
+    GROUP BY manager_id
+)
+SELECT
+    e.employee_id,
+    e.first_name || ' ' || e.last_name AS full_name,
+    COALESCE(e.commission_pct, 0) AS commission,
+    CASE WHEN e.department_id = 10 THEN 'Admin'
+         WHEN e.department_id = 20 THEN 'Marketing'
+         WHEN e.department_id = 30 THEN 'IT'
+         ELSE 'Other'
+    END AS dept_name,
+    date_diff('day', e.hire_date, CURRENT_DATE) AS days_employed,
+    d.department_name,
+    COALESCE(dr.report_count, 0) AS direct_reports
+FROM employees_full e
+INNER JOIN departments d ON e.department_id = d.department_id
+LEFT JOIN direct_reports_count dr ON e.employee_id = dr.manager_id
+ORDER BY e.salary DESC
+FETCH FIRST 100 ROWS ONLY
+```
+
+核心優化：**把 N+1 correlated subquery 改成 CTE + LEFT JOIN**，splits 從 121 降到 86。
+
+### Report 輸出
+
+每次 `/trino-research` 完成後自動產出 markdown report（`trino-research-YYYYMMDD-HHMMSS.md`），包含：
+- Summary table（baseline / best / improvement / iterations）
+- Iteration history（每輪 status + metric + hypothesis）
+- Original SQL vs Optimized SQL
+
+---
+
+## Autoresearch — 通用自主迭代 Loop
 
 讓 AI 自動迭代改善程式碼。設定目標和 metric，AI 會反覆嘗試修改 → 驗證 → 保留/回退。
 
@@ -238,11 +372,25 @@ Iterations: 15
 
 ---
 
+## Trino 連線管理
+
+```bash
+> /trino                    # 顯示所有 profiles + 連線狀態
+> /trino use local          # 切換 profile
+> /trino add staging        # 新增 profile（互動）
+> /trino remove staging     # 移除 profile
+> /trino test               # 測試目前連線
+```
+
+Profiles 儲存在 `~/.config/genie/trino.json`。
+
+---
+
 ## 檔案結構
 
 ```
 genieCLI/
-├── genie/                         主套件（v4.1.0，plugin-based）
+├── genie/                         主套件（v4.2.0，plugin-based）
 │   ├── __main__.py                python -m genie 入口
 │   ├── cli.py                     Typer CLI（子指令路由）
 │   ├── chat.py                    Chat loop + tool call dispatch
@@ -256,25 +404,20 @@ genieCLI/
 │   │   └── tool_call.py           Tool call JSON 解析
 │   ├── providers/                 LLM 後端
 │   │   ├── tgenie.py              TGenie gateway
-│   │   ├── openai.py              OpenAI-compatible
+│   │   ├── openai.py              OpenAI-compatible + Ollama native
 │   │   ├── anthropic.py           Anthropic API
 │   │   └── base.py                共用 HTTP helpers
 │   ├── skills/                    46 個 tools
 │   │   ├── browser/               Chrome CDP（30 tools）
-│   │   │   ├── tools.py           Tool 定義
-│   │   │   ├── page_context.py    高階 CDP 封裝
-│   │   │   └── cdp.py             WebSocket singleton
 │   │   ├── file_ops/              檔案讀寫（4 tools）
 │   │   ├── git_ops/               Git 操作（5 tools）
 │   │   ├── shell_ops/             Shell 執行（1 tool）
 │   │   ├── oracle2trino/          Oracle → Trino 轉換（5 tools）
-│   │   │   ├── patterns.py        共用 pattern catalog
-│   │   │   ├── models.py          ConversionResult
-│   │   │   ├── sql_utils.py       SQL 工具函式
-│   │   │   └── data/              函數對照表 YAML
-│   │   └── trino_linter/          SQL 靜態分析（1 tool, 11 rules）
-│   │       ├── analyzer.py        Linter 主邏輯
-│   │       └── rules.py           Lint rules
+│   │   ├── trino_linter/          SQL 靜態分析（1 tool, 11 rules）
+│   │   └── trino_query/           Trino query 執行 + 自動優化
+│   │       ├── __init__.py        QueryMetrics + 執行邏輯
+│   │       ├── connection.py      Profile-based 連線管理
+│   │       └── research.py        /trino-research 迭代引擎 (v2)
 │   ├── output/                    輸出層
 │   │   ├── human.py               HumanSink（Rich）
 │   │   └── machine.py             MachineSink（JSON）
@@ -288,7 +431,6 @@ genieCLI/
 │   └── session/                   對話管理
 │       └── manager.py             Session CRUD
 ├── tests/                         420 tests
-├── grab_auth.py                   Auth token 抓取（TGenie only）
 ├── pyproject.toml                 套件設定
 ├── requirements.txt               Python 依賴
 ├── tgenie.sh                      Linux 一鍵啟動
@@ -307,11 +449,17 @@ genieCLI/
 - Linter ↔ Converter 共用 pattern catalog
 - 三種 AI backend + Autoresearch 引擎
 
-### ✅ Phase 4：技術債清理（2026-04-03）
+### ✅ Phase 4：技術債清理 + Trino 優化（2026-04-03~04）
 
-- 刪除 ~4900 行 legacy monolith code（main.py / api.py / skills/ / runtime/ 舊副本）
-- 修 dead CLI subcommands + screenshot tool chain bug
-- Linter adversarial review 通過
+- 刪除 ~4900 行 legacy monolith code
+- Python 3.9 相容（移除 match/case）
+- Ollama local LLM 支援（native API + think=false）
+- **Trino query 自動優化（/trino-research v2）**
+  - AI 回傳完整 SQL（取代 file_patch）
+  - Result equivalence guard（逐行比對）
+  - Median verify（減少 cache 噪音）
+  - Non-interactive CLI 參數模式
+  - Markdown report 自動產出
 
 ### 規劃中
 
@@ -322,8 +470,10 @@ genieCLI/
 
 ## 限制與已知問題
 
-1. **Python 3.10+**：`genie/chat.py` 使用 `match/case` 語法
+1. **Python 3.9+**：已移除 `match/case`，但部分依賴可能需要較新版本
 2. **需保持 Chrome 分頁開著**：CDP 只綁定到已開的分頁
 3. **Element ID 每次 snapshot 重置**：頁面變動後需重新 `browser_snapshot`
 4. **React controlled inputs**：有特別處理，但某些客製化 input library 可能失效
 5. **401 token 過期（TGenie）**：只自動 retry 一次，之後需 `/renew`
+6. **Ollama `/v1` endpoint 不支援 `think=false`**：已自動切換至 native API，但 vision 需 fallback
+7. **Local model 品質**：qwen3.5:4b 能抓到 N+1 correlated subquery 等常見問題，但複雜語義保持需要更大模型

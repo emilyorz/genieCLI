@@ -93,8 +93,11 @@ class FilePatch(BaseSkill):
                                              delete=False, encoding="utf-8") as f:
                 f.write(patch)
                 patch_file = f.name
+            # Use GNU patch (gpatch) — BSD patch on macOS doesn't support <<<< format
+            import shutil
+            patch_cmd = shutil.which("gpatch") or "patch"
             result = subprocess.run(
-                ["patch", "-u", path, patch_file],
+                [patch_cmd, "-u", path, patch_file],
                 capture_output=True,
                 text=True,
             )
