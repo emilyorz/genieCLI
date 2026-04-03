@@ -1,9 +1,12 @@
 """SQL parse + rule dispatch + result assembly for the Trino linter."""
 from __future__ import annotations
 
+import logging
 from dataclasses import dataclass, field
 
 from .rules import ALL_RULES, Finding
+
+logger = logging.getLogger(__name__)
 
 
 @dataclass
@@ -102,9 +105,9 @@ def analyze(sql: str) -> LintResult:
     for rule_fn in ALL_RULES:
         try:
             all_findings.extend(rule_fn(sql, statements))
-        except Exception:
+        except Exception as exc:
             # Rule failures must never crash the linter
-            pass
+            logger.debug("Rule %s failed: %s", rule_fn.__name__, exc)
 
     all_findings.sort(key=lambda f: f.line)
 
