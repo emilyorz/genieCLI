@@ -24,18 +24,21 @@ from typing import Callable
 from genie.core.registry import SkillRegistry
 
 VERIFY_SCRIPT = '''#!{python_bin}
-"""Auto-generated verify script for trino-research. Executes query.sql on Trino and outputs the target metric."""
-import json, sys, time
-from decimal import Decimal
-from datetime import date, datetime, timedelta
+"""Auto-generated verify script for trino-research.
+Runs the query multiple times and reports the median metric to reduce cache/warmup noise.
+"""
+import statistics
+import sys
+import time
 
 sys.path.insert(0, "{genie_root}")
 
 from genie.skills.trino_query.connection import get_active_profile
-from genie.skills.trino_query import _clean_row, _extract_metrics
+from genie.skills.trino_query import _extract_metrics
 
 sql_path = "{sql_path}"
 metric_key = "{metric_key}"
+runs = {verify_runs}
 
 with open(sql_path) as f:
     sql = f.read().strip()
@@ -44,32 +47,44 @@ if not sql:
     print("ERROR: empty SQL")
     sys.exit(1)
 
+samples = []
+all_metrics = []
+
 try:
     import trino.dbapi
     cfg = get_active_profile()
-    conn = cfg.connect()
-    cur = conn.cursor()
-    cur.execute(sql)
-    # Consume results
-    try:
-        rows = cur.fetchall()
-    except Exception:
-        rows = []
-    stats = getattr(cur, 'stats', {{}}) or {{}}
-    metrics = _extract_metrics(stats)
-    conn.close()
 
-    # Output the target metric as a bare number (autoresearch extracts the last float)
-    value = getattr(metrics, metric_key, 0)
-    print(f"METRIC={{value}}")
-    print(f"cpu_time_ms={{metrics.cpu_time_ms}}")
-    print(f"wall_time_ms={{metrics.wall_time_ms}}")
-    print(f"peak_memory_bytes={{metrics.peak_memory_bytes}}")
-    print(f"physical_input_bytes={{metrics.physical_input_bytes}}")
-    print(f"processed_rows={{metrics.processed_rows}}")
-    print(f"total_splits={{metrics.total_splits}}")
-    # Last line = the bare metric value (extract_metric takes last float)
-    print(value)
+    for i in range(runs):
+        conn = cfg.connect()
+        cur = conn.cursor()
+        cur.execute(sql)
+        try:
+            cur.fetchall()
+        except Exception:
+            pass
+        stats = getattr(cur, 'stats', {{}}) or {{}}
+        metrics = _extract_metrics(stats)
+        conn.close()
+
+        value = getattr(metrics, metric_key, 0) or 0
+        samples.append(float(value))
+        all_metrics.append(metrics)
+        print(f"sample_{{i + 1}}={{value}}")
+
+    median_value = statistics.median(samples)
+    median_idx = min(range(len(samples)), key=lambda i: abs(samples[i] - median_value))
+    chosen = all_metrics[median_idx]
+
+    print(f"METRIC={{median_value}}")
+    print(f"runs={{runs}}")
+    print(f"samples={','.join(str(x) for x in samples)}")
+    print(f"cpu_time_ms={{chosen.cpu_time_ms}}")
+    print(f"wall_time_ms={{chosen.wall_time_ms}}")
+    print(f"peak_memory_bytes={{chosen.peak_memory_bytes}}")
+    print(f"physical_input_bytes={{chosen.physical_input_bytes}}")
+    print(f"processed_rows={{chosen.processed_rows}}")
+    print(f"total_splits={{chosen.total_splits}}")
+    print(median_value)
 except Exception as e:
     print(f"ERROR: {{e}}")
     print(999999)
@@ -107,6 +122,7 @@ def setup_trino_research(
     sql: str,
     metric: str,
     max_iterations: int,
+    verify_runs: int,
     output,
     build_prompt: Callable[[bool], str],
 ) -> dict | None:
@@ -143,6 +159,7 @@ def setup_trino_research(
         genie_root=genie_root,
         sql_path=str(sql_path),
         metric_key=metric,
+        verify_runs=verify_runs,
     ))
     verify_path.chmod(0o755)
 
@@ -161,6 +178,7 @@ def setup_trino_research(
     output.progress(f"  Workdir: {workdir}")
     output.progress(f"  SQL:     {sql_path}")
     output.progress(f"  Metric:  {metric} (lower is better)")
+    output.progress(f"  Verify:  median of {verify_runs} runs")
     output.progress(f"  Guard:   lint score != F")
 
     return {
@@ -223,9 +241,16 @@ def run_trino_research(
     except (ValueError, EOFError, KeyboardInterrupt):
         max_iter = 5
 
+    # Verify runs per candidate
+    try:
+        runs_str = _read_input("  Verify runs per candidate [3]: ").strip() or "3"
+        verify_runs = max(1, int(runs_str))
+    except (ValueError, EOFError, KeyboardInterrupt):
+        verify_runs = 3
+
     # Setup
     output.progress("\n  Setting up research environment...")
-    setup = setup_trino_research(sql, metric, max_iter, output, build_prompt)
+    setup = setup_trino_research(sql, metric, max_iter, verify_runs, output, build_prompt)
     if not setup:
         output.error("Setup failed.")
         return
@@ -393,8 +418,8 @@ def run_trino_research(
                 result_msg = (
                     f"[Iteration {state.iteration} result]\n"
                     f"Status: {last.status}\n"
-                    f"Metric ({metric}): {last.metric}\n"
-                    f"Delta: {delta_str}\n"
+                    f"Metric ({metric}, median of repeated runs): {last.metric}\n"
+                    f"Delta vs current best: {delta_str}\n"
                     f"{'Change KEPT.' if kept else 'Change REVERTED.'}\n"
                     f"\nFull metrics:\n{metrics_output}"
                 )

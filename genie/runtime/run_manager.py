@@ -234,13 +234,13 @@ class RunManager:
 
         if (
             metric_result.success
-            and state.baseline_metric is not None
+            and state.current_best is not None
             and current_value is not None
         ):
             comparison = compare_metrics(
-                state.baseline_metric, current_value, state.config.metric_direction
+                state.current_best, current_value, state.config.metric_direction
             )
-            delta = current_value - state.baseline_metric
+            delta = current_value - state.current_best
 
         if comparison == "improved":
             state.current_best = current_value
