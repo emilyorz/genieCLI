@@ -222,6 +222,11 @@ def _chat_loop(
     output.print("  [cyan]+======================================+[/cyan]\n")
     output.print(f"  [dim]Model   : {model}[/dim]")
     output.print(f"  [dim]Skills  : {'enabled' if use_skills else 'disabled'}[/dim]")
+    try:
+        from genie.skills.trino_query.connection import status_line
+        output.print(f"  [dim]{status_line()}[/dim]")
+    except Exception:
+        pass
     output.print("  [dim]Type /help for commands[/dim]\n")
 
     while True:
@@ -331,6 +336,69 @@ def _chat_loop(
                 else:
                     output.error("Token refresh failed.")
 
+            case "/trino":
+                from genie.skills.trino_query.connection import (
+                    list_profiles, get_active_name, set_active,
+                    add_profile, remove_profile, status_line, TrinoProfile,
+                )
+                if not args:
+                    # Show current status + all profiles
+                    active = get_active_name()
+                    profiles = list_profiles()
+                    output.print(f"\n  [yellow]{status_line()}[/yellow]")
+                    output.print("")
+                    for name, p in profiles.items():
+                        marker = "[green]●[/green]" if name == active else " "
+                        output.print(f"  {marker} [cyan]{name:<15}[/cyan] {p.display_name()}")
+                    output.print("")
+                    output.print("  [dim]/trino use <name>     switch profile[/dim]")
+                    output.print("  [dim]/trino add <name>     add new profile (interactive)[/dim]")
+                    output.print("  [dim]/trino remove <name>  remove profile[/dim]")
+                    output.print("  [dim]/trino test           test current connection[/dim]")
+                elif args[0] == "use" and len(args) > 1:
+                    if set_active(args[1]):
+                        output.print(f"  [green]Switched to: {args[1]}[/green]")
+                        output.print(f"  {status_line()}")
+                    else:
+                        output.print(f"  [red]Profile '{args[1]}' not found[/red]")
+                elif args[0] == "add" and len(args) > 1:
+                    name = args[1]
+                    output.print(f"  [yellow]Adding profile: {name}[/yellow]")
+                    try:
+                        host = _read_input(f"  Host [localhost] > ").strip() or "localhost"
+                        port_s = _read_input(f"  Port [8085] > ").strip() or "8085"
+                        user = _read_input(f"  User [trino] > ").strip() or "trino"
+                        scheme = _read_input(f"  Scheme [http] > ").strip() or "http"
+                        catalog = _read_input(f"  Catalog [iceberg] > ").strip() or "iceberg"
+                        schema_name = _read_input(f"  Schema [warehouse] > ").strip() or "warehouse"
+                        label = _read_input(f"  Label (optional) > ").strip()
+                        add_profile(name, TrinoProfile(
+                            host=host, port=int(port_s), user=user,
+                            scheme=scheme, catalog=catalog, schema=schema_name, label=label,
+                        ))
+                        output.print(f"  [green]Profile '{name}' added.[/green]")
+                    except (EOFError, KeyboardInterrupt):
+                        output.print("  [dim]Cancelled.[/dim]")
+                elif args[0] == "remove" and len(args) > 1:
+                    if remove_profile(args[1]):
+                        output.print(f"  [green]Removed: {args[1]}[/green]")
+                    else:
+                        output.print(f"  [red]Cannot remove (active or not found)[/red]")
+                elif args[0] == "test":
+                    from genie.skills.trino_query.connection import get_active_profile
+                    try:
+                        p = get_active_profile()
+                        conn = p.connect()
+                        cur = conn.cursor()
+                        cur.execute("SELECT 1")
+                        cur.fetchall()
+                        conn.close()
+                        output.print(f"  [green]✓ Connected to {p.display_name()}[/green]")
+                    except Exception as exc:
+                        output.print(f"  [red]✗ Connection failed: {exc}[/red]")
+                else:
+                    output.print("  [dim]Usage: /trino [use|add|remove|test] [name][/dim]")
+
             case "/autoresearch":
                 if not use_skills:
                     output.print("  [yellow]Skills must be enabled. Restart with --skills[/yellow]")
@@ -358,6 +426,7 @@ def _chat_loop(
                     ("/paste",        "Multiline paste mode (Ctrl-D to send)"),
                     ("/editor",       "Open editor for input"),
                     ("/autoresearch", "Start autonomous iteration loop"),
+                    ("/trino",        "Trino connection manager"),
                     ("/reasoning",    "Toggle reasoning: disable/low/medium/high"),
                     ("/renew",        "Refresh auth token"),
                     ("/exit",         "Quit"),

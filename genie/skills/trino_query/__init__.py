@@ -1,17 +1,21 @@
-"""trino_query — genieCLI skill: execute & validate SQL on local Trino."""
+"""trino_query — genieCLI skill: execute & validate SQL on local Trino.
+
+Connection is configurable via env vars / config file / overrides.
+See connection.py for details. To switch Trino target:
+  - Set TRINO_HOST, TRINO_PORT, TRINO_SCHEME env vars
+  - Or edit ~/.config/genie/trino.json
+"""
 from __future__ import annotations
 
 import json
 import time
 from dataclasses import dataclass
 from decimal import Decimal
-from typing import TYPE_CHECKING
 
 from genie.core.arg import Arg
 from genie.core.registry import BaseSkill
 
-if TYPE_CHECKING:
-    import trino.dbapi
+from .connection import get_active_profile
 
 
 @dataclass
@@ -39,7 +43,7 @@ def _clean_row(row: tuple) -> list:
 
 
 class TrinoQuerySkill(BaseSkill):
-    """Execute SQL against the local Trino engine and return structured results.
+    """Execute SQL against Trino and return structured results.
 
     Designed to complement oracle2trino + trino_linter:
     linter finds problems → user rewrites → trino_query executes and validates.
@@ -47,29 +51,24 @@ class TrinoQuerySkill(BaseSkill):
 
     name = "trino_query"
     description = (
-        "Execute SQL against the local Trino engine and return structured results "
-        "with timing. Use this to validate SQL that was written or transpiled, "
-        "run EXPLAIN plans, and test queries before running them in production."
+        "Execute SQL against the configured Trino engine and return structured results "
+        "with timing. Use this to validate transpiled SQL, test queries, and check results."
     )
     group = "trino_query"
     args = [
         Arg("sql", "str", "SQL statement(s) to execute", required=True),
-        Arg("catalog", "str", "Target catalog (default: iceberg)", required=False, default="iceberg"),
-        Arg("schema", "str", "Target schema (default: warehouse)", required=False, default="warehouse"),
+        Arg("catalog", "str", "Target catalog (default: from config)", required=False, default=""),
+        Arg("schema", "str", "Target schema (default: from config)", required=False, default=""),
         Arg("limit", "int", "Maximum rows to return (default: 100)", required=False, default=100),
     ]
 
-    def run(self, ctx, sql: str = "", catalog: str = "iceberg",
-            schema: str = "warehouse", limit: int = 100) -> str:
+    def run(self, ctx, sql: str = "", catalog: str = "",
+            schema: str = "", limit: int = 100) -> str:
         try:
-            import trino.dbapi
-            conn = trino.dbapi.connect(
-                host="localhost",
-                port=8085,
-                user="trino",
-                catalog=catalog,
-                schema=schema,
-                http_scheme="http",
+            cfg = get_active_profile()
+            conn = cfg.connect(
+                catalog=catalog or None,
+                schema=schema or None,
             )
             cur = conn.cursor()
             t0 = time.monotonic()
@@ -112,27 +111,25 @@ class TrinoExplainSkill(BaseSkill):
     """Run EXPLAIN on SQL and return the query plan."""
 
     name = "trino_explain"
-    description = "Run EXPLAIN on SQL and return the query plan for analysis."
+    description = "Run EXPLAIN on SQL and return the query plan for performance analysis."
     group = "trino_query"
     args = [
         Arg("sql", "str", "SQL statement to EXPLAIN", required=True),
-        Arg("catalog", "str", "Target catalog (default: iceberg)", required=False, default="iceberg"),
-        Arg("schema", "str", "Target schema (default: warehouse)", required=False, default="warehouse"),
-        Arg("type", "str", "EXPLAIN type (default: formatted)",
-            required=False, default="formatted",
-            choices=["logical", "distributed", "formatted", "json"]),
+        Arg("catalog", "str", "Target catalog (default: from config)", required=False, default=""),
+        Arg("schema", "str", "Target schema (default: from config)", required=False, default=""),
+        Arg("type", "str", "EXPLAIN type (default: distributed)",
+            required=False, default="distributed",
+            choices=["logical", "distributed"]),
     ]
 
-    def run(self, ctx, sql: str = "", catalog: str = "iceberg",
-            schema: str = "warehouse", type: str = "logical") -> str:
-        # Trino 480: EXPLAIN syntax is EXPLAIN (TYPE logical|distributed) <sql>
-        # NOTE: FORMAT is not supported in this version
+    def run(self, ctx, sql: str = "", catalog: str = "",
+            schema: str = "", type: str = "distributed") -> str:
         explain_sql = f"EXPLAIN (TYPE {type.upper()}) {sql}"
         try:
-            import trino.dbapi
-            conn = trino.dbapi.connect(
-                host="localhost", port=8085, user="trino",
-                catalog=catalog, schema=schema, http_scheme="http",
+            cfg = get_active_profile()
+            conn = cfg.connect(
+                catalog=catalog or None,
+                schema=schema or None,
             )
             cur = conn.cursor()
             cur.execute(explain_sql)
@@ -150,6 +147,65 @@ class TrinoExplainSkill(BaseSkill):
             return json.dumps({"error": str(exc), "plan": ""}, ensure_ascii=False)
 
 
+class TrinoSchemaSkill(BaseSkill):
+    """Inspect Trino schema: list catalogs, schemas, tables, columns."""
+
+    name = "trino_schema"
+    description = (
+        "Inspect Trino metadata: list catalogs, schemas, tables, or describe table columns. "
+        "Use action='catalogs|schemas|tables|columns' to choose what to inspect."
+    )
+    group = "trino_query"
+    args = [
+        Arg("action", "str", "What to inspect: catalogs, schemas, tables, columns",
+            required=True, choices=["catalogs", "schemas", "tables", "columns"]),
+        Arg("catalog", "str", "Catalog name (for schemas/tables/columns)", required=False, default=""),
+        Arg("schema", "str", "Schema name (for tables/columns)", required=False, default=""),
+        Arg("table", "str", "Table name (for columns)", required=False, default=""),
+    ]
+
+    def run(self, ctx, action: str = "catalogs", catalog: str = "",
+            schema: str = "", table: str = "") -> str:
+        cfg = get_active_profile()
+        cat = catalog or cfg.catalog
+        sch = schema or cfg.schema
+
+        sql_map = {
+            "catalogs": "SHOW CATALOGS",
+            "schemas": f"SHOW SCHEMAS FROM {cat}",
+            "tables": f"SHOW TABLES FROM {cat}.{sch}",
+            "columns": f"DESCRIBE {cat}.{sch}.{table}" if table else "SELECT 'error: table required'",
+        }
+        sql = sql_map.get(action, "SHOW CATALOGS")
+
+        try:
+            conn = cfg.connect(catalog=cat, schema=sch)
+            cur = conn.cursor()
+            cur.execute(sql)
+            rows = cur.fetchall()
+            conn.close()
+
+            if action == "columns" and table:
+                # DESCRIBE returns (column, type, extra, comment)
+                result = [{"column": r[0], "type": r[1], "extra": r[2], "comment": r[3]} for r in rows]
+            else:
+                result = [r[0] for r in rows]
+
+            out = ctx.output
+            for item in result[:20]:
+                if isinstance(item, dict):
+                    out.print(f"  {item['column']:<30} {item['type']}")
+                else:
+                    out.print(f"  {item}")
+            if len(result) > 20:
+                out.print(f"  [dim]({len(result)} items total)[/dim]")
+
+            return json.dumps({"action": action, "result": result}, ensure_ascii=False)
+        except Exception as exc:
+            return json.dumps({"action": action, "error": str(exc), "result": []}, ensure_ascii=False)
+
+
 def register(registry) -> None:
     registry.register(TrinoQuerySkill())
     registry.register(TrinoExplainSkill())
+    registry.register(TrinoSchemaSkill())
