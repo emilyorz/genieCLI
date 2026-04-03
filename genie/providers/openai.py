@@ -141,6 +141,7 @@ class OpenAIProvider:
         return (
             msg.get("content")
             or msg.get("reasoning_content")
+            or msg.get("reasoning")        # qwen3.5 / thinking models
             or msg.get("refusal")
             or ""
         )

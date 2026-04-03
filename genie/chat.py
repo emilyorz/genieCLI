@@ -238,209 +238,380 @@ def _chat_loop(
         cmd = parts[0].lower()
         args = parts[1:]
 
-        match cmd:
-            case "/exit":
-                if any(m["role"] == "user" for m in session["history"]):
-                    save_session(session)
-                    output.print(f"  [dim]Saved: {escape(session['title'])}[/dim]")
-                output.print("  [yellow]Goodbye![/yellow]")
-                try:
-                    from genie.skills.browser.cdp import close_shared_cdp
-                    close_shared_cdp()
-                except Exception:
-                    pass
-                break
+        if cmd == "/exit":
+            if any(m["role"] == "user" for m in session["history"]):
 
-            case "/new":
-                if any(m["role"] == "user" for m in session["history"]):
-                    save_session(session)
-                    output.print(f"  [dim]Saved: {escape(session['title'])}[/dim]")
-                session = new_session(build_prompt(use_skills))
-                output.print("  [green]New conversation started.[/green]")
+                save_session(session)
 
-            case "/sessions":
-                sessions = list_sessions()
-                if not sessions:
-                    output.print("  [dim]No saved sessions yet.[/dim]")
-                else:
-                    for i, s in enumerate(sessions, 1):
-                        output.print(
-                            f"  [cyan]{i}[/cyan]. [{s.get('created','')[:15]}] "
-                            f"{escape(s['title'][:40]):<42} [dim]{s['turns']} turns[/dim]"
-                        )
+                output.print(f"  [dim]Saved: {escape(session['title'])}[/dim]")
 
-            case "/load":
-                sessions = list_sessions()
-                if not sessions:
-                    output.print("  [dim]No sessions.[/dim]")
-                else:
-                    for i, s in enumerate(sessions, 1):
-                        output.print(f"  [cyan]{i}[/cyan]. {escape(s['title'][:50])}")
-                    try:
-                        raw = _read_input("  Load number > ").strip()
-                        n = int(raw)
-                        if 1 <= n <= len(sessions):
-                            session = load_session(sessions[n - 1]["filename"])
-                            output.print(f"  [green]Loaded: {escape(session['title'])}[/green]")
-                    except (ValueError, EOFError, KeyboardInterrupt):
-                        pass
+            output.print("  [yellow]Goodbye![/yellow]")
 
-            case "/history":
-                visible = [m for m in session["history"] if m["role"] != "system"]
-                if not visible:
-                    output.print("  [dim](empty)[/dim]")
-                for msg in visible:
-                    text = msg["content"][0]["text"]
-                    role = msg["role"]
-                    if role == "user" and text.startswith("[Tool result:"):
-                        output.print(f"  [yellow][Tool][/yellow]  {escape(text[:120])}")
-                    elif role == "user":
-                        output.print(f"  [cyan][You][/cyan]   {escape(text[:120])}")
-                    elif role == "assistant":
-                        output.print(f"  [green][AI][/green]    {escape(text[:120])}")
+            try:
 
-            case "/skills" | "/tools":
-                skills = SkillRegistry.all()
-                if not skills:
-                    output.print("  [dim]No skills registered.[/dim]")
-                else:
-                    for s in skills:
-                        output.print(f"  [cyan]{s.name:<30}[/cyan] {s.description}")
+                from genie.skills.browser.cdp import close_shared_cdp
 
-            case "/clear":
-                session["history"] = []
-                sys_p = build_prompt(use_skills)
-                if sys_p:
-                    session["history"].append(new_msg("system", sys_p))
-                output.print("  [green]Cleared.[/green]")
+                close_shared_cdp()
 
-            case "/reasoning":
-                if args and args[0] in REASONING_LEVELS:
-                    current_reasoning = args[0]
-                else:
-                    idx = (
-                        REASONING_LEVELS.index(current_reasoning)
-                        if current_reasoning in REASONING_LEVELS
-                        else 0
+            except Exception:
+
+                pass
+
+            break
+
+
+        elif cmd == "/new":
+            if any(m["role"] == "user" for m in session["history"]):
+
+                save_session(session)
+
+                output.print(f"  [dim]Saved: {escape(session['title'])}[/dim]")
+
+            session = new_session(build_prompt(use_skills))
+
+            output.print("  [green]New conversation started.[/green]")
+
+
+        elif cmd == "/sessions":
+            sessions = list_sessions()
+
+            if not sessions:
+
+                output.print("  [dim]No saved sessions yet.[/dim]")
+
+            else:
+
+                for i, s in enumerate(sessions, 1):
+
+                    output.print(
+
+                        f"  [cyan]{i}[/cyan]. [{s.get('created','')[:15]}] "
+
+                        f"{escape(s['title'][:40]):<42} [dim]{s['turns']} turns[/dim]"
+
                     )
-                    current_reasoning = REASONING_LEVELS[(idx + 1) % len(REASONING_LEVELS)]
-                output.print(f"  [green]Reasoning: {current_reasoning}[/green]")
 
-            case "/renew":
-                output.print("  [yellow]Refreshing token...[/yellow]")
-                result = subprocess.run([sys.executable, "grab_auth.py"])
-                if result.returncode == 0:
-                    from genie.core.config import load as load_config
-                    cfg.update(load_config())
-                    output.print("  [green][OK] Token refreshed.[/green]")
-                else:
-                    output.error("Token refresh failed.")
 
-            case "/trino":
-                from genie.skills.trino_query.connection import (
-                    list_profiles, get_active_name, set_active,
-                    add_profile, remove_profile, status_line, TrinoProfile,
+        elif cmd == "/load":
+            sessions = list_sessions()
+
+            if not sessions:
+
+                output.print("  [dim]No sessions.[/dim]")
+
+            else:
+
+                for i, s in enumerate(sessions, 1):
+
+                    output.print(f"  [cyan]{i}[/cyan]. {escape(s['title'][:50])}")
+
+                try:
+
+                    raw = _read_input("  Load number > ").strip()
+
+                    n = int(raw)
+
+                    if 1 <= n <= len(sessions):
+
+                        session = load_session(sessions[n - 1]["filename"])
+
+                        output.print(f"  [green]Loaded: {escape(session['title'])}[/green]")
+
+                except (ValueError, EOFError, KeyboardInterrupt):
+
+                    pass
+
+
+        elif cmd == "/history":
+            visible = [m for m in session["history"] if m["role"] != "system"]
+
+            if not visible:
+
+                output.print("  [dim](empty)[/dim]")
+
+            for msg in visible:
+
+                text = msg["content"][0]["text"]
+
+                role = msg["role"]
+
+                if role == "user" and text.startswith("[Tool result:"):
+
+                    output.print(f"  [yellow][Tool][/yellow]  {escape(text[:120])}")
+
+                elif role == "user":
+
+                    output.print(f"  [cyan][You][/cyan]   {escape(text[:120])}")
+
+                elif role == "assistant":
+
+                    output.print(f"  [green][AI][/green]    {escape(text[:120])}")
+
+
+        elif cmd in ("/skills", "/tools"):
+            skills = SkillRegistry.all()
+
+            if not skills:
+
+                output.print("  [dim]No skills registered.[/dim]")
+
+            else:
+
+                for s in skills:
+
+                    output.print(f"  [cyan]{s.name:<30}[/cyan] {s.description}")
+
+
+        elif cmd == "/clear":
+            session["history"] = []
+
+            sys_p = build_prompt(use_skills)
+
+            if sys_p:
+
+                session["history"].append(new_msg("system", sys_p))
+
+            output.print("  [green]Cleared.[/green]")
+
+
+        elif cmd == "/reasoning":
+            if args and args[0] in REASONING_LEVELS:
+
+                current_reasoning = args[0]
+
+            else:
+
+                idx = (
+
+                    REASONING_LEVELS.index(current_reasoning)
+
+                    if current_reasoning in REASONING_LEVELS
+
+                    else 0
+
                 )
-                if not args:
-                    # Show current status + all profiles
-                    active = get_active_name()
-                    profiles = list_profiles()
-                    output.print(f"\n  [yellow]{status_line()}[/yellow]")
-                    output.print("")
-                    for name, p in profiles.items():
-                        marker = "[green]●[/green]" if name == active else " "
-                        output.print(f"  {marker} [cyan]{name:<15}[/cyan] {p.display_name()}")
-                    output.print("")
-                    output.print("  [dim]/trino use <name>     switch profile[/dim]")
-                    output.print("  [dim]/trino add <name>     add new profile (interactive)[/dim]")
-                    output.print("  [dim]/trino remove <name>  remove profile[/dim]")
-                    output.print("  [dim]/trino test           test current connection[/dim]")
-                elif args[0] == "use" and len(args) > 1:
-                    if set_active(args[1]):
-                        output.print(f"  [green]Switched to: {args[1]}[/green]")
-                        output.print(f"  {status_line()}")
-                    else:
-                        output.print(f"  [red]Profile '{args[1]}' not found[/red]")
-                elif args[0] == "add" and len(args) > 1:
-                    name = args[1]
-                    output.print(f"  [yellow]Adding profile: {name}[/yellow]")
-                    try:
-                        host = _read_input(f"  Host [localhost] > ").strip() or "localhost"
-                        port_s = _read_input(f"  Port [8085] > ").strip() or "8085"
-                        user = _read_input(f"  User [trino] > ").strip() or "trino"
-                        scheme = _read_input(f"  Scheme [http] > ").strip() or "http"
-                        catalog = _read_input(f"  Catalog [iceberg] > ").strip() or "iceberg"
-                        schema_name = _read_input(f"  Schema [warehouse] > ").strip() or "warehouse"
-                        label = _read_input(f"  Label (optional) > ").strip()
-                        add_profile(name, TrinoProfile(
-                            host=host, port=int(port_s), user=user,
-                            scheme=scheme, catalog=catalog, schema=schema_name, label=label,
-                        ))
-                        output.print(f"  [green]Profile '{name}' added.[/green]")
-                    except (EOFError, KeyboardInterrupt):
-                        output.print("  [dim]Cancelled.[/dim]")
-                elif args[0] == "remove" and len(args) > 1:
-                    if remove_profile(args[1]):
-                        output.print(f"  [green]Removed: {args[1]}[/green]")
-                    else:
-                        output.print(f"  [red]Cannot remove (active or not found)[/red]")
-                elif args[0] == "test":
-                    from genie.skills.trino_query.connection import get_active_profile
-                    try:
-                        p = get_active_profile()
-                        conn = p.connect()
-                        cur = conn.cursor()
-                        cur.execute("SELECT 1")
-                        cur.fetchall()
-                        conn.close()
-                        output.print(f"  [green]✓ Connected to {p.display_name()}[/green]")
-                    except Exception as exc:
-                        output.print(f"  [red]✗ Connection failed: {exc}[/red]")
+
+                current_reasoning = REASONING_LEVELS[(idx + 1) % len(REASONING_LEVELS)]
+
+            output.print(f"  [green]Reasoning: {current_reasoning}[/green]")
+
+
+        elif cmd == "/renew":
+            output.print("  [yellow]Refreshing token...[/yellow]")
+
+            result = subprocess.run([sys.executable, "grab_auth.py"])
+
+            if result.returncode == 0:
+
+                from genie.core.config import load as load_config
+
+                cfg.update(load_config())
+
+                output.print("  [green][OK] Token refreshed.[/green]")
+
+            else:
+
+                output.error("Token refresh failed.")
+
+
+        elif cmd == "/trino":
+            from genie.skills.trino_query.connection import (
+
+                list_profiles, get_active_name, set_active,
+
+                add_profile, remove_profile, status_line, TrinoProfile,
+
+            )
+
+            if not args:
+
+                # Show current status + all profiles
+
+                active = get_active_name()
+
+                profiles = list_profiles()
+
+                output.print(f"\n  [yellow]{status_line()}[/yellow]")
+
+                output.print("")
+
+                for name, p in profiles.items():
+
+                    marker = "[green]●[/green]" if name == active else " "
+
+                    output.print(f"  {marker} [cyan]{name:<15}[/cyan] {p.display_name()}")
+
+                output.print("")
+
+                output.print("  [dim]/trino use <name>     switch profile[/dim]")
+
+                output.print("  [dim]/trino add <name>     add new profile (interactive)[/dim]")
+
+                output.print("  [dim]/trino remove <name>  remove profile[/dim]")
+
+                output.print("  [dim]/trino test           test current connection[/dim]")
+
+            elif args[0] == "use" and len(args) > 1:
+
+                if set_active(args[1]):
+
+                    output.print(f"  [green]Switched to: {args[1]}[/green]")
+
+                    output.print(f"  {status_line()}")
+
                 else:
-                    output.print("  [dim]Usage: /trino [use|add|remove|test] [name][/dim]")
 
-            case "/trino-research":
-                from genie.skills.trino_query.research import run_trino_research
-                run_trino_research(provider, cfg, model, current_reasoning, output, build_prompt)
+                    output.print(f"  [red]Profile '{args[1]}' not found[/red]")
 
-            case "/autoresearch":
-                if not use_skills:
-                    output.print("  [yellow]Skills must be enabled. Restart with --skills[/yellow]")
+            elif args[0] == "add" and len(args) > 1:
+
+                name = args[1]
+
+                output.print(f"  [yellow]Adding profile: {name}[/yellow]")
+
+                try:
+
+                    host = _read_input(f"  Host [localhost] > ").strip() or "localhost"
+
+                    port_s = _read_input(f"  Port [8085] > ").strip() or "8085"
+
+                    user = _read_input(f"  User [trino] > ").strip() or "trino"
+
+                    scheme = _read_input(f"  Scheme [http] > ").strip() or "http"
+
+                    catalog = _read_input(f"  Catalog [iceberg] > ").strip() or "iceberg"
+
+                    schema_name = _read_input(f"  Schema [warehouse] > ").strip() or "warehouse"
+
+                    label = _read_input(f"  Label (optional) > ").strip()
+
+                    add_profile(name, TrinoProfile(
+
+                        host=host, port=int(port_s), user=user,
+
+                        scheme=scheme, catalog=catalog, schema=schema_name, label=label,
+
+                    ))
+
+                    output.print(f"  [green]Profile '{name}' added.[/green]")
+
+                except (EOFError, KeyboardInterrupt):
+
+                    output.print("  [dim]Cancelled.[/dim]")
+
+            elif args[0] == "remove" and len(args) > 1:
+
+                if remove_profile(args[1]):
+
+                    output.print(f"  [green]Removed: {args[1]}[/green]")
+
                 else:
-                    _run_autoresearch(provider, cfg, model, current_reasoning, output, build_prompt)
 
-            case "/paste":
-                pasted = _read_paste_mode()
-                if pasted.strip():
-                    _do_send(provider, session, model, current_reasoning, pasted, output, ctx)
+                    output.print(f"  [red]Cannot remove (active or not found)[/red]")
 
-            case "/editor":
-                edited = _read_editor_mode()
-                if edited.strip():
-                    _do_send(provider, session, model, current_reasoning, edited, output, ctx)
+            elif args[0] == "test":
 
-            case "/help":
-                cmds = [
-                    ("/new",          "Start a new conversation"),
-                    ("/sessions",     "List saved conversations"),
-                    ("/load <n>",     "Load conversation by number"),
-                    ("/history",      "Show current conversation"),
-                    ("/skills",       "List available skills/tools"),
-                    ("/clear",        "Clear current conversation"),
-                    ("/paste",        "Multiline paste mode (Ctrl-D to send)"),
-                    ("/editor",       "Open editor for input"),
-                    ("/autoresearch", "Start autonomous iteration loop"),
-                    ("/trino",        "Trino connection manager"),
-                    ("/trino-research","Optimize SQL via autoresearch loop"),
-                    ("/reasoning",    "Toggle reasoning: disable/low/medium/high"),
-                    ("/renew",        "Refresh auth token"),
-                    ("/exit",         "Quit"),
-                ]
-                for c, d in cmds:
-                    output.print(f"  [cyan]{c:<22}[/cyan] {d}")
+                from genie.skills.trino_query.connection import get_active_profile
 
-            case _ if cmd.startswith("/"):
-                output.print(f"  [red]Unknown: {escape(cmd)}. Type /help.[/red]")
+                try:
 
-            case _:
-                _do_send(provider, session, model, current_reasoning, user_input, output, ctx)
+                    p = get_active_profile()
+
+                    conn = p.connect()
+
+                    cur = conn.cursor()
+
+                    cur.execute("SELECT 1")
+
+                    cur.fetchall()
+
+                    conn.close()
+
+                    output.print(f"  [green]✓ Connected to {p.display_name()}[/green]")
+
+                except Exception as exc:
+
+                    output.print(f"  [red]✗ Connection failed: {exc}[/red]")
+
+            else:
+
+                output.print("  [dim]Usage: /trino [use|add|remove|test] [name][/dim]")
+
+
+        elif cmd == "/trino-research":
+            from genie.skills.trino_query.research import run_trino_research
+
+            run_trino_research(provider, cfg, model, current_reasoning, output, build_prompt)
+
+
+        elif cmd == "/autoresearch":
+            if not use_skills:
+
+                output.print("  [yellow]Skills must be enabled. Restart with --skills[/yellow]")
+
+            else:
+
+                _run_autoresearch(provider, cfg, model, current_reasoning, output, build_prompt)
+
+
+        elif cmd == "/paste":
+            pasted = _read_paste_mode()
+
+            if pasted.strip():
+
+                _do_send(provider, session, model, current_reasoning, pasted, output, ctx)
+
+
+        elif cmd == "/editor":
+            edited = _read_editor_mode()
+
+            if edited.strip():
+
+                _do_send(provider, session, model, current_reasoning, edited, output, ctx)
+
+
+        elif cmd == "/help":
+            cmds = [
+
+                ("/new",          "Start a new conversation"),
+
+                ("/sessions",     "List saved conversations"),
+
+                ("/load <n>",     "Load conversation by number"),
+
+                ("/history",      "Show current conversation"),
+
+                ("/skills",       "List available skills/tools"),
+
+                ("/clear",        "Clear current conversation"),
+
+                ("/paste",        "Multiline paste mode (Ctrl-D to send)"),
+
+                ("/editor",       "Open editor for input"),
+
+                ("/autoresearch", "Start autonomous iteration loop"),
+
+                ("/trino",        "Trino connection manager"),
+
+                ("/trino-research","Optimize SQL via autoresearch loop"),
+
+                ("/reasoning",    "Toggle reasoning: disable/low/medium/high"),
+
+                ("/renew",        "Refresh auth token"),
+
+                ("/exit",         "Quit"),
+
+            ]
+
+            for c, d in cmds:
+
+                output.print(f"  [cyan]{c:<22}[/cyan] {d}")
+
+
+        elif cmd.startswith("/"):
+            output.print(f"  [red]Unknown: {escape(cmd)}. Type /help.[/red]")
+
+
+        else:
+            _do_send(provider, session, model, current_reasoning, user_input, output, ctx)
+
