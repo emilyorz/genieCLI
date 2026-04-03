@@ -321,3 +321,6 @@ def register(registry) -> None:
     registry.register(TrinoQuerySkill())
     registry.register(TrinoExplainSkill())
     registry.register(TrinoSchemaSkill())
+
+    from .optimize import TrinoOptimizeSkill
+    registry.register(TrinoOptimizeSkill())
