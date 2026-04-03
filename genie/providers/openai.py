@@ -89,6 +89,9 @@ class OpenAIProvider:
             "stream": True,
             "stream_options": {"include_usage": True},
         }
+        # Ollama-specific: disable thinking mode for qwen3/3.5 models
+        if "localhost:11434" in base_url or "ollama" in base_url:
+            payload["think"] = False
 
         headers = {
             "Content-Type": "application/json",
