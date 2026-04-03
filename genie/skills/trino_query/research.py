@@ -150,14 +150,14 @@ def _extract_sql_from_reply(reply: str) -> Optional[str]:
     # Try ```sql block first
     sql_blocks = re.findall(r"```sql\s*\n(.*?)```", reply, re.DOTALL | re.IGNORECASE)
     if sql_blocks:
-        return sql_blocks[-1].strip()
+        return sql_blocks[-1].strip().rstrip(";")
 
     # Try generic fenced block
     generic_blocks = re.findall(r"```\s*\n(.*?)```", reply, re.DOTALL)
     for block in reversed(generic_blocks):
         block = block.strip()
         if any(kw in block.upper() for kw in ["SELECT", "WITH", "INSERT", "UPDATE", "DELETE"]):
-            return block
+            return block.rstrip(";")
 
     return None
 
@@ -235,8 +235,16 @@ def _run_optimization_loop(
             f"Current best: {best_metric}\n"
             f"Last iteration: {last_str}\n\n"
             f"Current SQL:\n```sql\n{best_sql}\n```\n\n"
-            f"Return the COMPLETE optimized SQL in a ```sql block. ONE change only."
+            f"Return the COMPLETE optimized SQL in a ```sql block. ONE change only. "
+            f"Do NOT include a trailing semicolon."
         )
+
+        # Keep history lean: only system + last 4 messages (2 user/assistant pairs)
+        # to avoid context bloat with local models
+        sys_msgs = [m for m in session["history"] if m["role"] == "system"]
+        non_sys = [m for m in session["history"] if m["role"] != "system"]
+        session["history"] = sys_msgs + non_sys[-4:]
+
         session["history"].append(new_msg("user", context))
 
         # Get AI response

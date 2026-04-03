@@ -56,7 +56,61 @@ class OpenAIProvider:
     def complete_text(self, req: CompletionRequest) -> str:
         return self._call(req)
 
+    def _is_ollama(self) -> bool:
+        """Detect if we're talking to a local Ollama instance."""
+        base = self._cfg.get("openaiBaseUrl", "")
+        return "localhost:11434" in base or "127.0.0.1:11434" in base or "ollama" in base
+
     def _call(self, req: CompletionRequest) -> str:
+        # Route to native Ollama API when detected — /v1 doesn't honor think=false
+        if self._is_ollama() and not req.files:
+            return self._call_ollama_native(req)
+        return self._call_openai(req)
+
+    def _call_ollama_native(self, req: CompletionRequest) -> str:
+        """Use Ollama native /api/chat — supports think=false properly."""
+        cfg = self._cfg
+        # Extract base host from openaiBaseUrl (e.g. http://localhost:11434/v1 → http://localhost:11434)
+        base_url = cfg.get("openaiBaseUrl", "http://localhost:11434/v1").rstrip("/")
+        if base_url.endswith("/v1"):
+            ollama_host = base_url[:-3]
+        else:
+            ollama_host = base_url.rsplit("/", 1)[0] if "/" in base_url.split("//", 1)[-1] else base_url
+
+        messages = _history_to_openai(req.messages)
+
+        payload = {
+            "model": req.model,
+            "messages": messages,
+            "stream": False,
+            "think": False,
+        }
+
+        _dbg(f"POST {ollama_host}/api/chat  model={req.model}  messages={len(messages)} (native)")
+
+        try:
+            resp = requests.post(
+                f"{ollama_host}/api/chat",
+                json=payload,
+                timeout=(30, 300),
+            )
+        except requests.RequestException as exc:
+            raise RuntimeError(str(exc))
+
+        resp.raise_for_status()
+        data = resp.json()
+        msg = data.get("message", {})
+
+        content = msg.get("content", "")
+        if not content:
+            # Fallback: some models put output in thinking field
+            content = msg.get("thinking", "") or msg.get("reasoning", "")
+
+        _dbg(f"Ollama native: content={len(content)} chars, thinking={len(msg.get('thinking',''))} chars")
+        return content
+
+    def _call_openai(self, req: CompletionRequest) -> str:
+        """Standard OpenAI-compatible /v1/chat/completions path."""
         cfg = self._cfg
         base_url = cfg.get("openaiBaseUrl", "https://api.openai.com/v1").rstrip("/")
         api_key = cfg.get("openaiApiKey", "")
@@ -89,9 +143,6 @@ class OpenAIProvider:
             "stream": True,
             "stream_options": {"include_usage": True},
         }
-        # Ollama-specific: disable thinking mode for qwen3/3.5 models
-        if "localhost:11434" in base_url or "ollama" in base_url:
-            payload["think"] = False
 
         headers = {
             "Content-Type": "application/json",
@@ -105,7 +156,7 @@ class OpenAIProvider:
                 f"{base_url}/chat/completions",
                 headers=headers,
                 json=payload,
-                timeout=(30, 300),  # (connect, read) — local models need more time
+                timeout=(30, 300),
                 stream=True,
             )
         except requests.RequestException as exc:
