@@ -1,15 +1,14 @@
 """trino_query — genieCLI skill: execute & validate SQL on local Trino.
 
-Connection is configurable via env vars / config file / overrides.
-See connection.py for details. To switch Trino target:
-  - Set TRINO_HOST, TRINO_PORT, TRINO_SCHEME env vars
-  - Or edit ~/.config/genie/trino.json
+Connection is profile-based (~/.config/genie/trino.json).
+Switch profiles via /trino CLI command.
 """
 from __future__ import annotations
 
 import json
 import time
-from dataclasses import dataclass
+import urllib.request
+from dataclasses import dataclass, field
 from datetime import date, datetime, timedelta
 from decimal import Decimal
 
@@ -19,6 +18,58 @@ from genie.core.registry import BaseSkill
 from .connection import get_active_profile
 
 
+# ── Data classes ──────────────────────────────────────────────────────────────
+
+@dataclass
+class QueryMetrics:
+    """Performance metrics from Trino cursor.stats + REST API."""
+    cpu_time_ms: int = 0
+    wall_time_ms: int = 0
+    queued_time_ms: int = 0
+    planning_time_ms: int = 0
+    analysis_time_ms: int = 0
+    elapsed_time_ms: int = 0
+    peak_memory_bytes: int = 0
+    spilled_bytes: int = 0
+    physical_input_bytes: int = 0
+    physical_written_bytes: int = 0
+    internal_network_bytes: int = 0
+    processed_rows: int = 0
+    processed_bytes: int = 0
+    total_splits: int = 0
+    completed_splits: int = 0
+
+    def to_json(self) -> dict:
+        return {
+            "cpu_time_ms": self.cpu_time_ms,
+            "wall_time_ms": self.wall_time_ms,
+            "queued_time_ms": self.queued_time_ms,
+            "planning_time_ms": self.planning_time_ms,
+            "analysis_time_ms": self.analysis_time_ms,
+            "elapsed_time_ms": self.elapsed_time_ms,
+            "peak_memory_bytes": self.peak_memory_bytes,
+            "peak_memory_human": _human_bytes(self.peak_memory_bytes),
+            "spilled_bytes": self.spilled_bytes,
+            "physical_input_bytes": self.physical_input_bytes,
+            "physical_input_human": _human_bytes(self.physical_input_bytes),
+            "processed_rows": self.processed_rows,
+            "total_splits": self.total_splits,
+        }
+
+    def summary_line(self) -> str:
+        parts = [
+            f"cpu={self.cpu_time_ms}ms",
+            f"wall={self.wall_time_ms}ms",
+            f"mem={_human_bytes(self.peak_memory_bytes)}",
+            f"input={_human_bytes(self.physical_input_bytes)}",
+            f"rows={self.processed_rows}",
+            f"splits={self.total_splits}",
+        ]
+        if self.spilled_bytes > 0:
+            parts.append(f"spill={_human_bytes(self.spilled_bytes)}")
+        return " · ".join(parts)
+
+
 @dataclass
 class QueryResult:
     rows: list[dict]
@@ -26,16 +77,34 @@ class QueryResult:
     duration_ms: int
     truncated: bool
     error: str | None = None
+    query_id: str = ""
+    metrics: QueryMetrics | None = None
 
     def to_json(self) -> dict:
-        return {
+        d = {
             "rows": self.rows,
             "columns": self.columns,
             "duration_ms": self.duration_ms,
             "truncated": self.truncated,
             "error": self.error,
             "row_count": len(self.rows),
+            "query_id": self.query_id,
         }
+        if self.metrics:
+            d["metrics"] = self.metrics.to_json()
+        return d
+
+
+# ── Helpers ───────────────────────────────────────────────────────────────────
+
+def _human_bytes(b: int) -> str:
+    if b < 1024:
+        return f"{b}B"
+    if b < 1024 * 1024:
+        return f"{b / 1024:.1f}KB"
+    if b < 1024 * 1024 * 1024:
+        return f"{b / (1024 * 1024):.1f}MB"
+    return f"{b / (1024 * 1024 * 1024):.1f}GB"
 
 
 def _clean_cell(v):
@@ -52,21 +121,43 @@ def _clean_cell(v):
 
 
 def _clean_row(row: tuple) -> list:
-    """Clean all cells in a row for JSON serialization."""
     return [_clean_cell(v) for v in row]
 
 
-class TrinoQuerySkill(BaseSkill):
-    """Execute SQL against Trino and return structured results.
+def _extract_metrics(stats: dict) -> QueryMetrics:
+    """Extract QueryMetrics from Trino cursor.stats dict."""
+    return QueryMetrics(
+        cpu_time_ms=stats.get("cpuTimeMillis", 0),
+        wall_time_ms=stats.get("wallTimeMillis", 0),
+        queued_time_ms=stats.get("queuedTimeMillis", 0),
+        planning_time_ms=stats.get("planningTimeMillis", 0),
+        analysis_time_ms=stats.get("analysisTimeMillis", 0),
+        elapsed_time_ms=stats.get("elapsedTimeMillis", 0),
+        peak_memory_bytes=stats.get("peakMemoryBytes", 0),
+        spilled_bytes=stats.get("spilledBytes", 0),
+        physical_input_bytes=stats.get("physicalInputBytes", 0),
+        physical_written_bytes=stats.get("physicalWrittenBytes", 0),
+        internal_network_bytes=stats.get("internalNetworkInputBytes", 0),
+        processed_rows=stats.get("processedRows", 0),
+        processed_bytes=stats.get("processedBytes", 0),
+        total_splits=stats.get("totalSplits", 0),
+        completed_splits=stats.get("completedSplits", 0),
+    )
 
-    Designed to complement oracle2trino + trino_linter:
-    linter finds problems → user rewrites → trino_query executes and validates.
+
+# ── Skills ────────────────────────────────────────────────────────────────────
+
+class TrinoQuerySkill(BaseSkill):
+    """Execute SQL against Trino with performance metrics collection.
+
+    Every query automatically captures: CPU time, wall time, memory usage,
+    I/O bytes, splits, rows processed. Use this as an optimization baseline.
     """
 
     name = "trino_query"
     description = (
-        "Execute SQL against the configured Trino engine and return structured results "
-        "with timing. Use this to validate transpiled SQL, test queries, and check results."
+        "Execute SQL on Trino with performance metrics (CPU, memory, I/O, splits). "
+        "Returns results + metrics baseline for optimization comparison."
     )
     group = "trino_query"
     args = [
@@ -80,14 +171,12 @@ class TrinoQuerySkill(BaseSkill):
             schema: str = "", limit: int = 100) -> str:
         try:
             cfg = get_active_profile()
-            conn = cfg.connect(
-                catalog=catalog or None,
-                schema=schema or None,
-            )
+            conn = cfg.connect(catalog=catalog or None, schema=schema or None)
             cur = conn.cursor()
             t0 = time.monotonic()
             cur.execute(sql)
             t_ms = int((time.monotonic() - t0) * 1000)
+
             desc = cur.description or []
             cols = [c[0] for c in desc]
             rows = []
@@ -96,11 +185,20 @@ class TrinoQuerySkill(BaseSkill):
                 if len(rows) >= limit:
                     rows = rows[:limit]
                     break
+
+            # Collect metrics from cursor.stats
+            stats = getattr(cur, 'stats', {}) or {}
+            metrics = _extract_metrics(stats)
+            query_id = getattr(cur, 'query_id', '') or ''
+
             conn.close()
+
             result = QueryResult(
                 rows=rows, columns=cols, duration_ms=t_ms,
                 truncated=len(rows) >= limit,
+                query_id=query_id, metrics=metrics,
             )
+
             out = ctx.output
             if cols:
                 out.progress(f"[{len(rows)} rows · {t_ms}ms]")
@@ -110,14 +208,18 @@ class TrinoQuerySkill(BaseSkill):
                     out.print(f"  [dim]({len(rows)} rows returned)[/dim]")
             else:
                 out.print(f"[green]OK[/green] ({t_ms}ms)")
+
+            # Always show metrics
+            out.print(f"  [dim]metrics: {metrics.summary_line()}[/dim]")
+
             return json.dumps(result.to_json(), ensure_ascii=False)
+
         except Exception as exc:
             return json.dumps({
                 "error": str(exc),
-                "rows": [],
-                "columns": [],
-                "duration_ms": 0,
-                "truncated": False,
+                "rows": [], "columns": [],
+                "duration_ms": 0, "truncated": False,
+                "query_id": "", "metrics": None,
             }, ensure_ascii=False)
 
 
@@ -141,10 +243,7 @@ class TrinoExplainSkill(BaseSkill):
         explain_sql = f"EXPLAIN (TYPE {type.upper()}) {sql}"
         try:
             cfg = get_active_profile()
-            conn = cfg.connect(
-                catalog=catalog or None,
-                schema=schema or None,
-            )
+            conn = cfg.connect(catalog=catalog or None, schema=schema or None)
             cur = conn.cursor()
             cur.execute(explain_sql)
             plan_rows = cur.fetchall()
@@ -200,7 +299,6 @@ class TrinoSchemaSkill(BaseSkill):
             conn.close()
 
             if action == "columns" and table:
-                # DESCRIBE returns (column, type, extra, comment)
                 result = [{"column": r[0], "type": r[1], "extra": r[2], "comment": r[3]} for r in rows]
             else:
                 result = [r[0] for r in rows]
