@@ -28,7 +28,7 @@ from genie.output.human import HumanSink
 from genie.output.machine import MachineSink
 from genie.session.manager import list_sessions, new_msg, new_session
 
-__version__ = "4.0.0"
+__version__ = "4.1.0"
 
 app = typer.Typer(
     name="genie",

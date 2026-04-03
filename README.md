@@ -6,6 +6,8 @@ Plugin-based AI agent CLI。底層用 Provider Protocol 抽象化多家 LLM back
 
 **適用場景：** Oracle → Trino SQL 遷移、Trino query 靜態分析、瀏覽器自動化、自主迭代 (Autoresearch)、Git 操作、Shell 任務。
 
+**v4.1.0** — 44 個 Python 模組、46 個 tools、5741 行 code、420 tests。
+
 ---
 
 ## 架構
@@ -14,40 +16,42 @@ Plugin-based AI agent CLI。底層用 Provider Protocol 抽象化多家 LLM back
 
 ```
 ┌──────────────────────────────────────────────────────────────┐
-│  genie/cli.py  (Typer)                                       │
-│  CLI 進入點：chat / sessions / config / tools 子指令          │
-│  --json flag → MachineSink；預設 → HumanSink                  │
+│  CLI Layer                                                   │
+│  genie/cli.py (Typer) — 入口 + 子指令路由                     │
+│  genie/chat.py — Chat loop + tool call 路由                   │
+│  genie/input.py — 互動輸入（多行、補全）                       │
 └─────────────────────┬────────────────────────────────────────┘
-                      │  user message + history
-                      ▼
-┌──────────────────────────────────────────────────────────────┐
-│  genie/chat.py                                               │
-│  Chat loop：維護 session history，送 CompletionRequest        │
-│  解析 AI 回覆中的 tool call → 路由給 SkillRegistry            │
-└──────┬──────────────────────────────┬────────────────────────┘
-       │                              │
-       ▼                              ▼
+                      │
+          ┌───────────┴───────────┐
+          ▼                       ▼
 ┌─────────────────┐     ┌─────────────────────────────────────┐
-│  genie/         │     │  genie/core/registry.py             │
-│  providers/     │     │  SkillRegistry                       │
-│                 │     │  動態 discover + dispatch tools      │
-│  tgenie.py      │     └──────────────┬──────────────────────┘
-│  openai.py      │                    │  skill.run(**kwargs)
-│  anthropic.py   │        ┌───────────┼────────────┐
-│  base.py        │        ▼           ▼            ▼
-│                 │  ┌──────────┐ ┌──────────┐ ┌──────────────┐
-│  Provider       │  │ browser  │ │file_ops  │ │oracle2trino  │
-│  Protocol ✓     │  │ (CDP)    │ │git_ops   │ │trino_linter  │
-└─────────────────┘  │          │ │shell_ops │ │              │
-                     └──────────┘ └──────────┘ └──────────────┘
-       ▼
+│  Providers      │     │  Core                                │
+│                 │     │  registry.py — SkillRegistry          │
+│  tgenie.py      │     │  provider.py — Provider Protocol      │
+│  openai.py      │     │  context.py  — SkillContext (DI)      │
+│  anthropic.py   │     │  config.py   — 設定讀寫               │
+│  base.py        │     │  arg.py      — Arg descriptor         │
+└─────────────────┘     │  tool_call.py — JSON parse 共用       │
+                        └──────────────┬──────────────────────┘
+                                       │
+          ┌────────────┬───────────────┼────────────┐
+          ▼            ▼               ▼            ▼
+    ┌──────────┐ ┌──────────┐ ┌──────────────┐ ┌──────────┐
+    │ browser  │ │ file_ops │ │ oracle2trino │ │ runtime  │
+    │ (CDP)    │ │ git_ops  │ │ trino_linter │ │ (auto-   │
+    │ 30 tools │ │ shell_ops│ │              │ │ research)│
+    └──────────┘ └──────────┘ └──────────────┘ └──────────┘
+          │
+          ▼
 ┌─────────────────────────────────────────────────────────────┐
-│  genie/output/                                              │
-│  HumanSink（Rich 彩色輸出）/ MachineSink（JSON 輸出）         │
+│  Output Layer                                               │
+│  HumanSink（Rich 彩色）/ MachineSink（JSON）                 │
 └─────────────────────────────────────────────────────────────┘
 ```
 
-### Core Abstractions（`genie/core/`）
+### 模組總覽
+
+#### Core（`genie/core/`）
 
 | 模組           | 說明                                                           |
 | -------------- | -------------------------------------------------------------- |
@@ -58,7 +62,7 @@ Plugin-based AI agent CLI。底層用 Provider Protocol 抽象化多家 LLM back
 | `arg.py`       | `Arg` descriptor（skill 參數宣告 + 驗證）                      |
 | `tool_call.py` | Tool call JSON 解析 + normalize 共用邏輯                       |
 
-### Providers（`genie/providers/`）
+#### Providers（`genie/providers/`）
 
 | 模組           | 說明                                                    |
 | -------------- | ------------------------------------------------------- |
@@ -67,27 +71,27 @@ Plugin-based AI agent CLI。底層用 Provider Protocol 抽象化多家 LLM back
 | `anthropic.py` | Anthropic API                                           |
 | `base.py`      | 共用 HTTP helpers                                       |
 
-### Bundled Skills（`genie/skills/`）
+#### Skills（`genie/skills/`）— 46 tools
 
-| Skill           | 說明                                                              |
-| --------------- | ----------------------------------------------------------------- |
-| `browser/`      | ~25 個 Chrome CDP tools（snapshot / click / type / intercept…）   |
-| `file_ops/`     | 檔案讀寫、目錄列表                                                |
-| `git_ops/`      | Git 操作（commit / diff / log…）                                  |
-| `shell_ops/`    | Shell 指令執行                                                    |
-| `oracle2trino/` | Oracle → Trino SQL 轉換（sqlglot 機械轉換 + AI 補完）             |
-| `trino_linter/` | Trino SQL 靜態分析（Oracle 殘留、partition filter、SELECT \* 等） |
+| Skill           | Tools | 說明                                                              |
+| --------------- | ----- | ----------------------------------------------------------------- |
+| `browser/`      | 30    | Chrome CDP automation（snapshot / click / type / intercept…）     |
+| `file_ops/`     | 4     | 檔案讀寫、目錄列表、file_patch                                    |
+| `git_ops/`      | 5     | Git 操作（status / diff / log / checkpoint / restore）            |
+| `shell_ops/`    | 1     | Shell 指令執行（whitelisted profiles）                            |
+| `oracle2trino/` | 5     | Oracle → Trino SQL 轉換（sqlglot + AI 補完）                     |
+| `trino_linter/` | 1     | Trino SQL 靜態分析（11 rules：Oracle 殘留 + anti-patterns）      |
 
-### Output（`genie/output/`）
+#### Output（`genie/output/`）
 
 | 模組         | 說明                                                        |
 | ------------ | ----------------------------------------------------------- |
 | `human.py`   | `HumanSink`：Rich 彩色輸出，適合互動模式                    |
 | `machine.py` | `MachineSink`：newline-delimited JSON，適合管線 / scripting |
 
-### Runtime（`genie/runtime/`）
+#### Runtime（`genie/runtime/`）
 
-Autoresearch 自主迭代引擎，作為 skill plugin 載入，不耦合 core。
+Autoresearch 自主迭代引擎，作為 plugin 載入，不耦合 core。
 
 | 模組                  | 說明                                                  |
 | --------------------- | ----------------------------------------------------- |
@@ -104,165 +108,87 @@ Autoresearch 自主迭代引擎，作為 skill plugin 載入，不耦合 core。
 
 ### 前置需求
 
-- Python 3.10+
-- Chrome 開啟 remote debugging：
+- Python 3.10+（`match/case` syntax）
+- Chrome 開啟 remote debugging（browser skills 需要）：
 
   ```bash
   # macOS
   /Applications/Google\ Chrome.app/Contents/MacOS/Google\ Chrome \
-    --remote-debugging-port=9222 \
-    --user-data-dir=/tmp/chrome-debug
+    --remote-debugging-port=9222 --user-data-dir=/tmp/chrome-debug
 
   # Windows
   chrome.exe --remote-debugging-port=9222 --user-data-dir=C:\ChromeDebug
   ```
 
-- 確認 `~/ai-agent-config.json` 有正確的 endpoint 與 auth token（見下節）。
-
-### 安裝依賴
+### 安裝
 
 ```bash
-pip install -r requirements.txt
+cd genieCLI
+pip install -e .          # 或 pip install -r requirements.txt
 ```
 
 ### 設定
 
-編輯 `~/ai-agent-config.json`（不存在會使用預設值）：
+編輯 `~/ai-agent-config.json`：
 
-#### TGenie backend（預設）
+#### TGenie backend（公司內部，預設）
 
 ```json
 {
   "interface": "tgenie",
   "endpoint": "https://your-ai-gateway.internal.company.com",
-  "frontendUrl": "https://your-frontend.internal.company.com",
-  "targetUrlKeyword": "ai-app",
-  "cookieDomain": ".company.com",
-  "authToken": "your-auth-token-here",
-  "customHeader": "",
-  "defaultModel": "gemini-2.5-flash",
-  "systemPrompt": "You are a helpful AI assistant.",
-  "cookies": []
+  "authToken": "your-token",
+  "defaultModel": "gemini-2.5-flash"
 }
 ```
 
-#### OpenAI-compatible interface
-
-把 `interface` 改成 `openai`，填上 `openaiApiKey` 與 `openaiBaseUrl`，就可以接任何相容端點：
+#### OpenAI-compatible（OpenAI / Groq / Ollama / LM Studio）
 
 ```json
 {
   "interface": "openai",
   "openaiApiKey": "sk-...",
   "openaiBaseUrl": "https://api.openai.com/v1",
-  "defaultModel": "gpt-4o",
-  "systemPrompt": "You are a helpful AI assistant."
+  "defaultModel": "gpt-4o"
 }
 ```
 
-常用 `openaiBaseUrl` 對照：
+| 服務              | openaiBaseUrl                    |
+| ----------------- | -------------------------------- |
+| OpenAI            | `https://api.openai.com/v1`      |
+| Groq              | `https://api.groq.com/openai/v1` |
+| Ollama（本機）    | `http://localhost:11434/v1`      |
+| LM Studio（本機） | `http://localhost:1234/v1`       |
 
-| 服務                 | openaiBaseUrl                    |
-| -------------------- | -------------------------------- |
-| OpenAI               | `https://api.openai.com/v1`      |
-| Groq                 | `https://api.groq.com/openai/v1` |
-| Ollama（本機）       | `http://localhost:11434/v1`      |
-| LM Studio（本機）    | `http://localhost:1234/v1`       |
-| 公司內部 Cline proxy | `http://your-internal-server`    |
-
-> OpenAI interface 不需要 TGenie auth token，也不需要跑 `grab_auth.py`。
-
-#### Cline-style 內部 proxy
-
-某些公司內部 proxy（如 Cline 使用的 server）要求 user message content 以陣列格式傳送：
-
-```json
-{
-  "interface": "openai",
-  "openaiApiKey": "your-key",
-  "openaiBaseUrl": "http://your-internal-proxy",
-  "defaultModel": "coder",
-  "openaiContentArray": true
-}
-```
-
-`openaiContentArray: true` 會把 user message 從純字串改成：
-
-```json
-"content": [{"type": "text", "text": "你的訊息"}]
-```
-
-不加這個設定的話，內部 proxy 會回 500 錯誤。
-
-#### 欄位說明
-
-| 欄位                 | 說明                                                       |
-| -------------------- | ---------------------------------------------------------- |
-| `interface`          | `"tgenie"`（預設）或 `"openai"`                            |
-| `endpoint`           | TGenie backend API endpoint                                |
-| `frontendUrl`        | TGenie 網頁應用 URL（CDP cookie domain 比對用）            |
-| `targetUrlKeyword`   | Chrome CDP 找 tab 的關鍵字                                 |
-| `cookieDomain`       | 抓 cookie 時比對的 domain                                  |
-| `authToken`          | TGenie Bearer token（可用 `grab_auth.py` 自動抓）          |
-| `openaiApiKey`       | OpenAI API key（或本機 dummy key）                         |
-| `openaiBaseUrl`      | OpenAI-compatible endpoint URL                             |
-| `openaiContentArray` | `true` = user content 用陣列格式（Cline-style proxy 需要） |
-| `defaultModel`       | 預設使用的模型                                             |
-| `systemPrompt`       | 系統提示詞                                                 |
-
-> **注意：** config 讀取時會自動以 DEFAULTS 補全缺少的欄位，不需要在 JSON 裡填寫每個 key。
-
-### 取得 Auth Token（TGenie only）
+### 啟動
 
 ```bash
-python grab_auth.py
-```
-
-腳本會：
-
-1. 找到 Chrome 中第一個包含 `targetUrlKeyword` 的分頁
-2. 在 textarea 輸入測試文字並點擊傳送
-3. 攔截並取出 Authorization header
-4. 順便把 domain cookie 一起存進 `~/ai-agent-config.json`
-
-> 使用 `interface: openai` 時不需要這個步驟。
-
-### 啟動 CLI
-
-**macOS / Linux（推薦）：**
-
-```bash
-# 直接啟動（預設進 chat + skills）
-python main.py
-./tgenie.sh
+# 互動模式（預設 chat + skills）
+python -m genie
 
 # 指定模型與 reasoning
-python main.py chat -m gpt-4o -r medium --skills --debug
-./tgenie.sh chat -m gemini-2.5-flash -r low --skills
+python -m genie chat -m gpt-4o -r medium --skills --debug
+
+# 送檔案（非互動）
+python -m genie query.sql
+
+# Pipe
+cat query.sql | python -m genie
+
+# Linux/Ubuntu 一鍵啟動
+./tgenie.sh
 ```
 
-**Windows：**
-
-```
-tgenie.bat
-```
-
-（bat 自動啟動 Chrome debug mode → 抓 token → 進入 CLI）
-
-**子指令：**
+### CLI 參數
 
 ```bash
-python main.py --help          # 顯示所有子指令
-python main.py chat --help     # chat 參數說明
-python main.py sessions        # 列出已儲存的對話
-python main.py config          # 顯示目前設定
-python main.py renew           # 重新抓 auth token
-python main.py tools           # 列出所有 skill tools
+python -m genie --help               # 所有參數
+python -m genie --json tools         # JSON 輸出所有 tools
+python -m genie sessions             # 列出已儲存的對話
+python -m genie config               # 顯示目前設定
 ```
 
----
-
-## 指令
+### 互動指令
 
 | 指令            | 說明                                           |
 | --------------- | ---------------------------------------------- |
@@ -270,209 +196,44 @@ python main.py tools           # 列出所有 skill tools
 | `/sessions`     | 列出已儲存的對話                               |
 | `/load <n>`     | 載入對話                                       |
 | `/history`      | 顯示目前對話內容                               |
-| `/skills`       | 列出所有可用 tools（需加 `--skills`）          |
+| `/skills`       | 列出所有可用 tools                             |
 | `/clear`        | 清除目前對話                                   |
+| `/paste`        | 多行貼上模式（Ctrl-D 送出）                    |
+| `/editor`       | 開編輯器輸入                                   |
+| `/autoresearch` | 啟動自主迭代 loop（需 `--skills`）             |
 | `/reasoning`    | 切換 reasoning 等級（disable/low/medium/high） |
-| `/renew`        | 重新抓 auth token                              |
-| `/autoresearch` | 啟動自主迭代 loop（需加 `--skills`）           |
-| `/help`         | 顯示說明                                       |
+| `/renew`        | 重新抓 auth token（TGenie only）               |
 | `/exit`         | 結束（自動儲存對話）                           |
-| `"""`           | 進入多行輸入模式                               |
 
 ---
 
 ## Autoresearch — 自主迭代 Loop
 
-讓 AI 自動迭代改善你的程式碼。設定目標和 metric，AI 會反覆嘗試修改 → 驗證 → 保留/回退，直到達標或用完次數。
+讓 AI 自動迭代改善程式碼。設定目標和 metric，AI 會反覆嘗試修改 → 驗證 → 保留/回退。
 
 ### 前置條件
 
-- 必須在 **git repo** 內執行（會用 git 做 checkpoint/revert）
-- 必須有一個能輸出數字的 **verify 指令**（例如 `pytest --tb=no -q | tail -1`）
+- 必須在 **git repo** 內執行
+- 必須有能輸出數字的 **verify 指令**
 - 加 `--skills` 啟動
 
-### 快速開始
+### 使用
 
 ```bash
-cd your-project
-python main.py --skills
-
-# 輸入
-/autoresearch
+python -m genie --skills
+> /autoresearch
 ```
 
-接著會問 6 個問題：
+會問 6 個問題：Goal / Scope / Verify command / Direction / Guard command / Max iterations。
 
-```
-1. Goal — what to improve
-   → 例：Increase test pass rate
-
-2. Scope — file globs (space-separated) [**/*.py]
-   → 例：src/**/*.py tests/**/*.py
-
-3. Verify command — shell command whose stdout contains the metric
-   → 例：pytest --tb=no -q 2>&1 | tail -1 | grep -oP '\d+'
-
-4. Direction — which is better [higher]
-   → higher 或 lower
-
-5. Guard command — must exit 0 to keep change (optional)
-   → 例：ruff check .（留空跳過）
-
-6. Max iterations [10]
-   → 要跑幾輪
-```
-
-### 運作原理
-
-```
-Loop（每輪）：
-  1. AI 讀目前狀態 + git history + metric 趨勢
-  2. AI 提出 hypothesis，用 file_patch 做 ONE atomic 修改
-  3. Runtime 自動：
-     a. git commit（checkpoint）
-     b. 跑 guard command（有設的話）
-     c. 跑 verify command → 抽 metric
-     d. 比較：improved → 保留 / same or worse → git revert
-  4. 回報結果給 AI，進入下一輪
-```
-
-### 範例：提升測試通過率
+### 範例
 
 ```
 Goal: Increase pytest pass count
-Scope: src/**/*.py
 Verify: pytest --tb=no -q 2>&1 | grep -oP '(\d+) passed' | grep -oP '\d+'
 Direction: higher
 Guard: ruff check .
 Iterations: 15
-```
-
-### 範例：縮小 bundle size
-
-```
-Goal: Reduce JavaScript bundle size
-Scope: src/**/*.js
-Verify: npx esbuild src/index.js --bundle --minify | wc -c
-Direction: lower
-Iterations: 10
-```
-
-### 輸出
-
-每輪會顯示：
-
-```
-── Iteration 3/10 ──────────────────
-[Tool] file_patch (path='src/utils.py', ...)
-Hypothesis: 移除未使用的 import 以減少 bundle size
-[IMPROVED] metric=45230  delta=-1200.0000
-```
-
-結束後印 summary + journal 路徑（`autoresearch_journal.tsv`）。
-
-### 注意事項
-
-- **Ctrl+C** 隨時中斷，會印到目前為止的 summary
-- 每輪只改一件事，改壞了自動 revert，不會弄髒你的 repo
-- Journal 記錄每輪的 metric / status / hypothesis，方便回顧
-- Verify 指令的 stdout 裡必須有數字，metric 取最後一個 float
-
----
-
-## Available Tools
-
-### Browser Skills（需要 `--skills`）
-
-#### 讀取
-
-| Tool                         | 說明                                                                 |
-| ---------------------------- | -------------------------------------------------------------------- |
-| `browser_snapshot`           | 取互動元素快照（按鈕/輸入/連結）+ 頁面文字摘要，**互動前先執行這個** |
-| `browser_get_text`           | 取得頁面所有可見文字                                                 |
-| `browser_get_element`        | 用 CSS selector 抓特定元素內容                                       |
-| `browser_get_numbers`        | 抓頁面上所有數值（適用於 Dashboard、圖表）                           |
-| `browser_get_bounding_box`   | 取得元素位置與尺寸                                                   |
-| `browser_get_local_storage`  | 讀 localStorage / sessionStorage                                     |
-| `browser_get_dom`            | 用 CSS selector / class / text 查 DOM                                |
-| `browser_intercept_xhr`      | 攔截 XHR/fetch API 回應（抓 chart 原始資料）                         |
-| `browser_get_url`            | 取得目前 URL 與標題                                                  |
-| `browser_list_tabs`          | 列出所有開的分頁                                                     |
-| `browser_screenshot`         | 全頁截圖                                                             |
-| `browser_screenshot_element` | 只截圖特定元素                                                       |
-
-#### 互動
-
-| Tool                    | 說明                                     |
-| ----------------------- | ---------------------------------------- |
-| `browser_click`         | 點擊（CSS selector 或 x,y 座標）         |
-| `browser_click_element` | 用 `browser_snapshot` 的 element ID 點擊 |
-| `browser_double_click`  | 雙擊                                     |
-| `browser_right_click`   | 右鍵點擊                                 |
-| `browser_type`          | 輸入文字                                 |
-| `browser_type_element`  | 用 element ID 輸入                       |
-| `browser_select`        | 選取下拉選項                             |
-| `browser_checkbox`      | 勾選/取消勾選 checkbox 或 radio          |
-| `browser_keyboard`      | 按鍵盤按鍵（Enter、Tab、ctrl+a 等）      |
-| `browser_hover`         | Hover 觸發 tooltip / 選單                |
-| `browser_mouse_sweep`   | 在 chart 上來回移動抓 tooltip 數值       |
-| `browser_drag`          | 拖曳（適用於 sliders、drag-and-drop）    |
-| `browser_scroll`        | 滾動頁面或特定元素                       |
-| `browser_wait`          | 等待元素出現或消失                       |
-| `browser_handle_dialog` | 接受或拒絕 alert/confirm/prompt          |
-| `browser_execute_js`    | 執行任意 JavaScript                      |
-
-#### 分頁管理
-
-| Tool                 | 說明                               |
-| -------------------- | ---------------------------------- |
-| `browser_navigate`   | 在新分頁開啟 URL                   |
-| `browser_switch_tab` | 切換分頁（用 index 或 URL 關鍵字） |
-
-### File Skills
-
-| Tool         | 說明         |
-| ------------ | ------------ |
-| `read_file`  | 讀取檔案內容 |
-| `write_file` | 寫入檔案     |
-| `list_files` | 列出目錄內容 |
-
----
-
-## Workflow 範例
-
-### 抓 Dashboard 數值
-
-```
-You > 幫我讀這個頁面的所有數字
-
-AI    → browser_snapshot  (取得元素)
-AI    → browser_get_numbers  (取出數值)
-AI    → [回覆你]
-```
-
-### 操作表單
-
-```
-You > 登入這個頁面，帳號是 test@test.com
-
-AI    → browser_snapshot
-AI    → browser_type_element(element_id=2, text="test@test.com")
-AI    → browser_snapshot  (ID 可能變動，需重新取得)
-AI    → browser_click_element(element_id=5)
-AI    → [等待登入結果]
-```
-
-### 抓 Chart 原始資料
-
-```
-You > 抓這個圖表的原始數字
-
-AI    → browser_mouse_sweep(selector=".chart", steps=20)
-AI    → [分析 tooltips，回傳數值]
-      或
-AI    → browser_intercept_xhr(url_keyword="api/data", action_js="")
-AI    → [攔截並回傳 API 回應]
 ```
 
 ---
@@ -481,77 +242,88 @@ AI    → [攔截並回傳 API 回應]
 
 ```
 genieCLI/
-├── genie/                    主套件（v4.0.0，plugin-based）
-│   ├── cli.py                CLI 進入點（Typer）
-│   ├── chat.py               Chat loop + tool call 路由
-│   ├── input.py              互動輸入處理（多行模式、補全）
-│   ├── core/
-│   │   ├── provider.py       Provider Protocol + CompletionRequest
-│   │   ├── registry.py       SkillRegistry + BaseSkill
-│   │   ├── context.py        SkillContext（DI container）
-│   │   ├── config.py         設定讀寫
-│   │   ├── arg.py            Arg descriptor（參數宣告 + 驗證）
-│   │   └── tool_call.py      Tool call JSON 解析共用邏輯
-│   ├── providers/
-│   │   ├── tgenie.py         TGenie gateway（SSE streaming）
-│   │   ├── openai.py         OpenAI-compatible API
-│   │   ├── anthropic.py      Anthropic API
-│   │   └── base.py           共用 HTTP helpers
-│   ├── skills/
-│   │   ├── browser/          Chrome CDP automation（~25 tools）
-│   │   ├── file_ops/         檔案讀寫
-│   │   ├── git_ops/          Git 操作
-│   │   ├── shell_ops/        Shell 指令執行
-│   │   ├── oracle2trino/     Oracle → Trino SQL 轉換
-│   │   │   ├── models.py     ConversionResult dataclass
-│   │   │   ├── patterns.py   Oracle construct patterns + confidence
-│   │   │   ├── sql_utils.py  共用 SQL 工具（strip_comments_and_strings）
-│   │   │   └── data/         oracle_trino_functions.yaml（函數對照表）
-│   │   └── trino_linter/
-│   │       ├── analyzer.py   Linter 主邏輯
-│   │       └── rules.py      Lint rules（共用 pattern catalog）
-│   ├── output/
-│   │   ├── human.py          HumanSink（Rich 彩色輸出）
-│   │   └── machine.py        MachineSink（JSON 輸出）
-│   ├── runtime/              Autoresearch 引擎（plugin）
-│   │   ├── eval_loop.py      主迭代 loop
-│   │   ├── run_manager.py    迭代狀態管理
-│   │   ├── checkpoint.py     Git checkpoint + revert
-│   │   ├── metric.py         Metric 提取 + 趨勢
-│   │   ├── journal.py        TSV journal
-│   │   └── autoresearch_cli.py CLI 問答設定
-│   └── session/
-│       └── manager.py        對話歷史管理
-├── tests/                    pytest 測試套件
-├── grab_auth.py              自動抓取 auth token（TGenie only）
-├── pyproject.toml            套件設定（v4.0.0）
-├── requirements.txt          Python 依賴
-├── tgenie.bat                Windows 一鍵啟動
-└── tgenie.sh                 Ubuntu/Linux 一鍵啟動
+├── genie/                         主套件（v4.1.0，plugin-based）
+│   ├── __main__.py                python -m genie 入口
+│   ├── cli.py                     Typer CLI（子指令路由）
+│   ├── chat.py                    Chat loop + tool call dispatch
+│   ├── input.py                   互動輸入處理
+│   ├── core/                      核心抽象
+│   │   ├── provider.py            Provider Protocol
+│   │   ├── registry.py            SkillRegistry + BaseSkill
+│   │   ├── context.py             SkillContext (DI)
+│   │   ├── config.py              設定讀寫
+│   │   ├── arg.py                 Arg descriptor
+│   │   └── tool_call.py           Tool call JSON 解析
+│   ├── providers/                 LLM 後端
+│   │   ├── tgenie.py              TGenie gateway
+│   │   ├── openai.py              OpenAI-compatible
+│   │   ├── anthropic.py           Anthropic API
+│   │   └── base.py                共用 HTTP helpers
+│   ├── skills/                    46 個 tools
+│   │   ├── browser/               Chrome CDP（30 tools）
+│   │   │   ├── tools.py           Tool 定義
+│   │   │   ├── page_context.py    高階 CDP 封裝
+│   │   │   └── cdp.py             WebSocket singleton
+│   │   ├── file_ops/              檔案讀寫（4 tools）
+│   │   ├── git_ops/               Git 操作（5 tools）
+│   │   ├── shell_ops/             Shell 執行（1 tool）
+│   │   ├── oracle2trino/          Oracle → Trino 轉換（5 tools）
+│   │   │   ├── patterns.py        共用 pattern catalog
+│   │   │   ├── models.py          ConversionResult
+│   │   │   ├── sql_utils.py       SQL 工具函式
+│   │   │   └── data/              函數對照表 YAML
+│   │   └── trino_linter/          SQL 靜態分析（1 tool, 11 rules）
+│   │       ├── analyzer.py        Linter 主邏輯
+│   │       └── rules.py           Lint rules
+│   ├── output/                    輸出層
+│   │   ├── human.py               HumanSink（Rich）
+│   │   └── machine.py             MachineSink（JSON）
+│   ├── runtime/                   Autoresearch 引擎
+│   │   ├── eval_loop.py           迭代 loop
+│   │   ├── run_manager.py         狀態管理
+│   │   ├── checkpoint.py          Git checkpoint
+│   │   ├── metric.py              Metric 提取
+│   │   ├── journal.py             TSV journal
+│   │   └── autoresearch_cli.py    CLI 問答
+│   └── session/                   對話管理
+│       └── manager.py             Session CRUD
+├── tests/                         420 tests
+├── grab_auth.py                   Auth token 抓取（TGenie only）
+├── pyproject.toml                 套件設定
+├── requirements.txt               Python 依賴
+├── tgenie.sh                      Linux 一鍵啟動
+└── tgenie.bat                     Windows 一鍵啟動
 ```
+
+---
 
 ## Roadmap
 
-### ✅ Oracle → Trino Migration（已完成，Phase 1 + 2）
+### ✅ Phase 1-3：Core + Oracle → Trino Migration
 
-`oracle2trino` skill 支援：
+- Plugin-based 架構（Provider Protocol + SkillRegistry + Dual-mode output）
+- Oracle SQL → Trino 機械轉換（sqlglot）+ AI 補完
+- Trino 靜態 linter（11 rules，Oracle 殘留 + anti-patterns）
+- Linter ↔ Converter 共用 pattern catalog
+- 三種 AI backend + Autoresearch 引擎
 
-- Oracle SQL → Trino 機械轉換（sqlglot）+ AI 補完剩餘 50%
-- Trino 靜態 linter（Oracle 殘留偵測：NVL / DECODE / ROWNUM / SYSDATE / (+) joins 等）
-- 結構化輸出（`ConversionResult`，含 confidence、unsupported_constructs）
-- linter ↔ converter 共用同一套 pattern catalog，確保一致性
+### ✅ Phase 4：技術債清理（2026-04-03）
+
+- 刪除 ~4900 行 legacy monolith code（main.py / api.py / skills/ / runtime/ 舊副本）
+- 修 dead CLI subcommands + screenshot tool chain bug
+- Linter adversarial review 通過
 
 ### 規劃中
 
-- **Trino Query Advisor**：Schema auto-introspection + partition hints + query guard（EXPLAIN 估算）
-- 詳見 [market research](research/trino-ai-assistant-market-research.md)（2026-03-23）
+- **Trino Query Advisor**：Schema introspection + partition hints + query guard
+- 詳見 [market research](research/trino-ai-assistant-market-research.md)
 
 ---
 
 ## 限制與已知問題
 
-1. **需保持 Chrome 分頁開著** — CDP 只綁定到已開的分頁，關掉就斷線
-2. **Element ID 每次 snapshot 都會重置** — 頁面變動後需重新 `browser_snapshot`
-3. **React controlled inputs** — 有特別處理，但某些客製化 input library 可能失效
-4. **401 token 過期（TGenie）** — 只會自動 retry 一次，之後需手動 `/renew`
-5. **Reasoning mode** — 開啟 reasoning 時 server 可能只回 reasoning tokens 而非最終答案；CLI 會自動 fallback，但部分 model/endpoint 組合仍可能有異常
+1. **Python 3.10+**：`genie/chat.py` 使用 `match/case` 語法
+2. **需保持 Chrome 分頁開著**：CDP 只綁定到已開的分頁
+3. **Element ID 每次 snapshot 重置**：頁面變動後需重新 `browser_snapshot`
+4. **React controlled inputs**：有特別處理，但某些客製化 input library 可能失效
+5. **401 token 過期（TGenie）**：只自動 retry 一次，之後需 `/renew`

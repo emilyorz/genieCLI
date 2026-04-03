@@ -2,21 +2,27 @@
 
 ## 版本歷程
 
-### Phase 3 — v3.0（2026-03-23）
+### Phase 4 — v4.1.0（2026-04-03）
 
-- **OpenAI-compatible Interface**：支援三種 backend mode（tgenie / openai / anthropic）
-- **Ubuntu Launch Script**：`tgenie.sh` 自動偵測 Chrome、裝依賴、啟動 debug mode
-- **Debug Mode**：`--debug` / `-d` 印出完整 HTTP request/response
-- **Reasoning 修復**：reasoning 開啟時不再 empty response
-- **Cline Proxy 相容**：`openaiContentArray: true` + 強制 `stream: true`
-- **Code Quality Pass**（PR #8）：3 bug fix + 2 improvement + 1 cleanup
-- **Typer CLI 遷移**（PR #9）：argparse → Typer，5 個子指令，v2.0 → v3.0
+- **技術債清理**：刪除 27 個 legacy 檔案（~4900 行 dead code），repo 只剩 `genie/` package
+- **Bug Fix**：移除 dead CLI subcommands（Typer callback/options collision）+ 修 screenshot tool chain output
+- **Linter 品質**：adversarial review 通過（H1-H3/M1-M3 全確認修好），analyzer 加 debug logging
+- **文件更新**：README 架構圖重寫、啟動指令統一為 `python -m genie`
+
+### Phase 3 — v3.0/v4.0.0（2026-03-23 ~ 2026-03-31）
+
+- **核心重構**：949 行 monolith → plugin-based `genie/` package（5741 行，44 個模組）
+- **OpenAI-compatible Interface**：支援 TGenie / OpenAI / Anthropic 三種 backend
+- **Oracle → Trino**：sqlglot 機械轉換 + AI 補完 + 靜態 linter（11 rules）
+- **Autoresearch**：自主迭代引擎（propose → verify → commit/revert loop）
+- **Dual-mode output**：HumanSink（Rich）+ MachineSink（JSON）
+- **420 tests**，SkillRegistry v2 + clear hooks
 
 ### Phase 2 — v2.0（2026-03-22）
 
-- Persistent CDP singleton（`skills/_cdp.py`）— session 共用一條 WebSocket
-- backendNodeId 點擊（`page_context.py`）— DOM.resolveNode → .click()
-- React Input 修復 — 用原生 HTMLInputElement.prototype setter
+- Persistent CDP singleton — session 共用一條 WebSocket
+- backendNodeId 點擊 — DOM.resolveNode → .click()
+- React Input 修復 — 原生 HTMLInputElement.prototype setter
 
 ### Phase 1 — v1.0
 
@@ -32,63 +38,36 @@
 
 ```
 genieCLI/
-├── main.py              CLI 進入點（Typer framework）
-├── api.py               HTTP client（TGenie SSE + OpenAI-compatible）
-├── config.py            JSON config 讀寫（~/ai-agent-config.json）
-├── session.py           對話歷史管理（sessions/ 目錄）
-├── skill_runner.py      Tool call 解析 + system prompt 生成
-├── page_context.py      CDP 高階封裝（snapshot/click/type）
-├── grab_auth.py         自動抓取 TGenie auth token
-├── requirements.txt     Python 依賴（requests, websocket-client, typer）
-├── tgenie.bat           Windows 一鍵啟動
-├── tgenie.sh            Ubuntu/Linux 一鍵啟動
-└── skills/
-    ├── __init__.py      ALL_SKILLS 列表（auto-discovery）
-    ├── _cdp.py          CDP WebSocket singleton
-    ├── _registry.py     Skill auto-discovery registry
-    ├── base.py          BaseSkill 介面 + Arg dataclass
-    ├── browser.py       ~25 個 CDP browser tools
-    ├── context.py       高階 context skills（snapshot/element 系列）
-    └── system.py        File tools（read/write/list）
+├── genie/                    主套件（44 模組，5741 行）
+│   ├── cli.py                Typer CLI 入口
+│   ├── chat.py               Chat loop + tool dispatch
+│   ├── input.py              互動輸入
+│   ├── core/                 核心抽象（6 模組）
+│   ├── providers/            LLM 後端（4 模組）
+│   ├── skills/               46 tools（6 skill packages）
+│   ├── output/               HumanSink / MachineSink
+│   ├── runtime/              Autoresearch 引擎
+│   └── session/              對話管理
+├── tests/                    420 tests
+├── grab_auth.py              TGenie auth token
+├── pyproject.toml            v4.1.0
+└── tgenie.sh / tgenie.bat    一鍵啟動
+
 ```
 
-## 支援的 AI Backend
+## 統計
 
-| interface   | 用途                                    | Config                       |
-| ----------- | --------------------------------------- | ---------------------------- |
-| `tgenie`    | 公司內部 TGenie gateway（預設）         | endpoint + authToken         |
-| `openai`    | 標準 OpenAI / Groq / Ollama / LM Studio | openaiBaseUrl + openaiApiKey |
-| `anthropic` | Anthropic format（Cline-style proxy）   | 同 openai + system 提取      |
-
-### Cline Proxy 特殊設定
-
-```json
-{
-  "interface": "openai",
-  "openaiContentArray": true,
-  "openaiBaseUrl": "http://ai-coding-agent.tsmc.com",
-  "defaultModel": "coder"
-}
-```
-
-## CLI 子指令（v3.0）
-
-| 指令       | 說明                       |
-| ---------- | -------------------------- |
-| `chat`     | 互動式 AI 對話（預設）     |
-| `sessions` | 列出已儲存的對話           |
-| `config`   | 顯示目前設定（token 遮罩） |
-| `tools`    | 列出所有 skill tools       |
-| `renew`    | 重新抓 TGenie auth token   |
+| 項目 | 數值 |
+|------|------|
+| Python 模組 | 44 |
+| Code 行數 | 5741 |
+| Tools | 46 |
+| Tests | 420 |
+| Lint Rules | 11 |
+| Providers | 3（TGenie / OpenAI / Anthropic） |
 
 ## 待辦 / 未來方向
 
-- [ ] Orchestrator mode — 自動 retry + error 分類 + 保持 session
-- [ ] 更多 skill（例如 terminal 操作、git 操作）
-- [ ] SSE streaming 即時顯示（逐字輸出，不是等全部回完）
-
-## 注意事項
-
-- **Python 3.9+**：f-string 裡不能用 `f['key']`（< 3.12 會 SyntaxError），用暫存變數
-- **Cline proxy**：必須帶 `stream: true` + content 用 array 格式
-- **TGenie**：multipart/form-data 手動拼 boundary，不要改格式（server 敏感）
+- [ ] Trino Query Advisor — Schema introspection + partition hints + query guard
+- [ ] SSE streaming 即時逐字輸出
+- [ ] 更多 skills（terminal 操作、Slack 通知）
