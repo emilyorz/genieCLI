@@ -221,30 +221,6 @@ def callback(
     _chat_loop(provider, cfg, resolved_model, reasoning, use_skills=skills, output=output, build_prompt=build_prompt)
 
 
-@app.command("sessions")
-def cmd_sessions_sub() -> None:
-    """List saved conversations."""
-    _cmd_sessions(HumanSink())
-
-
-@app.command("config")
-def cmd_config_sub() -> None:
-    """Show current configuration."""
-    cfg = load_config()
-    _cmd_config(cfg, HumanSink())
-
-
-@app.command("tools")
-def cmd_tools_sub(
-    json_output: bool = typer.Option(False, "--json"),
-    skills: bool = typer.Option(True, "--skills/--no-skills"),
-) -> None:
-    """List available skill tools."""
-    output: HumanSink | MachineSink = MachineSink() if json_output else HumanSink()
-    _discover_skills(legacy=skills)
-    _cmd_tools(output, skills)
-
-
 # ── Subcommand implementations ────────────────────────────────────────────────
 
 def _cmd_sessions(output: HumanSink | MachineSink) -> None:

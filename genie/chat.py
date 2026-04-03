@@ -127,6 +127,13 @@ def _send_with_tools(
                     return img_reply
                 session["history"].append(new_msg("assistant", img_reply))
                 tool_name2 = tool_call2.get("tool", "?")
+                tool_args2 = tool_call2.get("args") or {}
+                if not isinstance(tool_args2, dict):
+                    tool_args2 = {}
+                if isinstance(output, HumanSink):
+                    output.tool_call(tool_name2, tool_args2)
+                else:
+                    output.progress(f"[Tool] {tool_name2}")
                 result2 = normalize_result(_run_tool_call(tool_call2, ctx))
                 if isinstance(output, HumanSink):
                     output.tool_result(result2)
