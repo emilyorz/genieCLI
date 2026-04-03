@@ -541,7 +541,26 @@ def _chat_loop(
         elif cmd == "/trino-research":
             from genie.skills.trino_query.research import run_trino_research
 
-            run_trino_research(provider, cfg, model, current_reasoning, output, build_prompt)
+            # Parse optional flags: --file, --metric, --iterations, --runs
+            kwargs = {}
+            i = 0
+            while i < len(args):
+                if args[i] == "--file" and i + 1 < len(args):
+                    kwargs["sql_file"] = args[i + 1]
+                    i += 2
+                elif args[i] == "--metric" and i + 1 < len(args):
+                    kwargs["metric"] = args[i + 1]
+                    i += 2
+                elif args[i] == "--iterations" and i + 1 < len(args):
+                    kwargs["iterations"] = int(args[i + 1])
+                    i += 2
+                elif args[i] == "--runs" and i + 1 < len(args):
+                    kwargs["runs"] = int(args[i + 1])
+                    i += 2
+                else:
+                    i += 1
+
+            run_trino_research(provider, cfg, model, current_reasoning, output, build_prompt, **kwargs)
 
 
         elif cmd == "/autoresearch":
