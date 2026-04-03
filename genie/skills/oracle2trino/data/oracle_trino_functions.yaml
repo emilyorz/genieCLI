@@ -3,7 +3,6 @@
 # Category: string | numeric | date | conversion | aggregate | analytic | null | unsupported
 
 functions:
-
   # ── String Functions ──────────────────────────────────────────────────────
   - oracle: NVL
     trino: COALESCE

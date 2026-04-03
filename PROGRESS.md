@@ -3,6 +3,7 @@
 ## 版本歷程
 
 ### Phase 3 — v3.0（2026-03-23）
+
 - **OpenAI-compatible Interface**：支援三種 backend mode（tgenie / openai / anthropic）
 - **Ubuntu Launch Script**：`tgenie.sh` 自動偵測 Chrome、裝依賴、啟動 debug mode
 - **Debug Mode**：`--debug` / `-d` 印出完整 HTTP request/response
@@ -12,11 +13,13 @@
 - **Typer CLI 遷移**（PR #9）：argparse → Typer，5 個子指令，v2.0 → v3.0
 
 ### Phase 2 — v2.0（2026-03-22）
+
 - Persistent CDP singleton（`skills/_cdp.py`）— session 共用一條 WebSocket
 - backendNodeId 點擊（`page_context.py`）— DOM.resolveNode → .click()
 - React Input 修復 — 用原生 HTMLInputElement.prototype setter
 
 ### Phase 1 — v1.0
+
 - 基礎 CLI chat loop + TGenie backend
 - Chrome CDP browser skills（~25 個 tools）
 - Session 管理（save/load/list）
@@ -51,13 +54,14 @@ genieCLI/
 
 ## 支援的 AI Backend
 
-| interface | 用途 | Config |
-|-----------|------|--------|
-| `tgenie` | 公司內部 TGenie gateway（預設） | endpoint + authToken |
-| `openai` | 標準 OpenAI / Groq / Ollama / LM Studio | openaiBaseUrl + openaiApiKey |
-| `anthropic` | Anthropic format（Cline-style proxy） | 同 openai + system 提取 |
+| interface   | 用途                                    | Config                       |
+| ----------- | --------------------------------------- | ---------------------------- |
+| `tgenie`    | 公司內部 TGenie gateway（預設）         | endpoint + authToken         |
+| `openai`    | 標準 OpenAI / Groq / Ollama / LM Studio | openaiBaseUrl + openaiApiKey |
+| `anthropic` | Anthropic format（Cline-style proxy）   | 同 openai + system 提取      |
 
 ### Cline Proxy 特殊設定
+
 ```json
 {
   "interface": "openai",
@@ -69,13 +73,13 @@ genieCLI/
 
 ## CLI 子指令（v3.0）
 
-| 指令 | 說明 |
-|------|------|
-| `chat` | 互動式 AI 對話（預設） |
-| `sessions` | 列出已儲存的對話 |
-| `config` | 顯示目前設定（token 遮罩） |
-| `tools` | 列出所有 skill tools |
-| `renew` | 重新抓 TGenie auth token |
+| 指令       | 說明                       |
+| ---------- | -------------------------- |
+| `chat`     | 互動式 AI 對話（預設）     |
+| `sessions` | 列出已儲存的對話           |
+| `config`   | 顯示目前設定（token 遮罩） |
+| `tools`    | 列出所有 skill tools       |
+| `renew`    | 重新抓 TGenie auth token   |
 
 ## 待辦 / 未來方向
 

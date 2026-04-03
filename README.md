@@ -49,54 +49,54 @@ Plugin-based AI agent CLI。底層用 Provider Protocol 抽象化多家 LLM back
 
 ### Core Abstractions（`genie/core/`）
 
-| 模組 | 說明 |
-|------|------|
-| `provider.py` | `Provider` Protocol、`CompletionRequest`、`Delta` dataclass |
-| `registry.py` | `SkillRegistry`（discover / dispatch）、`BaseSkill` base class |
-| `context.py`  | `SkillContext`（DI container：provider、output sink、session） |
-| `config.py`   | 設定讀寫，自動補 DEFAULTS |
-| `arg.py`      | `Arg` descriptor（skill 參數宣告 + 驗證） |
-| `tool_call.py`| Tool call JSON 解析 + normalize 共用邏輯 |
+| 模組           | 說明                                                           |
+| -------------- | -------------------------------------------------------------- |
+| `provider.py`  | `Provider` Protocol、`CompletionRequest`、`Delta` dataclass    |
+| `registry.py`  | `SkillRegistry`（discover / dispatch）、`BaseSkill` base class |
+| `context.py`   | `SkillContext`（DI container：provider、output sink、session） |
+| `config.py`    | 設定讀寫，自動補 DEFAULTS                                      |
+| `arg.py`       | `Arg` descriptor（skill 參數宣告 + 驗證）                      |
+| `tool_call.py` | Tool call JSON 解析 + normalize 共用邏輯                       |
 
 ### Providers（`genie/providers/`）
 
-| 模組 | 說明 |
-|------|------|
-| `tgenie.py`    | 公司內部 TGenie gateway（SSE streaming）|
-| `openai.py`    | OpenAI-compatible（OpenAI / Groq / Ollama / LM Studio）|
-| `anthropic.py` | Anthropic API |
-| `base.py`      | 共用 HTTP helpers |
+| 模組           | 說明                                                    |
+| -------------- | ------------------------------------------------------- |
+| `tgenie.py`    | 公司內部 TGenie gateway（SSE streaming）                |
+| `openai.py`    | OpenAI-compatible（OpenAI / Groq / Ollama / LM Studio） |
+| `anthropic.py` | Anthropic API                                           |
+| `base.py`      | 共用 HTTP helpers                                       |
 
 ### Bundled Skills（`genie/skills/`）
 
-| Skill | 說明 |
-|-------|------|
-| `browser/`      | ~25 個 Chrome CDP tools（snapshot / click / type / intercept…）|
-| `file_ops/`     | 檔案讀寫、目錄列表 |
-| `git_ops/`      | Git 操作（commit / diff / log…）|
-| `shell_ops/`    | Shell 指令執行 |
-| `oracle2trino/` | Oracle → Trino SQL 轉換（sqlglot 機械轉換 + AI 補完）|
-| `trino_linter/` | Trino SQL 靜態分析（Oracle 殘留、partition filter、SELECT * 等）|
+| Skill           | 說明                                                              |
+| --------------- | ----------------------------------------------------------------- |
+| `browser/`      | ~25 個 Chrome CDP tools（snapshot / click / type / intercept…）   |
+| `file_ops/`     | 檔案讀寫、目錄列表                                                |
+| `git_ops/`      | Git 操作（commit / diff / log…）                                  |
+| `shell_ops/`    | Shell 指令執行                                                    |
+| `oracle2trino/` | Oracle → Trino SQL 轉換（sqlglot 機械轉換 + AI 補完）             |
+| `trino_linter/` | Trino SQL 靜態分析（Oracle 殘留、partition filter、SELECT \* 等） |
 
 ### Output（`genie/output/`）
 
-| 模組 | 說明 |
-|------|------|
-| `human.py`  | `HumanSink`：Rich 彩色輸出，適合互動模式 |
-| `machine.py`| `MachineSink`：newline-delimited JSON，適合管線 / scripting |
+| 模組         | 說明                                                        |
+| ------------ | ----------------------------------------------------------- |
+| `human.py`   | `HumanSink`：Rich 彩色輸出，適合互動模式                    |
+| `machine.py` | `MachineSink`：newline-delimited JSON，適合管線 / scripting |
 
 ### Runtime（`genie/runtime/`）
 
 Autoresearch 自主迭代引擎，作為 skill plugin 載入，不耦合 core。
 
-| 模組 | 說明 |
-|------|------|
-| `eval_loop.py`     | 主迭代 loop（AI propose → verify → commit/revert）|
-| `run_manager.py`   | 迭代狀態管理 |
-| `checkpoint.py`    | Git checkpoint + revert |
-| `metric.py`        | Metric 提取 + 趨勢比較 |
-| `journal.py`       | TSV journal 記錄（每輪 metric / status / hypothesis）|
-| `autoresearch_cli.py` | CLI 互動問答（Goal / Scope / Verify 設定）|
+| 模組                  | 說明                                                  |
+| --------------------- | ----------------------------------------------------- |
+| `eval_loop.py`        | 主迭代 loop（AI propose → verify → commit/revert）    |
+| `run_manager.py`      | 迭代狀態管理                                          |
+| `checkpoint.py`       | Git checkpoint + revert                               |
+| `metric.py`           | Metric 提取 + 趨勢比較                                |
+| `journal.py`          | TSV journal 記錄（每輪 metric / status / hypothesis） |
+| `autoresearch_cli.py` | CLI 互動問答（Goal / Scope / Verify 設定）            |
 
 ---
 
@@ -133,16 +133,16 @@ pip install -r requirements.txt
 
 ```json
 {
-  "interface":        "tgenie",
-  "endpoint":         "https://your-ai-gateway.internal.company.com",
-  "frontendUrl":      "https://your-frontend.internal.company.com",
+  "interface": "tgenie",
+  "endpoint": "https://your-ai-gateway.internal.company.com",
+  "frontendUrl": "https://your-frontend.internal.company.com",
   "targetUrlKeyword": "ai-app",
-  "cookieDomain":     ".company.com",
-  "authToken":        "your-auth-token-here",
-  "customHeader":     "",
-  "defaultModel":     "gemini-2.5-flash",
-  "systemPrompt":     "You are a helpful AI assistant.",
-  "cookies":          []
+  "cookieDomain": ".company.com",
+  "authToken": "your-auth-token-here",
+  "customHeader": "",
+  "defaultModel": "gemini-2.5-flash",
+  "systemPrompt": "You are a helpful AI assistant.",
+  "cookies": []
 }
 ```
 
@@ -152,23 +152,23 @@ pip install -r requirements.txt
 
 ```json
 {
-  "interface":        "openai",
-  "openaiApiKey":     "sk-...",
-  "openaiBaseUrl":    "https://api.openai.com/v1",
-  "defaultModel":     "gpt-4o",
-  "systemPrompt":     "You are a helpful AI assistant."
+  "interface": "openai",
+  "openaiApiKey": "sk-...",
+  "openaiBaseUrl": "https://api.openai.com/v1",
+  "defaultModel": "gpt-4o",
+  "systemPrompt": "You are a helpful AI assistant."
 }
 ```
 
 常用 `openaiBaseUrl` 對照：
 
-| 服務 | openaiBaseUrl |
-|------|--------------|
-| OpenAI | `https://api.openai.com/v1` |
-| Groq | `https://api.groq.com/openai/v1` |
-| Ollama（本機） | `http://localhost:11434/v1` |
-| LM Studio（本機） | `http://localhost:1234/v1` |
-| 公司內部 Cline proxy | `http://your-internal-server` |
+| 服務                 | openaiBaseUrl                    |
+| -------------------- | -------------------------------- |
+| OpenAI               | `https://api.openai.com/v1`      |
+| Groq                 | `https://api.groq.com/openai/v1` |
+| Ollama（本機）       | `http://localhost:11434/v1`      |
+| LM Studio（本機）    | `http://localhost:1234/v1`       |
+| 公司內部 Cline proxy | `http://your-internal-server`    |
 
 > OpenAI interface 不需要 TGenie auth token，也不需要跑 `grab_auth.py`。
 
@@ -178,15 +178,16 @@ pip install -r requirements.txt
 
 ```json
 {
-  "interface":          "openai",
-  "openaiApiKey":       "your-key",
-  "openaiBaseUrl":      "http://your-internal-proxy",
-  "defaultModel":       "coder",
+  "interface": "openai",
+  "openaiApiKey": "your-key",
+  "openaiBaseUrl": "http://your-internal-proxy",
+  "defaultModel": "coder",
   "openaiContentArray": true
 }
 ```
 
 `openaiContentArray: true` 會把 user message 從純字串改成：
+
 ```json
 "content": [{"type": "text", "text": "你的訊息"}]
 ```
@@ -195,19 +196,19 @@ pip install -r requirements.txt
 
 #### 欄位說明
 
-| 欄位 | 說明 |
-|------|------|
-| `interface` | `"tgenie"`（預設）或 `"openai"` |
-| `endpoint` | TGenie backend API endpoint |
-| `frontendUrl` | TGenie 網頁應用 URL（CDP cookie domain 比對用） |
-| `targetUrlKeyword` | Chrome CDP 找 tab 的關鍵字 |
-| `cookieDomain` | 抓 cookie 時比對的 domain |
-| `authToken` | TGenie Bearer token（可用 `grab_auth.py` 自動抓） |
-| `openaiApiKey` | OpenAI API key（或本機 dummy key） |
-| `openaiBaseUrl` | OpenAI-compatible endpoint URL |
+| 欄位                 | 說明                                                       |
+| -------------------- | ---------------------------------------------------------- |
+| `interface`          | `"tgenie"`（預設）或 `"openai"`                            |
+| `endpoint`           | TGenie backend API endpoint                                |
+| `frontendUrl`        | TGenie 網頁應用 URL（CDP cookie domain 比對用）            |
+| `targetUrlKeyword`   | Chrome CDP 找 tab 的關鍵字                                 |
+| `cookieDomain`       | 抓 cookie 時比對的 domain                                  |
+| `authToken`          | TGenie Bearer token（可用 `grab_auth.py` 自動抓）          |
+| `openaiApiKey`       | OpenAI API key（或本機 dummy key）                         |
+| `openaiBaseUrl`      | OpenAI-compatible endpoint URL                             |
 | `openaiContentArray` | `true` = user content 用陣列格式（Cline-style proxy 需要） |
-| `defaultModel` | 預設使用的模型 |
-| `systemPrompt` | 系統提示詞 |
+| `defaultModel`       | 預設使用的模型                                             |
+| `systemPrompt`       | 系統提示詞                                                 |
 
 > **注意：** config 讀取時會自動以 DEFAULTS 補全缺少的欄位，不需要在 JSON 裡填寫每個 key。
 
@@ -218,6 +219,7 @@ python grab_auth.py
 ```
 
 腳本會：
+
 1. 找到 Chrome 中第一個包含 `targetUrlKeyword` 的分頁
 2. 在 textarea 輸入測試文字並點擊傳送
 3. 攔截並取出 Authorization header
@@ -240,9 +242,11 @@ python main.py chat -m gpt-4o -r medium --skills --debug
 ```
 
 **Windows：**
+
 ```
 tgenie.bat
 ```
+
 （bat 自動啟動 Chrome debug mode → 抓 token → 進入 CLI）
 
 **子指令：**
@@ -260,20 +264,20 @@ python main.py tools           # 列出所有 skill tools
 
 ## 指令
 
-| 指令 | 說明 |
-|------|------|
-| `/new` | 新對話 |
-| `/sessions` | 列出已儲存的對話 |
-| `/load <n>` | 載入對話 |
-| `/history` | 顯示目前對話內容 |
-| `/skills` | 列出所有可用 tools（需加 `--skills`） |
-| `/clear` | 清除目前對話 |
-| `/reasoning` | 切換 reasoning 等級（disable/low/medium/high） |
-| `/renew` | 重新抓 auth token |
-| `/autoresearch` | 啟動自主迭代 loop（需加 `--skills`） |
-| `/help` | 顯示說明 |
-| `/exit` | 結束（自動儲存對話） |
-| `"""` | 進入多行輸入模式 |
+| 指令            | 說明                                           |
+| --------------- | ---------------------------------------------- |
+| `/new`          | 新對話                                         |
+| `/sessions`     | 列出已儲存的對話                               |
+| `/load <n>`     | 載入對話                                       |
+| `/history`      | 顯示目前對話內容                               |
+| `/skills`       | 列出所有可用 tools（需加 `--skills`）          |
+| `/clear`        | 清除目前對話                                   |
+| `/reasoning`    | 切換 reasoning 等級（disable/low/medium/high） |
+| `/renew`        | 重新抓 auth token                              |
+| `/autoresearch` | 啟動自主迭代 loop（需加 `--skills`）           |
+| `/help`         | 顯示說明                                       |
+| `/exit`         | 結束（自動儲存對話）                           |
+| `"""`           | 進入多行輸入模式                               |
 
 ---
 
@@ -357,6 +361,7 @@ Iterations: 10
 ### 輸出
 
 每輪會顯示：
+
 ```
 ── Iteration 3/10 ──────────────────
 [Tool] file_patch (path='src/utils.py', ...)
@@ -380,53 +385,56 @@ Hypothesis: 移除未使用的 import 以減少 bundle size
 ### Browser Skills（需要 `--skills`）
 
 #### 讀取
-| Tool | 說明 |
-|------|------|
-| `browser_snapshot` | 取互動元素快照（按鈕/輸入/連結）+ 頁面文字摘要，**互動前先執行這個** |
-| `browser_get_text` | 取得頁面所有可見文字 |
-| `browser_get_element` | 用 CSS selector 抓特定元素內容 |
-| `browser_get_numbers` | 抓頁面上所有數值（適用於 Dashboard、圖表） |
-| `browser_get_bounding_box` | 取得元素位置與尺寸 |
-| `browser_get_local_storage` | 讀 localStorage / sessionStorage |
-| `browser_get_dom` | 用 CSS selector / class / text 查 DOM |
-| `browser_intercept_xhr` | 攔截 XHR/fetch API 回應（抓 chart 原始資料） |
-| `browser_get_url` | 取得目前 URL 與標題 |
-| `browser_list_tabs` | 列出所有開的分頁 |
-| `browser_screenshot` | 全頁截圖 |
-| `browser_screenshot_element` | 只截圖特定元素 |
+
+| Tool                         | 說明                                                                 |
+| ---------------------------- | -------------------------------------------------------------------- |
+| `browser_snapshot`           | 取互動元素快照（按鈕/輸入/連結）+ 頁面文字摘要，**互動前先執行這個** |
+| `browser_get_text`           | 取得頁面所有可見文字                                                 |
+| `browser_get_element`        | 用 CSS selector 抓特定元素內容                                       |
+| `browser_get_numbers`        | 抓頁面上所有數值（適用於 Dashboard、圖表）                           |
+| `browser_get_bounding_box`   | 取得元素位置與尺寸                                                   |
+| `browser_get_local_storage`  | 讀 localStorage / sessionStorage                                     |
+| `browser_get_dom`            | 用 CSS selector / class / text 查 DOM                                |
+| `browser_intercept_xhr`      | 攔截 XHR/fetch API 回應（抓 chart 原始資料）                         |
+| `browser_get_url`            | 取得目前 URL 與標題                                                  |
+| `browser_list_tabs`          | 列出所有開的分頁                                                     |
+| `browser_screenshot`         | 全頁截圖                                                             |
+| `browser_screenshot_element` | 只截圖特定元素                                                       |
 
 #### 互動
-| Tool | 說明 |
-|------|------|
-| `browser_click` | 點擊（CSS selector 或 x,y 座標） |
+
+| Tool                    | 說明                                     |
+| ----------------------- | ---------------------------------------- |
+| `browser_click`         | 點擊（CSS selector 或 x,y 座標）         |
 | `browser_click_element` | 用 `browser_snapshot` 的 element ID 點擊 |
-| `browser_double_click` | 雙擊 |
-| `browser_right_click` | 右鍵點擊 |
-| `browser_type` | 輸入文字 |
-| `browser_type_element` | 用 element ID 輸入 |
-| `browser_select` | 選取下拉選項 |
-| `browser_checkbox` | 勾選/取消勾選 checkbox 或 radio |
-| `browser_keyboard` | 按鍵盤按鍵（Enter、Tab、ctrl+a 等） |
-| `browser_hover` | Hover 觸發 tooltip / 選單 |
-| `browser_mouse_sweep` | 在 chart 上來回移動抓 tooltip 數值 |
-| `browser_drag` | 拖曳（適用於 sliders、drag-and-drop） |
-| `browser_scroll` | 滾動頁面或特定元素 |
-| `browser_wait` | 等待元素出現或消失 |
-| `browser_handle_dialog` | 接受或拒絕 alert/confirm/prompt |
-| `browser_execute_js` | 執行任意 JavaScript |
+| `browser_double_click`  | 雙擊                                     |
+| `browser_right_click`   | 右鍵點擊                                 |
+| `browser_type`          | 輸入文字                                 |
+| `browser_type_element`  | 用 element ID 輸入                       |
+| `browser_select`        | 選取下拉選項                             |
+| `browser_checkbox`      | 勾選/取消勾選 checkbox 或 radio          |
+| `browser_keyboard`      | 按鍵盤按鍵（Enter、Tab、ctrl+a 等）      |
+| `browser_hover`         | Hover 觸發 tooltip / 選單                |
+| `browser_mouse_sweep`   | 在 chart 上來回移動抓 tooltip 數值       |
+| `browser_drag`          | 拖曳（適用於 sliders、drag-and-drop）    |
+| `browser_scroll`        | 滾動頁面或特定元素                       |
+| `browser_wait`          | 等待元素出現或消失                       |
+| `browser_handle_dialog` | 接受或拒絕 alert/confirm/prompt          |
+| `browser_execute_js`    | 執行任意 JavaScript                      |
 
 #### 分頁管理
-| Tool | 說明 |
-|------|------|
-| `browser_navigate` | 在新分頁開啟 URL |
+
+| Tool                 | 說明                               |
+| -------------------- | ---------------------------------- |
+| `browser_navigate`   | 在新分頁開啟 URL                   |
 | `browser_switch_tab` | 切換分頁（用 index 或 URL 關鍵字） |
 
 ### File Skills
 
-| Tool | 說明 |
-|------|------|
-| `read_file` | 讀取檔案內容 |
-| `write_file` | 寫入檔案 |
+| Tool         | 說明         |
+| ------------ | ------------ |
+| `read_file`  | 讀取檔案內容 |
+| `write_file` | 寫入檔案     |
 | `list_files` | 列出目錄內容 |
 
 ---
@@ -527,6 +535,7 @@ genieCLI/
 ### ✅ Oracle → Trino Migration（已完成，Phase 1 + 2）
 
 `oracle2trino` skill 支援：
+
 - Oracle SQL → Trino 機械轉換（sqlglot）+ AI 補完剩餘 50%
 - Trino 靜態 linter（Oracle 殘留偵測：NVL / DECODE / ROWNUM / SYSDATE / (+) joins 等）
 - 結構化輸出（`ConversionResult`，含 confidence、unsupported_constructs）
