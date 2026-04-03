@@ -10,6 +10,7 @@ from __future__ import annotations
 import json
 import time
 from dataclasses import dataclass
+from datetime import date, datetime, timedelta
 from decimal import Decimal
 
 from genie.core.arg import Arg
@@ -37,9 +38,22 @@ class QueryResult:
         }
 
 
+def _clean_cell(v):
+    """Convert non-JSON-serializable types."""
+    if isinstance(v, Decimal):
+        return float(v)
+    if isinstance(v, (date, datetime)):
+        return v.isoformat()
+    if isinstance(v, timedelta):
+        return str(v)
+    if isinstance(v, bytes):
+        return v.hex()
+    return v
+
+
 def _clean_row(row: tuple) -> list:
-    """Convert Decimal → float for JSON serialization."""
-    return [float(v) if isinstance(v, Decimal) else v for v in row]
+    """Clean all cells in a row for JSON serialization."""
+    return [_clean_cell(v) for v in row]
 
 
 class TrinoQuerySkill(BaseSkill):
