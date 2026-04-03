@@ -28,8 +28,11 @@ from genie.skills.trino_query import QueryMetrics, _extract_metrics
 # Measurement helpers (run in-process, no subprocess/verify.py needed)
 # ---------------------------------------------------------------------------
 
-def _execute_sql(sql: str) -> tuple[int, QueryMetrics]:
-    """Execute SQL on Trino, return (row_count, metrics)."""
+def _execute_sql(sql: str, capture_rows: bool = False) -> tuple[int, QueryMetrics, list]:
+    """Execute SQL on Trino, return (row_count, metrics, rows).
+
+    When capture_rows=True, actual row data is returned for equivalence checks.
+    """
     cfg = get_active_profile()
     conn = cfg.connect()
     cur = conn.cursor()
@@ -38,22 +41,32 @@ def _execute_sql(sql: str) -> tuple[int, QueryMetrics]:
         rows = cur.fetchall()
         row_count = len(rows)
     except Exception:
+        rows = []
         row_count = 0
     stats = getattr(cur, "stats", {}) or {}
     metrics = _extract_metrics(stats)
     conn.close()
-    return row_count, metrics
+    return row_count, metrics, rows if capture_rows else []
 
 
-def _measure(sql: str, metric_key: str, runs: int) -> dict:
-    """Run SQL `runs` times, return median metric + row_count + all samples."""
+def _measure(sql: str, metric_key: str, runs: int, capture_rows: bool = False) -> dict:
+    """Run SQL `runs` times, return median metric + row_count + all samples.
+
+    When capture_rows=True, the rows from the LAST run are included for
+    equivalence checking.
+    """
     samples = []
     all_metrics = []
     row_count = 0
+    last_rows = []
 
-    for _ in range(runs):
-        rc, m = _execute_sql(sql)
+    for i in range(runs):
+        # Capture rows only on last run to avoid memory waste
+        capture = capture_rows and (i == runs - 1)
+        rc, m, rows = _execute_sql(sql, capture_rows=capture)
         row_count = rc
+        if capture:
+            last_rows = rows
         value = float(getattr(m, metric_key, 0) or 0)
         samples.append(value)
         all_metrics.append(m)
@@ -66,8 +79,52 @@ def _measure(sql: str, metric_key: str, runs: int) -> dict:
         "median": median_val,
         "samples": samples,
         "row_count": row_count,
+        "rows": last_rows,
         "metrics": all_metrics[median_idx],
     }
+
+
+def _normalize_row(row: tuple) -> tuple:
+    """Normalize a row for comparison (handle float precision, None, etc)."""
+    result = []
+    for val in row:
+        if isinstance(val, float):
+            result.append(round(val, 6))
+        else:
+            result.append(val)
+    return tuple(result)
+
+
+def _results_equivalent(rows_a: list, rows_b: list) -> tuple[bool, str]:
+    """Check if two result sets are equivalent (same rows, same order).
+
+    Returns (equivalent, reason).
+    """
+    if len(rows_a) != len(rows_b):
+        return False, f"row count differs: {len(rows_a)} vs {len(rows_b)}"
+
+    if not rows_a:
+        return True, "both empty"
+
+    # Compare column count
+    if len(rows_a[0]) != len(rows_b[0]):
+        return False, f"column count differs: {len(rows_a[0])} vs {len(rows_b[0])}"
+
+    # Normalize and compare row by row
+    mismatches = 0
+    first_mismatch = None
+    for i, (a, b) in enumerate(zip(rows_a, rows_b)):
+        na = _normalize_row(a)
+        nb = _normalize_row(b)
+        if na != nb:
+            mismatches += 1
+            if first_mismatch is None:
+                first_mismatch = f"row {i}: {na} vs {nb}"
+
+    if mismatches == 0:
+        return True, "exact match"
+
+    return False, f"{mismatches} row(s) differ; first: {first_mismatch}"
 
 
 def _lint_sql(sql: str) -> tuple[bool, str]:
@@ -127,13 +184,14 @@ def _run_optimization_loop(
     # ── Baseline ──
     output.progress("  Measuring baseline...")
     try:
-        baseline = _measure(original_sql, metric_key, verify_runs)
+        baseline = _measure(original_sql, metric_key, verify_runs, capture_rows=True)
     except Exception as e:
         output.error(f"  Baseline measurement failed: {e}")
         return {"status": "failed", "error": str(e)}
 
     baseline_metric = baseline["median"]
     baseline_rows = baseline["row_count"]
+    baseline_data = baseline["rows"]
 
     output.progress(f"  Baseline {metric_key}: {baseline_metric} (median of {verify_runs} runs)")
     output.progress(f"  Baseline row count: {baseline_rows}")
@@ -211,8 +269,14 @@ def _run_optimization_loop(
                 })
                 continue
 
-        # Log what AI proposed (first 80 chars)
-        hypothesis = reply.split("\n")[0][:80] if reply else "?"
+        # Extract hypothesis from AI reply (skip code fences, get first meaningful line)
+        hypothesis = "?"
+        if reply:
+            for line in reply.split("\n"):
+                line = line.strip()
+                if line and not line.startswith("```") and not line.startswith("|"):
+                    hypothesis = line[:80]
+                    break
         output.progress(f"  [Hypothesis] {hypothesis}")
 
         # Guard 1: Lint check
@@ -228,7 +292,7 @@ def _run_optimization_loop(
 
         # Guard 2: Execute and measure
         try:
-            candidate = _measure(candidate_sql, metric_key, verify_runs)
+            candidate = _measure(candidate_sql, metric_key, verify_runs, capture_rows=True)
         except Exception as e:
             output.progress(f"  [REVERT] Execution failed: {e}")
             session["history"].append(new_msg("user", f"SQL execution failed: {e}. Change REVERTED."))
@@ -240,17 +304,19 @@ def _run_optimization_loop(
 
         candidate_metric = candidate["median"]
         candidate_rows = candidate["row_count"]
+        candidate_data = candidate["rows"]
         delta = candidate_metric - best_metric
 
-        # Guard 3: Row count equivalence
-        if candidate_rows != baseline_rows:
+        # Guard 3: Result equivalence (not just row count — full data comparison)
+        equiv, equiv_reason = _results_equivalent(baseline_data, candidate_data)
+        if not equiv:
             output.progress(
-                f"  [REVERT] Row count changed: {baseline_rows} → {candidate_rows} "
+                f"  [REVERT] Result mismatch: {equiv_reason} "
                 f"(semantic drift detected)"
             )
             session["history"].append(new_msg(
                 "user",
-                f"Row count changed from {baseline_rows} to {candidate_rows}. "
+                f"Query results differ from baseline: {equiv_reason}. "
                 f"This means the optimization changed the query semantics. Change REVERTED. "
                 f"Try a different approach that preserves the exact same result set."
             ))
@@ -321,6 +387,64 @@ def _print_metrics(output, metrics: QueryMetrics) -> None:
     """Print key metrics in dim style."""
     output.print(f"    [dim]cpu={metrics.cpu_time_ms}ms wall={metrics.wall_time_ms}ms "
                  f"splits={metrics.total_splits} rows={metrics.processed_rows}[/dim]")
+
+
+def _generate_report(result: dict, metric_key: str, model: str, verify_runs: int) -> str:
+    """Generate a markdown report from optimization results."""
+    from datetime import datetime
+
+    lines = [
+        "# Trino Query Optimization Report",
+        "",
+        f"**Date:** {datetime.now().strftime('%Y-%m-%d %H:%M')}",
+        f"**Model:** {model}",
+        f"**Metric:** {metric_key} (lower is better)",
+        f"**Verify runs:** {verify_runs} (median)",
+        f"**Result validation:** full row-level equivalence check",
+        "",
+        "## Summary",
+        "",
+        f"| Metric | Value |",
+        f"|--------|-------|",
+        f"| Baseline | {result['baseline_metric']:.1f} |",
+        f"| Best | {result['best_metric']:.1f} |",
+        f"| Improvement | {result['total_improvement']:+.1f} ({result['improvement_pct']:+.1f}%) |",
+        f"| Iterations | {result['iterations']} ({result['kept']} kept) |",
+        f"| Row count | {result['baseline_rows']} (preserved) |",
+        "",
+        "## Iteration History",
+        "",
+        "| # | Status | Metric | Delta | Hypothesis |",
+        "|---|--------|--------|-------|------------|",
+    ]
+
+    for h in result["history"]:
+        lines.append(
+            f"| {h['iteration']} | {h['status']} | {h['metric']:.1f} | "
+            f"{h['delta']:+.1f} | {h['hypothesis'][:60]} |"
+        )
+
+    lines.append("")
+    lines.append("## Original SQL")
+    lines.append("")
+    lines.append("```sql")
+    lines.append(result["original_sql"])
+    lines.append("```")
+    lines.append("")
+
+    if result["best_sql"] != result["original_sql"]:
+        lines.append("## Optimized SQL")
+        lines.append("")
+        lines.append("```sql")
+        lines.append(result["best_sql"])
+        lines.append("```")
+    else:
+        lines.append("## Result")
+        lines.append("")
+        lines.append("No improvement found. Original SQL is already optimal for this metric.")
+
+    lines.append("")
+    return "\n".join(lines)
 
 
 # ---------------------------------------------------------------------------
@@ -449,3 +573,14 @@ def run_trino_research(
             output.print(f"    {line}")
     else:
         output.print("\n  [dim]No improvement found — original SQL unchanged.[/dim]")
+
+    # Generate and save report
+    report = _generate_report(result, metric, model, runs)
+    from datetime import datetime
+    report_name = f"trino-research-{datetime.now().strftime('%Y%m%d-%H%M%S')}.md"
+    report_path = Path.cwd() / report_name
+    try:
+        report_path.write_text(report)
+        output.progress(f"\n  Report saved: {report_path}")
+    except Exception as e:
+        output.error(f"  Failed to save report: {e}")

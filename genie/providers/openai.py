@@ -105,7 +105,7 @@ class OpenAIProvider:
                 f"{base_url}/chat/completions",
                 headers=headers,
                 json=payload,
-                timeout=120,
+                timeout=(30, 300),  # (connect, read) — local models need more time
                 stream=True,
             )
         except requests.RequestException as exc:
