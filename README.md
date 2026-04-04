@@ -219,6 +219,139 @@ python -m genie config               # 顯示目前設定
 
 ---
 
+## 5 分鐘上手：連 Trino → 測 Query → 拿 Report
+
+從零開始，5 步拿到優化報告。
+
+### Step 1：裝 GenieCLI + 依賴
+
+```bash
+git clone https://github.com/emilyorz/genieCLI.git
+cd genieCLI
+pip install -e .
+pip install trino           # Trino Python client
+```
+
+### Step 2：裝 Ollama + 拉模型（本機 LLM，免費）
+
+```bash
+# macOS
+brew install ollama
+brew services start ollama
+
+# 拉模型（4B 夠用，16GB RAM 跑得動）
+ollama pull qwen3.5:4b
+```
+
+> 沒有 Ollama？也可以用 OpenAI API，把 Step 3 的 config 改成 OpenAI 即可。
+
+### Step 3：設定 config
+
+```bash
+mkdir -p ~/.genie
+cat > ~/.genie/config.toml << 'EOF'
+interface = "openai"
+openaiApiKey = "ollama"
+openaiBaseUrl = "http://localhost:11434/v1"
+defaultModel = "qwen3.5:4b"
+EOF
+```
+
+### Step 4：連 Trino
+
+```bash
+python -m genie --skills
+
+# 進入互動模式後：
+> /trino add mytrino
+  Host [localhost] > your-trino-host.com
+  Port [8085] > 8080
+  User [trino] > your_username
+  Scheme [http] > https
+  Catalog [iceberg] > hive
+  Schema [warehouse] > your_schema
+  Label > Production Trino
+
+> /trino test
+  ✓ Connected to https://your-trino-host.com:8080 (Production Trino)
+```
+
+或者直接寫 config 檔：
+
+```bash
+mkdir -p ~/.config/genie
+cat > ~/.config/genie/trino.json << 'EOF'
+{
+  "active": "mytrino",
+  "profiles": {
+    "mytrino": {
+      "host": "your-trino-host.com",
+      "port": 8080,
+      "user": "your_username",
+      "scheme": "https",
+      "catalog": "hive",
+      "schema": "your_schema",
+      "label": "Production Trino"
+    }
+  }
+}
+EOF
+```
+
+### Step 5：跑優化，拿 Report
+
+**方法 A — 互動模式（一步步來）：**
+
+```bash
+python -m genie --skills
+> /trino-research
+# 1. 貼上你要優化的 SQL
+# 2. 選 metric（預設 cpu_time_ms）
+# 3. 設 iterations（預設 5）
+# 4. 設 verify runs（預設 3）
+# 5. 等它跑完 → 自動產出 report
+```
+
+**方法 B — 一行搞定（非互動）：**
+
+```bash
+# 把 SQL 存成檔案
+cat > my_query.sql << 'EOF'
+SELECT ... FROM ... WHERE ...
+EOF
+
+# 進入 CLI 後直接帶參數
+python -m genie --skills
+> /trino-research --file my_query.sql --metric cpu_time_ms --iterations 5 --runs 3
+```
+
+**跑完後你會得到：**
+
+1. **終端即時輸出** — 每輪迭代的 metric / keep / revert 狀態
+2. **Markdown Report**（`trino-research-YYYYMMDD-HHMMSS.md`）：
+   - Summary table（baseline → best → improvement %）
+   - 每輪 iteration history
+   - Original SQL vs Optimized SQL
+3. **保證語義正確** — result equivalence guard 逐行比對查詢結果
+
+### 完整流程圖
+
+```
+┌─────────────┐    ┌──────────┐    ┌──────────────┐    ┌──────────┐
+│ 1. Install  │───>│ 2. Ollama│───>│ 3. Config    │───>│ 4. Trino │
+│ pip install │    │ pull model│   │ ~/.genie/    │    │ /trino   │
+└─────────────┘    └──────────┘    └──────────────┘    └────┬─────┘
+                                                            │
+                                                            ▼
+                   ┌──────────┐    ┌──────────────┐    ┌──────────┐
+                   │ Report!  │<───│ 5. Optimize  │<───│ Test OK  │
+                   │ .md file │    │ /trino-      │    │ /trino   │
+                   └──────────┘    │  research    │    │  test    │
+                                   └──────────────┘    └──────────┘
+```
+
+---
+
 ## Trino Query Optimization（`/trino-research`）
 
 AI 驅動的 Trino SQL 自動優化。每輪迭代中，AI 提出優化方案 → 執行驗證 → 通過 guard 才保留。
