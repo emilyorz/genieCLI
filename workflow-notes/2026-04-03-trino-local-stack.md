@@ -32,6 +32,7 @@
 ### File Impact
 
 **Level 1（infra，新建）：**
+
 - `infra/trino-stack/docker-compose.yml`
 - `infra/trino-stack/etc/catalog/iceberg.properties`
 - `infra/trino-stack/etc/catalog/memory.properties`
@@ -39,6 +40,7 @@
 - `infra/trino-stack/README.md`
 
 **Level 2（genieCLI 整合）：**
+
 - `genie/skills/trino_query/__init__.py` — 新 skill：execute_query + explain
 - `~/.config/trino/config.yaml` — mcp-trino profile
 - `~/.claude/mcp.json` — 加 trino MCP
@@ -76,11 +78,13 @@
 改用 Iceberg JDBC Catalog（需自己 init `iceberg_tables` schema）。
 
 Docker containers（`infra/trino-stack/docker-compose.yml`）：
+
 - `trino-postgres` — PostgreSQL 16，catalog backend
 - `trino-minio` + `trino-minio-init` — S3 storage + bucket init
 - `trino` — Trino 480 single-node，JVM heap 2GB，port **8085**（8080 被 OrbStack 佔用）
 
 手動 init schema（Iceberg JDBC catalog 需要）：
+
 ```sql
 CREATE TABLE iceberg_tables (...);  -- from JdbcCatalog source
 CREATE TABLE iceberg_namespace_properties (...);
@@ -94,4 +98,3 @@ Binary：`~/.local/bin/mcp-trino`。必要 env：`TRINO_SCHEME=http`（預設 ht
 MCP client config：`~/.claude/mcp.json` → `trino-local` server。
 
 ### Level 2 — genieCLI trino_query skill（TODO）
-

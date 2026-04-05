@@ -93,15 +93,18 @@
 ## Execution Log
 
 ### Stage A — 技術債清理 ✅
+
 - Commit `5567777`: 刪除 27 個 legacy 檔案（~4900 行），更新 tgenie.sh/tgenie.bat
 - 420 tests 全過，46 tools 正常載入
 
 ### Stage B — Bug Fix ✅
+
 - Commit `61f134d`: 移除 dead cli subcommands + 修 screenshot tool chain output
 - Commit `0a685b8`: 移除 Python 3.9 不相容的 test_chat.py（Claude Code 生成）
 - 注意：genie/chat.py 用 match/case 語法（Python 3.10+），但 system python 是 3.9。.venv 用 3.13 沒問題。
 
 ### Stage C — Linter Adversarial Review ✅
+
 - 9 個 test fail 根因：.venv 缺 sqlglot（環境問題，非 code bug）
 - Phase 1 review H1-H3/M1-M3 全部確認已修好
 - 新發現 N1/N2（edge case，暫不修）、N3（rule failure silent pass → 加 debug logging）

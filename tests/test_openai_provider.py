@@ -211,16 +211,13 @@ def test_openai_provider_empty_body_raises():
 
 @rsps_lib.activate
 def test_openai_provider_custom_base_url():
-    body = (
-        'data: {"choices": [{"delta": {"content": "ollama says hi"}}]}\n'
-        "data: [DONE]\n"
-    )
+    # Code routes Ollama to native /api/chat (not /v1/chat/completions).
+    # Response format is JSON with {"message": {"content": ...}}.
     rsps_lib.add(
         rsps_lib.POST,
-        "http://localhost:11434/v1/chat/completions",
-        body=body,
+        "http://localhost:11434/api/chat",
+        json={"message": {"role": "assistant", "content": "ollama says hi"}, "done": True},
         status=200,
-        content_type="text/event-stream",
     )
     provider = OpenAIProvider({"openaiBaseUrl": "http://localhost:11434/v1"})
     req = CompletionRequest(messages=[_msg("user", "hi")], model="llama3")

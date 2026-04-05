@@ -6,8 +6,8 @@ genieCLI 本機 Trino 測試環境。4 個容器 + mcp-trino MCP server。
 
 ```
 Trino (:8080) ←→ Hive Metastore (:9083) ←→ MySQL (:3307)
-    ↕                                          
-MinIO (:9000, :9001 console)                   
+    ↕
+MinIO (:9000, :9001 console)
     ↕
 mcp-trino (STDIO) → Claude Code / genieCLI
 ```
@@ -41,19 +41,19 @@ mcp-trino query "SELECT 1"
 
 ## Catalogs
 
-| Catalog  | 用途                | 儲存      |
-|----------|---------------------|-----------|
-| iceberg  | Iceberg tables      | MinIO S3  |
-| memory   | 臨時測試            | in-memory |
+| Catalog | 用途           | 儲存      |
+| ------- | -------------- | --------- |
+| iceberg | Iceberg tables | MinIO S3  |
+| memory  | 臨時測試       | in-memory |
 
 ## Sample Tables
 
-| Table                          | 筆數 | 用途                    |
-|--------------------------------|------|-------------------------|
-| iceberg.warehouse.employees    | 10   | partition filter 測試    |
-| iceberg.warehouse.orders       | 7    | date partition + joins   |
-| iceberg.warehouse.oracle_legacy| 4    | Oracle pattern linter 測試|
-| memory.test.numbers            | 5    | 快速驗證                 |
+| Table                           | 筆數 | 用途                       |
+| ------------------------------- | ---- | -------------------------- |
+| iceberg.warehouse.employees     | 10   | partition filter 測試      |
+| iceberg.warehouse.orders        | 7    | date partition + joins     |
+| iceberg.warehouse.oracle_legacy | 4    | Oracle pattern linter 測試 |
+| memory.test.numbers             | 5    | 快速驗證                   |
 
 ## 管理
 
@@ -70,8 +70,8 @@ http://localhost:9001 — 帳號 `minioadmin` / `minioadmin`
 
 ## 資源用量
 
-| 容器           | RAM 估計   |
-|----------------|-----------|
+| 容器           | RAM 估計  |
+| -------------- | --------- |
 | Trino          | ~2 GB     |
 | Hive Metastore | ~512 MB   |
 | MySQL          | ~256 MB   |

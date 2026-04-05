@@ -75,15 +75,15 @@ Plugin-based AI agent CLI。底層用 Provider Protocol 抽象化多家 LLM back
 
 #### Skills（`genie/skills/`）— 46 tools
 
-| Skill           | Tools | 說明                                                              |
-| --------------- | ----- | ----------------------------------------------------------------- |
-| `browser/`      | 30    | Chrome CDP automation（snapshot / click / type / intercept…）     |
-| `file_ops/`     | 4     | 檔案讀寫、目錄列表、file_patch                                    |
-| `git_ops/`      | 5     | Git 操作（status / diff / log / checkpoint / restore）            |
-| `shell_ops/`    | 1     | Shell 指令執行（whitelisted profiles）                            |
-| `oracle2trino/` | 5     | Oracle → Trino SQL 轉換（sqlglot + AI 補完）                     |
-| `trino_linter/` | 1     | Trino SQL 靜態分析（11 rules：Oracle 殘留 + anti-patterns）      |
-| `trino_query/`  | 2     | Trino query 執行 + **自動優化（trino-research）**                 |
+| Skill           | Tools | 說明                                                          |
+| --------------- | ----- | ------------------------------------------------------------- |
+| `browser/`      | 30    | Chrome CDP automation（snapshot / click / type / intercept…） |
+| `file_ops/`     | 4     | 檔案讀寫、目錄列表、file_patch                                |
+| `git_ops/`      | 5     | Git 操作（status / diff / log / checkpoint / restore）        |
+| `shell_ops/`    | 1     | Shell 指令執行（whitelisted profiles）                        |
+| `oracle2trino/` | 5     | Oracle → Trino SQL 轉換（sqlglot + AI 補完）                  |
+| `trino_linter/` | 1     | Trino SQL 靜態分析（11 rules：Oracle 殘留 + anti-patterns）   |
+| `trino_query/`  | 2     | Trino query 執行 + **自動優化（trino-research）**             |
 
 #### Output（`genie/output/`）
 
@@ -99,7 +99,7 @@ Autoresearch 自主迭代引擎，作為 plugin 載入，不耦合 core。
 | 模組                  | 說明                                                  |
 | --------------------- | ----------------------------------------------------- |
 | `eval_loop.py`        | 主迭代 loop（AI propose → verify → commit/revert）    |
-| `run_manager.py`      | 迭代狀態管理（compare against current_best）           |
+| `run_manager.py`      | 迭代狀態管理（compare against current_best）          |
 | `checkpoint.py`       | Git checkpoint + revert                               |
 | `metric.py`           | Metric 提取 + 趨勢比較                                |
 | `journal.py`          | TSV journal 記錄（每輪 metric / status / hypothesis） |
@@ -200,22 +200,22 @@ python -m genie config               # 顯示目前設定
 
 ### 互動指令
 
-| 指令               | 說明                                           |
-| ------------------ | ---------------------------------------------- |
-| `/new`             | 新對話                                         |
-| `/sessions`        | 列出已儲存的對話                               |
-| `/load <n>`        | 載入對話                                       |
-| `/history`         | 顯示目前對話內容                               |
-| `/skills`          | 列出所有可用 tools                             |
-| `/clear`           | 清除目前對話                                   |
-| `/paste`           | 多行貼上模式（Ctrl-D 送出）                    |
-| `/editor`          | 開編輯器輸入                                   |
-| `/autoresearch`    | 啟動自主迭代 loop（需 `--skills`）             |
-| `/trino`           | Trino 連線管理（profiles / test）              |
-| `/trino-research`  | **Trino SQL 自動優化**（見下方）               |
-| `/reasoning`       | 切換 reasoning 等級（disable/low/medium/high） |
-| `/renew`           | 重新抓 auth token（TGenie only）               |
-| `/exit`            | 結束（自動儲存對話）                           |
+| 指令              | 說明                                           |
+| ----------------- | ---------------------------------------------- |
+| `/new`            | 新對話                                         |
+| `/sessions`       | 列出已儲存的對話                               |
+| `/load <n>`       | 載入對話                                       |
+| `/history`        | 顯示目前對話內容                               |
+| `/skills`         | 列出所有可用 tools                             |
+| `/clear`          | 清除目前對話                                   |
+| `/paste`          | 多行貼上模式（Ctrl-D 送出）                    |
+| `/editor`         | 開編輯器輸入                                   |
+| `/autoresearch`   | 啟動自主迭代 loop（需 `--skills`）             |
+| `/trino`          | Trino 連線管理（profiles / test）              |
+| `/trino-research` | **Trino SQL 自動優化**（見下方）               |
+| `/reasoning`      | 切換 reasoning 等級（disable/low/medium/high） |
+| `/renew`          | 重新抓 auth token（TGenie only）               |
+| `/exit`           | 結束（自動儲存對話）                           |
 
 ---
 
@@ -380,21 +380,21 @@ python -m genie --skills
 > /trino-research --file query.sql --metric cpu_time_ms --iterations 5 --runs 3
 ```
 
-| 參數           | 說明                  | 預設        |
-| -------------- | --------------------- | ----------- |
-| `--file`       | SQL 檔案路徑          | 互動貼上    |
-| `--metric`     | 優化目標 metric       | cpu_time_ms |
-| `--iterations` | 最大迭代次數          | 5           |
-| `--runs`       | 每次驗證重複跑幾次    | 3           |
+| 參數           | 說明               | 預設        |
+| -------------- | ------------------ | ----------- |
+| `--file`       | SQL 檔案路徑       | 互動貼上    |
+| `--metric`     | 優化目標 metric    | cpu_time_ms |
+| `--iterations` | 最大迭代次數       | 5           |
+| `--runs`       | 每次驗證重複跑幾次 | 3           |
 
 **可選 metric：** `cpu_time_ms` / `wall_time_ms` / `physical_input_bytes` / `processed_rows` / `total_splits`
 
 ### Guard 機制（三層防護）
 
-| Guard | 說明 | 失敗時 |
-|-------|------|--------|
-| **Lint** | SQL 必須通過語法分析（lint score ≠ F） | REVERT |
-| **Execution** | SQL 必須在 Trino 上成功執行 | REVERT |
+| Guard                  | 說明                                                               | 失敗時 |
+| ---------------------- | ------------------------------------------------------------------ | ------ |
+| **Lint**               | SQL 必須通過語法分析（lint score ≠ F）                             | REVERT |
+| **Execution**          | SQL 必須在 Trino 上成功執行                                        | REVERT |
 | **Result equivalence** | 優化後的查詢結果必須與 baseline **逐行一致**（列數、欄數、每格值） | REVERT |
 
 ### 測試範例與結果
@@ -426,13 +426,13 @@ FETCH FIRST 100 ROWS ONLY
 
 **結果（5 iterations, 3 verify runs each）：**
 
-| # | Status | Metric (cpu_time_ms) | Delta | 說明 |
-|---|--------|---------------------|-------|------|
-| 1 | exec_failed | — | — | AI 產生的 SQL 有 column reference error |
-| 2 | worse | 21.0 | +0.0 | 沒改善，REVERT |
-| 3 | **improved** | 20.0 | -1.0 | 小幅改善，KEPT |
-| 4 | **improved** | 13.0 | -7.0 | CTE + LEFT JOIN 取代 correlated subquery，KEPT |
-| 5 | semantic_drift | 15.0 | +2.0 | 結果比對發現 `direct_reports` 值改變，REVERT |
+| #   | Status         | Metric (cpu_time_ms) | Delta | 說明                                           |
+| --- | -------------- | -------------------- | ----- | ---------------------------------------------- |
+| 1   | exec_failed    | —                    | —     | AI 產生的 SQL 有 column reference error        |
+| 2   | worse          | 21.0                 | +0.0  | 沒改善，REVERT                                 |
+| 3   | **improved**   | 20.0                 | -1.0  | 小幅改善，KEPT                                 |
+| 4   | **improved**   | 13.0                 | -7.0  | CTE + LEFT JOIN 取代 correlated subquery，KEPT |
+| 5   | semantic_drift | 15.0                 | +2.0  | 結果比對發現 `direct_reports` 值改變，REVERT   |
 
 **最終：Baseline 21ms → Best 13ms（-38.1%），2/5 kept，結果完全等價。**
 
@@ -468,6 +468,7 @@ FETCH FIRST 100 ROWS ONLY
 ### Report 輸出
 
 每次 `/trino-research` 完成後自動產出 markdown report（`trino-research-YYYYMMDD-HHMMSS.md`），包含：
+
 - Summary table（baseline / best / improvement / iterations）
 - Iteration history（每輪 status + metric + hypothesis）
 - Original SQL vs Optimized SQL
