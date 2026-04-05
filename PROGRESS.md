@@ -57,14 +57,14 @@ genieCLI/
 
 ## 統計
 
-| 項目 | 數值 |
-|------|------|
-| Python 模組 | 44 |
-| Code 行數 | 5741 |
-| Tools | 46 |
-| Tests | 420 |
-| Lint Rules | 11 |
-| Providers | 3（TGenie / OpenAI / Anthropic） |
+| 項目        | 數值                             |
+| ----------- | -------------------------------- |
+| Python 模組 | 44                               |
+| Code 行數   | 5741                             |
+| Tools       | 46                               |
+| Tests       | 420                              |
+| Lint Rules  | 11                               |
+| Providers   | 3（TGenie / OpenAI / Anthropic） |
 
 ## 待辦 / 未來方向
 

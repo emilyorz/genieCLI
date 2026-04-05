@@ -27,6 +27,26 @@ def ctx():
     return SkillContext(provider=None, output=MachineSink(), config={}, session=None)
 
 
+@pytest.fixture
+def memory_numbers():
+    """Create memory.test.numbers with 5 rows; drop on teardown."""
+    from genie.skills.trino_query.connection import get_active_profile
+    cfg = get_active_profile()
+    conn = cfg.connect()
+    cur = conn.cursor()
+    cur.execute("CREATE SCHEMA IF NOT EXISTS memory.test")
+    cur.execute("DROP TABLE IF EXISTS memory.test.numbers")
+    cur.execute("CREATE TABLE memory.test.numbers (n INTEGER)")
+    cur.execute("INSERT INTO memory.test.numbers VALUES (1), (2), (3), (4), (5)")
+    conn.close()
+    yield
+    conn = cfg.connect()
+    cur = conn.cursor()
+    cur.execute("DROP TABLE IF EXISTS memory.test.numbers")
+    cur.execute("DROP SCHEMA IF EXISTS memory.test")
+    conn.close()
+
+
 class TestTrinoQueryIntegration:
     def test_select_one(self, ctx):
         from genie.skills.trino_query import TrinoQuerySkill
@@ -97,7 +117,7 @@ class TestTrinoQueryIntegration:
         assert result["row_count"] <= 3
         assert result["truncated"] is True
 
-    def test_memory_catalog(self, ctx):
+    def test_memory_catalog(self, ctx, memory_numbers):
         from genie.skills.trino_query import TrinoQuerySkill
         skill = TrinoQuerySkill()
         result = json.loads(skill.run(ctx, sql="SELECT * FROM memory.test.numbers", catalog="memory", schema="test"))

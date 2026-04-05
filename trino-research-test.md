@@ -8,23 +8,23 @@
 
 ## Summary
 
-| Metric | Value |
-|--------|-------|
-| Baseline | 21.0 |
-| Best | 13.0 |
-| Improvement | -8.0 (-38.1%) |
-| Iterations | 5 (2 kept) |
-| Row count | 10 (preserved) |
+| Metric      | Value          |
+| ----------- | -------------- |
+| Baseline    | 21.0           |
+| Best        | 13.0           |
+| Improvement | -8.0 (-38.1%)  |
+| Iterations  | 5 (2 kept)     |
+| Row count   | 10 (preserved) |
 
 ## Iteration History
 
-| # | Status | Metric | Delta | Hypothesis |
-|---|--------|--------|-------|------------|
-| 1 | exec_failed | 21.0 | +0.0 | WITH direct_reports_count AS ( |
-| 2 | worse | 21.0 | +0.0 | SELECT |
-| 3 | improved | 20.0 | -1.0 | SELECT |
-| 4 | improved | 13.0 | -7.0 | WITH direct_reports_count AS ( |
-| 5 | semantic_drift | 15.0 | +2.0 | WITH employees_with_mgr AS ( |
+| #   | Status         | Metric | Delta | Hypothesis                     |
+| --- | -------------- | ------ | ----- | ------------------------------ |
+| 1   | exec_failed    | 21.0   | +0.0  | WITH direct_reports_count AS ( |
+| 2   | worse          | 21.0   | +0.0  | SELECT                         |
+| 3   | improved       | 20.0   | -1.0  | SELECT                         |
+| 4   | improved       | 13.0   | -7.0  | WITH direct_reports_count AS ( |
+| 5   | semantic_drift | 15.0   | +2.0  | WITH employees_with_mgr AS (   |
 
 ## Original SQL
 
