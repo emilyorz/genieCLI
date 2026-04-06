@@ -84,7 +84,7 @@ class OpenAIProvider:
             "messages": messages,
             "stream": False,
             "think": False,
-            "options": {"num_predict": 8192},   # allow full SQL output for long queries
+            "options": {"num_predict": -1},   # unlimited output for long SQL generation
         }
 
         _dbg(f"POST {ollama_host}/api/chat  model={req.model}  messages={len(messages)} (native)")
