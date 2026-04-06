@@ -84,6 +84,7 @@ class OpenAIProvider:
             "messages": messages,
             "stream": False,
             "think": False,
+            "options": {"num_predict": 8192},   # allow full SQL output for long queries
         }
 
         _dbg(f"POST {ollama_host}/api/chat  model={req.model}  messages={len(messages)} (native)")
@@ -92,7 +93,7 @@ class OpenAIProvider:
             resp = requests.post(
                 f"{ollama_host}/api/chat",
                 json=payload,
-                timeout=(30, 600),   # 600s read for slow Ollama models
+                timeout=(30, 600),   # 10min read for slow Ollama models
             )
         except requests.RequestException as exc:
             raise RuntimeError(str(exc))
