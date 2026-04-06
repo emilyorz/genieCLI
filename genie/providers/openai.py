@@ -92,7 +92,7 @@ class OpenAIProvider:
             resp = requests.post(
                 f"{ollama_host}/api/chat",
                 json=payload,
-                timeout=(30, 300),
+                timeout=(30, 600),   # 600s read for slow Ollama models
             )
         except requests.RequestException as exc:
             raise RuntimeError(str(exc))
