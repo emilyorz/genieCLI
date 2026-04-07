@@ -9,7 +9,7 @@ from typing import Any
 logger = logging.getLogger(__name__)
 
 from genie.skills.oracle2trino.patterns import get_construct_meta, get_construct_pattern
-from genie.skills.oracle2trino.sql_utils import strip_comments_and_strings as _strip_comments_and_strings
+from genie.core.sql_utils import strip_comments_and_strings as _strip_comments_and_strings
 
 
 @dataclass

@@ -11,7 +11,7 @@ from genie.core.arg import Arg
 from genie.core.registry import BaseSkill
 from .models import ConversionResult, UnsupportedConstruct
 from .patterns import ORACLE_CONSTRUCTS, compute_confidence
-from .sql_utils import strip_comments_and_strings as _strip_comments_and_strings
+from genie.core.sql_utils import strip_comments_and_strings as _strip_comments_and_strings
 
 MAX_SQL_DISPLAY = 3000
 
