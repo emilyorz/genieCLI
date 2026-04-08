@@ -463,3 +463,26 @@ def test_oracle_residual_raises_on_missing_catalog_entry():
     from genie.skills.trino_linter.rules import _check_oracle_residual
     with pytest.raises(LookupError, match="no pattern in the shared catalog"):
         _check_oracle_residual("SELECT 1", "NON_EXISTENT_CONSTRUCT_XYZ", "test-rule-id")
+
+
+# ── missing sqlglot dependency — actionable error ────────────────────────────
+
+def test_analyze_surfaces_sqlglot_missing_as_install_hint(monkeypatch):
+    """If sqlglot is not importable, analyze() should return a parse_error
+    that tells the user HOW to fix it (pip install ...), not a cryptic
+    ModuleNotFoundError message."""
+    import builtins
+    real_import = builtins.__import__
+
+    def fake_import(name, *args, **kwargs):
+        if name == "sqlglot" or name.startswith("sqlglot."):
+            raise ImportError("No module named 'sqlglot'")
+        return real_import(name, *args, **kwargs)
+
+    monkeypatch.setattr(builtins, "__import__", fake_import)
+    result = analyze("SELECT * FROM t")
+    assert result.findings == []
+    assert result.score == "F"
+    assert result.parse_error is not None
+    assert "sqlglot" in result.parse_error
+    assert "pip install" in result.parse_error

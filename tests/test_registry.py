@@ -110,3 +110,30 @@ def test_cli_discovery_flag_reset_on_clear():
     cli_mod._skills_discovered = True
     SkillRegistry.clear()
     assert cli_mod._skills_discovered is False
+
+
+def test_discover_legacy_absent_module_is_silent():
+    """A completely missing legacy package must not warn (optional path)."""
+    import warnings
+    with warnings.catch_warnings(record=True) as caught:
+        warnings.simplefilter("always")
+        SkillRegistry.discover_legacy("definitely_not_a_real_pkg_xyzzy")
+    assert not any("discovery failed" in str(w.message) for w in caught)
+
+
+def test_discover_legacy_broken_module_warns(tmp_path, monkeypatch):
+    """A legacy package that exists but fails to import must warn so the
+    user sees why their catalog is empty, rather than silently returning []."""
+    import sys
+    import warnings
+
+    pkg = tmp_path / "broken_legacy_pkg"
+    pkg.mkdir()
+    (pkg / "__init__.py").write_text("raise ImportError('simulated breakage')\n")
+    monkeypatch.syspath_prepend(str(tmp_path))
+    sys.modules.pop("broken_legacy_pkg", None)
+
+    with warnings.catch_warnings(record=True) as caught:
+        warnings.simplefilter("always")
+        SkillRegistry.discover_legacy("broken_legacy_pkg")
+    assert any("discovery failed" in str(w.message) for w in caught)

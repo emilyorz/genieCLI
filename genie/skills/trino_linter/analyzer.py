@@ -65,6 +65,18 @@ def analyze(sql: str) -> LintResult:
     try:
         import sqlglot
         import sqlglot.errors as sge
+    except ImportError:
+        return LintResult(
+            findings=[],
+            score="F",
+            summary="0 high, 0 medium, 0 low",
+            parse_error=(
+                "trino_linter dependency missing: sqlglot is not installed. "
+                "Install with: pip install 'sqlglot>=23.0'"
+            ),
+        )
+
+    try:
 
         # Try strict parse first — catches truly invalid SQL
         parse_exc = None
