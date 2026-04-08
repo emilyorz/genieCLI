@@ -244,7 +244,8 @@ def _cmd_config(cfg: dict, output: HumanSink | MachineSink) -> None:
         output.result(safe)
         return
     from rich.markup import escape
-    output.print("\n  [yellow]Current config:[/yellow]")
+    output.print("")
+    output.rule("config")
     safe_keys = ["interface", "endpoint", "frontendUrl", "defaultModel",
                  "openaiBaseUrl", "openaiContentArray", "systemPrompt"]
     secret_keys = ["authToken", "openaiApiKey", "customHeader"]
@@ -253,12 +254,13 @@ def _cmd_config(cfg: dict, output: HumanSink | MachineSink) -> None:
             val = str(cfg[k])
             if len(val) > 60:
                 val = val[:57] + "..."
-            output.print(f"  [cyan]{k:<28}[/cyan] {escape(val)}")
+            output.print(f"  [dim]{k:<20}[/dim]  {escape(val)}")
     for k in secret_keys:
         if k in cfg and cfg[k]:
             v = str(cfg[k])
             masked = v[:4] + "****" + v[-4:] if len(v) > 12 else "****"
-            output.print(f"  [cyan]{k:<28}[/cyan] {masked}")
+            output.print(f"  [dim]{k:<20}[/dim]  {masked}")
+    output.print("")
 
 
 def _cmd_tools(output: HumanSink | MachineSink, use_skills: bool = True) -> None:
@@ -272,15 +274,23 @@ def _cmd_tools(output: HumanSink | MachineSink, use_skills: bool = True) -> None
         output.print("  [dim]No skills registered.[/dim]")
         return
     from rich.markup import escape
-    output.print("\n  [yellow]Available skills:[/yellow]")
+    output.print("")
+    output.rule("skills")
+    # Group by skill.group for hierarchy — scan order preserved within group.
+    groups: dict[str, list] = {}
     for s in skills:
-        output.print(f"  [cyan]{s.name:<30}[/cyan] {escape(s.description)}")
-        if s.args:
-            for arg in s.args:
-                detail = arg.description
-                if not arg.required:
-                    detail += f" (default: {arg.default})"
-                output.print(f"  {'':30} [dim]{arg.name}[/dim]: {detail}")
+        groups.setdefault(s.group or "generic", []).append(s)
+    for group_name in sorted(groups):
+        output.print(f"\n  [bold cyan]{escape(group_name)}[/bold cyan]")
+        for s in groups[group_name]:
+            output.print(f"    [bold]{s.name:<28}[/bold] [dim]{escape(s.description)}[/dim]")
+            if s.args:
+                for arg in s.args:
+                    detail = arg.description
+                    if not arg.required:
+                        detail += f" (default: {arg.default})"
+                    output.print(f"    {'':28} [dim]· {arg.name}: {detail}[/dim]")
+    output.print("")
 
 
 # ── Entry point ───────────────────────────────────────────────────────────────

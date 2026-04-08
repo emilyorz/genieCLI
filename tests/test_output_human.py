@@ -188,3 +188,43 @@ def test_tool_result_truncates_at_100():
         sink.tool_result("x" * 200)
     printed = mock_console.print.call_args[0][0]
     assert "..." in printed
+
+
+# ── distilled visual language ────────────────────────────────────────────────
+
+def test_rule_with_label_includes_label():
+    sink = HumanSink()
+    with patch("genie.output.human._console") as mock_console:
+        sink.rule("config")
+    printed = mock_console.print.call_args[0][0]
+    assert "config" in printed
+    # No ASCII box characters — rule is a unicode horizontal line
+    assert "+==" not in printed
+    assert "|" not in printed
+
+
+def test_rule_without_label_is_plain():
+    sink = HumanSink()
+    with patch("genie.output.human._console") as mock_console:
+        sink.rule()
+    mock_console.print.assert_called_once()
+
+
+def test_kv_row_aligns_key_and_value():
+    sink = HumanSink()
+    with patch("genie.output.human._console") as mock_console:
+        sink.kv("model", "gpt-5")
+    printed = mock_console.print.call_args[0][0]
+    assert "model" in printed
+    assert "gpt-5" in printed
+
+
+def test_tool_call_uses_arrow_not_bracket_noise():
+    sink = HumanSink()
+    with patch("genie.output.human._console") as mock_console:
+        sink.tool_call("read_file", {"path": "/tmp/a"})
+    printed = mock_console.print.call_args[0][0]
+    assert "read_file" in printed
+    assert "→" in printed
+    # No more "[Tool]" prefix churn
+    assert "[Tool]" not in printed

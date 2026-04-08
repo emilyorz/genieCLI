@@ -217,17 +217,19 @@ def _chat_loop(
     current_reasoning = reasoning
     session = new_session(build_prompt(use_skills))
 
-    output.print("\n  [cyan]+======================================+[/cyan]")
-    output.print("  [cyan]|        GenieCLI  v4.0               |[/cyan]")
-    output.print("  [cyan]+======================================+[/cyan]\n")
-    output.print(f"  [dim]Model   : {model}[/dim]")
-    output.print(f"  [dim]Skills  : {'enabled' if use_skills else 'disabled'}[/dim]")
+    output.print("")
+    output.print("  [bold cyan]genie[/bold cyan] [dim]— plugin-based AI agent[/dim]")
+    output.print("")
+    output.kv("model", model)
+    output.kv("skills", "enabled" if use_skills else "disabled")
     try:
         from genie.skills.trino_query.connection import status_line
-        output.print(f"  [dim]{status_line()}[/dim]")
+        output.kv("trino", status_line())
     except Exception:
         pass
-    output.print("  [dim]Type /help for commands[/dim]\n")
+    output.print("")
+    output.print("  [dim]/help for commands · /exit to quit[/dim]")
+    output.print("")
 
     while True:
         user_input = _read_input()
