@@ -149,11 +149,29 @@ class SkillRegistry:
 
     @classmethod
     def discover_legacy(cls, module_name: str) -> None:
-        """Import a legacy module that registers skills via SkillRegistry.register()."""
+        """Import a legacy module that registers skills via SkillRegistry.register().
+
+        A missing top-level module is tolerated (the legacy package is
+        optional), but an ImportError *inside* the module — e.g. a broken
+        skill — is surfaced via warnings so callers can see why their
+        catalog is unexpectedly empty.
+        """
         try:
             importlib.import_module(module_name)
-        except ImportError:
-            pass
+        except ModuleNotFoundError as exc:
+            if exc.name == module_name:
+                return  # legacy package genuinely absent — fine
+            import warnings
+            warnings.warn(
+                f"Legacy skill discovery failed inside '{module_name}': {exc}",
+                stacklevel=2,
+            )
+        except ImportError as exc:
+            import warnings
+            warnings.warn(
+                f"Legacy skill discovery failed for '{module_name}': {exc}",
+                stacklevel=2,
+            )
 
 
 def _load_skill_package(skill_dir: Path) -> None:
