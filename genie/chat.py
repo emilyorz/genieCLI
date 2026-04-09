@@ -59,8 +59,8 @@ def _send_with_tools(
     recent_actions: list[str] = []
 
     for _loop in range(MAX_TOOL_LOOPS):
-        # Prune history if approaching context limit
-        if ctx_mgr.should_prune(session["history"]):
+        # Prune history if approaching context limit (skip if already at floor)
+        if ctx_mgr.should_prune(session["history"]) and len(session["history"]) > 6:
             session["history"] = ctx_mgr.prune_history(session["history"])
             if isinstance(output, HumanSink):
                 status = ctx_mgr.context_status(session["history"])
@@ -237,7 +237,7 @@ def _chat_loop(
         profile = get_profile(model)
         tier_skills = SkillRegistry.all(tier=profile.skill_tier)
         total_skills = SkillRegistry.all()
-        output.kv("skills", f"{len(tier_skills)} loaded (tier: {profile.skill_tier}, {len(total_skills)} total)")
+        output.kv("skills", f"{len(tier_skills)} active (tier: {profile.skill_tier}, {len(total_skills)} registered)")
         output.kv("context", f"{profile.context_window:,} tokens")
     else:
         output.kv("skills", "disabled")

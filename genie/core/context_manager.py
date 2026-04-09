@@ -85,10 +85,13 @@ class ContextManager:
         middle = history[len(system_msgs):-keep_recent]
         recent = history[-keep_recent:]
 
-        # Summarize middle section
-        summary = self._summarize_messages(middle)
+        # Summarize middle section, budget-aware
+        max_summary_chars = int(self.available_for_history * 0.1 * self.profile.chars_per_token)
+        summary = self._summarize_messages(middle, max_chars=max_summary_chars)
+
+        # Use "system" role to avoid back-to-back user messages
         summary_msg = {
-            "role": "user",
+            "role": "system",
             "content": [{"type": "text", "text": summary, "reasonText": None}],
         }
 
@@ -125,9 +128,11 @@ class ContextManager:
 
         return {**msg, "content": new_content}
 
-    def _summarize_messages(self, messages: list[dict]) -> str:
-        """Create a condensed summary of messages."""
+    def _summarize_messages(self, messages: list[dict], max_chars: int = 4000) -> str:
+        """Create a condensed summary of messages, capped at max_chars."""
         parts = ["[Context summary of previous conversation]:"]
+        total_chars = len(parts[0])
+
         for msg in messages:
             role = msg.get("role", "?")
             content = msg.get("content", [])
@@ -146,17 +151,23 @@ class ContextManager:
 
             # Compress tool results to just the tool name
             if "[Tool result:" in text:
-                # Extract tool name from "[Tool result: tool_name]"
                 import re
                 tool_match = re.search(r"\[Tool result: (\w+)\]", text)
                 tool_name = tool_match.group(1) if tool_match else "unknown"
-                parts.append(f"- [tool:{tool_name}] executed")
+                entry = f"- [tool:{tool_name}] executed"
             elif role == "user":
-                parts.append(f"- User: {text[:150]}")
+                entry = f"- User: {text[:150]}"
             elif role == "assistant":
-                parts.append(f"- AI: {text[:150]}")
+                entry = f"- AI: {text[:150]}"
+            else:
+                continue
 
-        return "\n".join(parts[:30])  # Cap at 30 entries
+            if total_chars + len(entry) + 1 > max_chars:
+                break
+            parts.append(entry)
+            total_chars += len(entry) + 1
+
+        return "\n".join(parts)
 
     def context_status(self, history: list[dict]) -> dict:
         """Return context usage stats for diagnostics."""

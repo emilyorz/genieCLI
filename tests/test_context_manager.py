@@ -43,6 +43,7 @@ def test_prune_keeps_system_and_recent():
     # Should have: system + summary + last 4
     assert pruned[0]["role"] == "system"
     assert len(pruned) <= 10  # system + summary + 4 recent
+    assert pruned[1]["role"] == "system"  # summary uses system role
     assert "[Context summary" in pruned[1]["content"][0]["text"]
 
 

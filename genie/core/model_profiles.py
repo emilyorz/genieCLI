@@ -68,9 +68,9 @@ def get_profile(model_name: str) -> ModelProfile:
     """Look up the capability profile for a model name."""
     name_lower = model_name.lower().strip()
 
-    # Exact match
+    # Exact match (case-insensitive)
     for p in _PROFILES:
-        if p.name == name_lower:
+        if p.name.lower() == name_lower:
             return p
 
     # Pattern match
