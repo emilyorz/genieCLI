@@ -51,12 +51,21 @@ def _send_with_tools(
     output: HumanSink | MachineSink,
     ctx,
 ) -> str | None:
+    from genie.core.context_manager import ContextManager
     from genie.core.provider import CompletionRequest
 
+    ctx_mgr = ContextManager(model_name=model)
     _last_memory = ""
     recent_actions: list[str] = []
 
     for _loop in range(MAX_TOOL_LOOPS):
+        # Prune history if approaching context limit
+        if ctx_mgr.should_prune(session["history"]):
+            session["history"] = ctx_mgr.prune_history(session["history"])
+            if isinstance(output, HumanSink):
+                status = ctx_mgr.context_status(session["history"])
+                output.progress(f"[Context] pruned to {status['usage_pct']}% ({status['message_count']} msgs)")
+
         req = CompletionRequest(messages=session["history"], model=model, reasoning=reasoning)
         reply = provider.complete_text(req)
         if not reply:
@@ -147,6 +156,8 @@ def _send_with_tools(
                 output.error("AI returned empty after screenshot (model may lack vision support)")
             continue
 
+        # Truncate oversized tool results
+        result = ctx_mgr.truncate_tool_result(result)
         if isinstance(output, HumanSink):
             output.tool_result(result)
         mem_prefix = f"[Previous step memory]: {_last_memory}\n\n" if _last_memory else ""
@@ -201,11 +212,11 @@ def _chat_loop(
     reasoning: str,
     use_skills: bool,
     output: HumanSink,
-    build_prompt: Callable[[bool], str],
+    build_prompt: Callable[..., str],
 ) -> None:
     """Interactive chat REPL.
 
-    build_prompt(use_skills) → system prompt string; passed in from cli.py
+    build_prompt(use_skills, model) → system prompt string; passed in from cli.py
     to keep this module free of cli imports.
     """
     from genie.core.context import SkillContext
@@ -215,13 +226,21 @@ def _chat_loop(
 
     ctx = SkillContext(provider=provider, output=output, config=cfg)
     current_reasoning = reasoning
-    session = new_session(build_prompt(use_skills))
+    session = new_session(build_prompt(use_skills, model))
 
     output.print("")
     output.print("  [bold cyan]genie[/bold cyan] [dim]— plugin-based AI agent[/dim]")
     output.print("")
     output.kv("model", model)
-    output.kv("skills", "enabled" if use_skills else "disabled")
+    if use_skills:
+        from genie.core.model_profiles import get_profile
+        profile = get_profile(model)
+        tier_skills = SkillRegistry.all(tier=profile.skill_tier)
+        total_skills = SkillRegistry.all()
+        output.kv("skills", f"{len(tier_skills)} loaded (tier: {profile.skill_tier}, {len(total_skills)} total)")
+        output.kv("context", f"{profile.context_window:,} tokens")
+    else:
+        output.kv("skills", "disabled")
     try:
         from genie.skills.trino_query.connection import status_line
         output.kv("trino", status_line())
@@ -269,7 +288,7 @@ def _chat_loop(
 
                 output.print(f"  [dim]Saved: {escape(session['title'])}[/dim]")
 
-            session = new_session(build_prompt(use_skills))
+            session = new_session(build_prompt(use_skills, model))
 
             output.print("  [green]New conversation started.[/green]")
 
@@ -367,7 +386,7 @@ def _chat_loop(
         elif cmd == "/clear":
             session["history"] = []
 
-            sys_p = build_prompt(use_skills)
+            sys_p = build_prompt(use_skills, model)
 
             if sys_p:
 
@@ -591,6 +610,30 @@ def _chat_loop(
                 _do_send(provider, session, model, current_reasoning, edited, output, ctx)
 
 
+        elif cmd == "/context":
+            from genie.core.context_manager import ContextManager
+            ctx_mgr = ContextManager(model_name=model)
+            status = ctx_mgr.context_status(session["history"])
+            output.print("")
+            output.print(f"  [bold cyan]Context Status[/bold cyan]")
+            output.print(f"  [dim]Model:[/dim]          {status['model']}")
+            output.print(f"  [dim]Context window:[/dim] {status['context_window']:,} tokens")
+            output.print(f"  [dim]Tokens used:[/dim]    {status['tokens_used']:,}")
+            output.print(f"  [dim]Available:[/dim]      {status['tokens_available']:,}")
+            pct = status['usage_pct']
+            color = "green" if pct < 50 else "yellow" if pct < 75 else "red"
+            output.print(f"  [dim]Usage:[/dim]          [{color}]{pct}%[/{color}]")
+            output.print(f"  [dim]Messages:[/dim]       {status['message_count']}")
+            output.print(f"  [dim]Should prune:[/dim]   {'yes' if status['should_prune'] else 'no'}")
+
+            from genie.core.model_profiles import get_profile
+            profile = get_profile(model)
+            skill_count = len(SkillRegistry.all(tier=profile.skill_tier))
+            total_count = len(SkillRegistry.all())
+            output.print(f"  [dim]Skill tier:[/dim]     {profile.skill_tier} ({skill_count}/{total_count} tools)")
+            output.print("")
+
+
         elif cmd == "/help":
             cmds = [
 
@@ -603,6 +646,8 @@ def _chat_loop(
                 ("/history",      "Show current conversation"),
 
                 ("/skills",       "List available skills/tools"),
+
+                ("/context",      "Show context window usage & skill tier"),
 
                 ("/clear",        "Clear current conversation"),
 

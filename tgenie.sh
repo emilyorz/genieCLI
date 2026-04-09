@@ -129,9 +129,9 @@ fi
 
 # ── 6. Launch CLI ─────────────────────────────────────────────────────────────
 echo
-# Default to chat subcommand with --skills if no subcommand given
+# Skills are always enabled by default (use --no-skills to disable)
 if [ ${#MAIN_ARGS[@]} -eq 0 ]; then
-    "$PYTHON" -m genie chat --skills
+    "$PYTHON" -m genie chat
 else
     "$PYTHON" -m genie "${MAIN_ARGS[@]}"
 fi

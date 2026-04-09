@@ -32,6 +32,7 @@ class BrowserListTabs(BaseSkill):
     name        = "browser_list_tabs"
     description = "List all open browser tabs with their index, title and URL"
     group       = "navigation"
+    tier        = "core"
     args: list  = []
 
     def run(self):
@@ -47,6 +48,7 @@ class BrowserSwitchTab(BaseSkill):
     name        = "browser_switch_tab"
     description = "Switch to a tab by index (from browser_list_tabs) or by URL keyword"
     group       = "navigation"
+    tier        = "core"
     args        = [
         Arg(name="index", type="int",
             description="Tab index number (from browser_list_tabs)",
@@ -80,6 +82,7 @@ class BrowserNavigate(BaseSkill):
     name        = "browser_navigate"
     description = "Open a URL in a new browser tab"
     group       = "navigation"
+    tier        = "core"
     args        = [
         Arg(name="url", type="str",
             description="The URL to open",
@@ -101,6 +104,7 @@ class BrowserGetURL(BaseSkill):
     name        = "browser_get_url"
     description = "Get the current page URL and title"
     group       = "navigation"
+    tier        = "core"
     args: list  = []
 
     def run(self):
@@ -114,6 +118,7 @@ class BrowserGetText(BaseSkill):
     name        = "browser_get_text"
     description = "Get all visible text content of the current page"
     group       = "reading"
+    tier        = "core"
     args: list  = []
 
     def run(self):
@@ -128,6 +133,7 @@ class BrowserGetElement(BaseSkill):
     name        = "browser_get_element"
     description = "Get text, value, or any attribute from elements matching a CSS selector"
     group       = "reading"
+    tier        = "extended"
     args        = [
         Arg(name="selector", type="str",
             description="CSS selector (returns ALL matching elements)",
@@ -167,6 +173,7 @@ class BrowserGetBoundingBox(BaseSkill):
     name        = "browser_get_bounding_box"
     description = "Get position and size of an element — useful before clicking or screenshotting a region"
     group       = "reading"
+    tier        = "extended"
     args        = [
         Arg(name="selector", type="str",
             description="CSS selector",
@@ -187,6 +194,7 @@ class BrowserGetLocalStorage(BaseSkill):
     name        = "browser_get_local_storage"
     description = "Read localStorage or sessionStorage values (tokens, state, cached data)"
     group       = "reading"
+    tier        = "full"
     args        = [
         Arg(name="key", type="str",
             description="Specific key to get (omit to list all keys)",
@@ -223,6 +231,7 @@ class BrowserGetDOM(BaseSkill):
     name        = "browser_get_dom"
     description = "Inspect page DOM — find elements by selector, keyword in class/text, or list interactive elements"
     group       = "reading"
+    tier        = "extended"
     args        = [
         Arg(name="query", type="str",
             description="CSS selector, keyword, or special: 'buttons', 'inputs', 'links', 'canvas', 'class:xxx'",
@@ -303,6 +312,7 @@ class BrowserInterceptXHR(BaseSkill):
     name        = "browser_intercept_xhr"
     description = "Capture XHR/fetch API responses by temporarily hooking the page network calls. Useful for reading chart data, API responses that aren't visible in DOM."
     group       = "reading"
+    tier        = "full"
     args        = [
         Arg(name="url_keyword", type="str",
             description="Keyword to match in request URL (e.g. 'query', 'api', 'data')",
@@ -412,6 +422,7 @@ class BrowserClick(BaseSkill):
     name        = "browser_click"
     description = "Single click on an element (CSS selector) or at x,y coordinates"
     group       = "interaction"
+    tier        = "core"
     args        = list(_CLICK_ARGS)
 
     def run(self, selector="", x=None, y=None):
@@ -432,6 +443,7 @@ class BrowserDoubleClick(BaseSkill):
     name        = "browser_double_click"
     description = "Double-click on an element or coordinates"
     group       = "interaction"
+    tier        = "extended"
     args        = list(_CLICK_ARGS)
 
     def run(self, selector="", x=None, y=None):
@@ -448,6 +460,7 @@ class BrowserRightClick(BaseSkill):
     name        = "browser_right_click"
     description = "Right-click to open context menu on an element or coordinates"
     group       = "interaction"
+    tier        = "full"
     args        = list(_CLICK_ARGS)
 
     def run(self, selector="", x=None, y=None):
@@ -465,6 +478,7 @@ class BrowserDrag(BaseSkill):
     name        = "browser_drag"
     description = "Drag from one point to another — for sliders, drag-and-drop, resizing"
     group       = "interaction"
+    tier        = "full"
     args        = [
         Arg(name="from_selector", type="str",
             description="CSS selector of element to drag from (optional)",
@@ -527,6 +541,7 @@ class BrowserType(BaseSkill):
     name        = "browser_type"
     description = "Type text into an input, textarea, or contenteditable element"
     group       = "interaction"
+    tier        = "core"
     args        = [
         Arg(name="selector", type="str",
             description="CSS selector of the field",
@@ -584,6 +599,7 @@ class BrowserKeyboard(BaseSkill):
     name        = "browser_keyboard"
     description = "Press keyboard keys: Enter, Tab, Escape, ArrowUp, ArrowDown, ArrowLeft, ArrowRight, Backspace, Space, F5, or ctrl+a, ctrl+c, ctrl+v etc."
     group       = "interaction"
+    tier        = "extended"
     args        = [
         Arg(name="key", type="str",
             description="Key or combo e.g. 'Enter', 'Tab', 'ctrl+a', 'ctrl+v'",
@@ -611,6 +627,7 @@ class BrowserHover(BaseSkill):
     name        = "browser_hover"
     description = "Hover mouse over an element or coordinates to trigger tooltips, dropdowns, or hover effects"
     group       = "interaction"
+    tier        = "extended"
     args        = [
         Arg(name="selector", type="str",
             description="CSS selector (optional if using x,y)",
@@ -663,6 +680,7 @@ class BrowserMouseSweep(BaseSkill):
     name        = "browser_mouse_sweep"
     description = "Sweep mouse across an element to collect tooltip values at each step — ideal for charts and graphs"
     group       = "interaction"
+    tier        = "full"
     args        = [
         Arg(name="selector", type="str",
             description="CSS selector of the chart element to sweep",
@@ -728,6 +746,7 @@ class BrowserScroll(BaseSkill):
     name        = "browser_scroll"
     description = "Scroll the page or a specific element"
     group       = "interaction"
+    tier        = "core"
     args        = [
         Arg(name="direction", type="str",
             description="Scroll direction",
@@ -763,6 +782,7 @@ class BrowserSelect(BaseSkill):
     name        = "browser_select"
     description = "Select an option from a <select> dropdown"
     group       = "interaction"
+    tier        = "extended"
     args        = [
         Arg(name="selector", type="str",
             description="CSS selector of the <select> element",
@@ -797,6 +817,7 @@ class BrowserCheckbox(BaseSkill):
     name        = "browser_checkbox"
     description = "Check, uncheck, or toggle a checkbox or radio button"
     group       = "interaction"
+    tier        = "extended"
     args        = [
         Arg(name="selector", type="str",
             description="CSS selector of the checkbox/radio",
@@ -830,6 +851,7 @@ class BrowserHandleDialog(BaseSkill):
     name        = "browser_handle_dialog"
     description = "Accept or dismiss browser alert/confirm/prompt dialogs"
     group       = "interaction"
+    tier        = "extended"
     args        = [
         Arg(name="action", type="str",
             description="accept or dismiss",
@@ -853,6 +875,7 @@ class BrowserWait(BaseSkill):
     name        = "browser_wait"
     description = "Wait for an element to appear, disappear, or for page to finish loading"
     group       = "interaction"
+    tier        = "extended"
     args        = [
         Arg(name="selector", type="str",
             description="CSS selector to wait for",
@@ -884,6 +907,7 @@ class BrowserExecuteJS(BaseSkill):
     name        = "browser_execute_js"
     description = "Execute arbitrary JavaScript on the page and return the result. Most powerful skill — use when nothing else works."
     group       = "power"
+    tier        = "full"
     args        = [
         Arg(name="code", type="str",
             description="JavaScript code to execute. Use return to get a value.",
@@ -906,6 +930,7 @@ class BrowserScreenshot(BaseSkill):
     name        = "browser_screenshot"
     description = "Take a full-page screenshot and send to AI for visual analysis"
     group       = "visual"
+    tier        = "core"
     args        = [
         Arg(name="filename", type="str",
             description="Output filename",
@@ -928,6 +953,7 @@ class BrowserScreenshotElement(BaseSkill):
     name        = "browser_screenshot_element"
     description = "Screenshot only a specific element — better for AI analysis of charts, panels, or small regions"
     group       = "visual"
+    tier        = "extended"
     args        = [
         Arg(name="selector", type="str",
             description="CSS selector of the element to capture",
@@ -978,6 +1004,7 @@ class BrowserSnapshot(BaseSkill):
         "USE THIS FIRST before any interaction — it gives you element IDs to click/type into."
     )
     group = "context"
+    tier  = "core"
     args  = [
         Arg(name="include_text", type="bool",
             description="Include visible text summary: true or false",
@@ -996,6 +1023,7 @@ class BrowserClickElement(BaseSkill):
         "More reliable than CSS selectors — use after browser_snapshot."
     )
     group = "context"
+    tier  = "extended"
     args  = [
         Arg(name="element_id", type="int",
             description="The number shown in brackets from browser_snapshot e.g. 3",
@@ -1013,6 +1041,7 @@ class BrowserTypeElement(BaseSkill):
         "Use after browser_snapshot to find the input ID."
     )
     group = "context"
+    tier  = "extended"
     args  = [
         Arg(name="element_id", type="int",
             description="The number shown in brackets from browser_snapshot",
@@ -1034,6 +1063,7 @@ class BrowserGetNumbers(BaseSkill):
         "Useful for dashboards, Grafana, monitoring pages."
     )
     group = "context"
+    tier  = "extended"
     args: list = []
 
     def run(self):
