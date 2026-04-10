@@ -14,13 +14,73 @@ from pathlib import Path
 
 _ps = None
 
+# ── Slash commands known to the chat loop ────────────────────────────────────
+
+SLASH_COMMANDS: list[str] = [
+    "/new",
+    "/sessions",
+    "/load",
+    "/history",
+    "/skills",
+    "/tools",
+    "/clear",
+    "/paste",
+    "/editor",
+    "/autoresearch",
+    "/trino",
+    "/trino-research",
+    "/model",
+    "/reasoning",
+    "/renew",
+    "/help",
+    "/exit",
+]
+
+
+def _build_completer():
+    """Build a completer for slash commands + registered skill names."""
+    from prompt_toolkit.completion import Completer, Completion
+
+    class GenieCompleter(Completer):
+        def get_completions(self, document, complete_event):
+            text = document.text_before_cursor
+            word = document.get_word_before_cursor(WORD=True)
+
+            # Slash command completion: triggered when line starts with /
+            if text.lstrip().startswith("/"):
+                for cmd in SLASH_COMMANDS:
+                    if cmd.startswith(word):
+                        yield Completion(cmd, start_position=-len(word))
+                # Also offer tool names after a slash command
+                return
+
+            # Tool name completion: offer registered skill names
+            if word:
+                try:
+                    from genie.core.registry import SkillRegistry
+                    for skill in SkillRegistry.all():
+                        if skill.name.startswith(word):
+                            yield Completion(
+                                skill.name,
+                                start_position=-len(word),
+                                display_meta=skill.description[:40],
+                            )
+                except Exception:
+                    pass
+
+    return GenieCompleter()
+
 
 def _get_prompt_session():
     from prompt_toolkit import PromptSession
     from prompt_toolkit.history import FileHistory
 
     hist = Path.home() / ".tgenie_history"
-    return PromptSession(history=FileHistory(str(hist)))
+    return PromptSession(
+        history=FileHistory(str(hist)),
+        completer=_build_completer(),
+        complete_while_typing=False,  # only complete on Tab
+    )
 
 
 def _read_input(prompt_str: str = "  You > ") -> str:
