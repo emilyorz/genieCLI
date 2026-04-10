@@ -349,6 +349,27 @@ def _chat_loop(
 
                 output.print("  [dim]No sessions.[/dim]")
 
+            elif args:
+
+                # Direct: /load <number> — no interactive prompt needed.
+                try:
+
+                    n = int(args[0])
+
+                    if 1 <= n <= len(sessions):
+
+                        session = load_session(sessions[n - 1]["filename"])
+
+                        output.print(f"  [green]Loaded: {escape(session['title'])}[/green]")
+
+                    else:
+
+                        output.print(f"  [red]Session {n} not found (1–{len(sessions)} available).[/red]")
+
+                except ValueError:
+
+                    output.print("  [dim]Usage: /load <number>  (use /sessions to list)[/dim]")
+
             else:
 
                 for i, s in enumerate(sessions, 1):
@@ -667,6 +688,52 @@ def _chat_loop(
                     output.print(f"  [green]Switched model →[/green] {model}")
 
 
+        elif cmd == "/stats":
+            visible = [m for m in session["history"] if m["role"] != "system"]
+            user_count = sum(1 for m in visible if m["role"] == "user")
+            ai_count = sum(1 for m in visible if m["role"] == "assistant")
+            total_chars = sum(
+                len(m["content"][0]["text"])
+                for m in session["history"]
+                if m.get("content") and m["content"]
+            )
+            approx_tokens = total_chars // 4
+            output.print("")
+            output.rule("session stats")
+            output.kv("title",   session["title"])
+            output.kv("turns",   str(user_count))
+            output.kv("ai msgs", str(ai_count))
+            output.kv("~tokens", f"{approx_tokens:,}")
+            output.kv("model",   model)
+            output.kv("reason",  current_reasoning)
+            output.print("")
+
+
+        elif cmd == "/export":
+            visible = [m for m in session["history"] if m["role"] != "system"]
+            if not visible:
+                output.print("  [dim]Nothing to export.[/dim]")
+            else:
+                import time as _time
+                from genie.session.manager import SESSIONS_DIR
+                export_dir = SESSIONS_DIR.parent / "exports"
+                export_dir.mkdir(exist_ok=True)
+                ts = _time.strftime("%Y%m%d_%H%M%S")
+                from genie.session.manager import slug as _slug
+                fname = f"{ts}_{_slug(session['title'])}.md"
+                out_path = export_dir / fname
+                lines: list[str] = [f"# {session['title']}\n"]
+                for m in visible:
+                    role_label = "**You**" if m["role"] == "user" else "**Genie**"
+                    text = m["content"][0]["text"] if m.get("content") else ""
+                    # Skip internal tool-result messages from export
+                    if m["role"] == "user" and text.startswith("[Tool result:"):
+                        continue
+                    lines.append(f"\n---\n\n{role_label}\n\n{text}\n")
+                out_path.write_text("\n".join(lines), encoding="utf-8")
+                output.print(f"  [green]Exported:[/green] {out_path}")
+
+
         elif cmd == "/help":
             cmds = [
 
@@ -674,7 +741,7 @@ def _chat_loop(
 
                 ("/sessions",     "List saved conversations"),
 
-                ("/load <n>",     "Load conversation by number"),
+                ("/load [n]",     "Load conversation (direct: /load 2)"),
 
                 ("/history",      "Show current conversation"),
 
@@ -683,6 +750,10 @@ def _chat_loop(
                 ("/clear",        "Clear current conversation"),
 
                 ("/undo",         "Remove last exchange from history"),
+
+                ("/stats",        "Show session stats (turns, ~tokens, model)"),
+
+                ("/export",       "Export conversation to markdown file"),
 
                 ("/paste",        "Multiline paste mode (Ctrl-D to send)"),
 

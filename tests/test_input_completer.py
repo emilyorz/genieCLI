@@ -8,7 +8,10 @@ import pytest
 from prompt_toolkit.document import Document
 
 from genie.core.registry import BaseSkill, SkillRegistry
-from genie.input import SLASH_COMMANDS, SLASH_COMMAND_HINTS, _build_completer
+from genie.input import (
+    SLASH_COMMANDS, SLASH_COMMAND_HINTS, _build_completer,
+    _TRINO_SUBCOMMANDS, _REASONING_SUBCOMMANDS,
+)
 
 
 # ── Fixtures ────────────────────────────────────────────────────────────────
@@ -83,6 +86,43 @@ class TestSlashCommandCompletion:
         """'/model list' subcommand should complete with a non-empty hint."""
         pairs = _completions_with_meta("/model ")
         assert any(cmd == "list" and meta for cmd, meta in pairs)
+
+    def test_trino_subcommands_complete(self) -> None:
+        """'/trino ' should offer use/add/remove/test completions."""
+        completions = _completions_for("/trino ")
+        for sub in _TRINO_SUBCOMMANDS:
+            assert sub in completions, f"Expected /trino subcommand '{sub}' in completions"
+
+    def test_trino_subcommand_prefix_filters(self) -> None:
+        """'/trino u' should only yield 'use'."""
+        completions = _completions_for("/trino u")
+        assert completions == ["use"]
+
+    def test_trino_subcommand_hints_nonempty(self) -> None:
+        """Every /trino subcommand should carry a non-empty hint."""
+        pairs = _completions_with_meta("/trino ")
+        assert pairs
+        for cmd, meta in pairs:
+            assert meta, f"/trino {cmd} has no hint"
+
+    def test_reasoning_subcommands_complete(self) -> None:
+        """'/reasoning ' should offer disable/low/medium/high completions."""
+        completions = _completions_for("/reasoning ")
+        for level in _REASONING_SUBCOMMANDS:
+            assert level in completions, f"Expected reasoning level '{level}' in completions"
+
+    def test_reasoning_subcommand_prefix_filters(self) -> None:
+        """'/reasoning h' should only yield 'high'."""
+        completions = _completions_for("/reasoning h")
+        assert completions == ["high"]
+
+    def test_stats_in_slash_commands(self) -> None:
+        assert "/stats" in SLASH_COMMANDS
+        assert "/stats" in SLASH_COMMAND_HINTS
+
+    def test_export_in_slash_commands(self) -> None:
+        assert "/export" in SLASH_COMMANDS
+        assert "/export" in SLASH_COMMAND_HINTS
 
     def test_undo_in_slash_commands(self) -> None:
         """/undo must be listed in SLASH_COMMANDS."""

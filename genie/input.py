@@ -33,6 +33,8 @@ SLASH_COMMANDS: list[str] = [
     "/model",
     "/reasoning",
     "/renew",
+    "/stats",
+    "/export",
     "/help",
     "/exit",
 ]
@@ -55,6 +57,8 @@ SLASH_COMMAND_HINTS: dict[str, str] = {
     "/model":          "Show / switch model",
     "/reasoning":      "Toggle reasoning: disable/low/medium/high",
     "/renew":          "Refresh auth token",
+    "/stats":          "Show session stats (turns, ~tokens, model)",
+    "/export":         "Export conversation to markdown file",
     "/help":           "Show all commands",
     "/exit":           "Quit",
 }
@@ -62,6 +66,20 @@ SLASH_COMMAND_HINTS: dict[str, str] = {
 # Subcommand hints for commands that accept a subcommand argument.
 _MODEL_SUBCOMMANDS: dict[str, str] = {
     "list": "List available models",
+}
+
+_TRINO_SUBCOMMANDS: dict[str, str] = {
+    "use":    "Switch to a named profile",
+    "add":    "Add a new profile (interactive)",
+    "remove": "Remove a profile",
+    "test":   "Test current connection",
+}
+
+_REASONING_SUBCOMMANDS: dict[str, str] = {
+    "disable": "No reasoning (fastest)",
+    "low":     "Low reasoning",
+    "medium":  "Medium reasoning",
+    "high":    "Full reasoning (slowest)",
 }
 
 
@@ -76,11 +94,36 @@ def _build_completer():
 
             # Slash command completion: triggered when line starts with /
             if text.lstrip().startswith("/"):
-                # Subcommand completion for /model
                 stripped = text.lstrip()
+
+                # Subcommand completion for /model
                 if stripped.startswith("/model "):
                     sub = stripped[len("/model "):].strip()
                     for sc, hint in _MODEL_SUBCOMMANDS.items():
+                        if sc.startswith(sub):
+                            yield Completion(
+                                sc,
+                                start_position=-len(sub) if sub else 0,
+                                display_meta=hint,
+                            )
+                    return
+
+                # Subcommand completion for /trino
+                if stripped.startswith("/trino "):
+                    sub = stripped[len("/trino "):].strip()
+                    for sc, hint in _TRINO_SUBCOMMANDS.items():
+                        if sc.startswith(sub):
+                            yield Completion(
+                                sc,
+                                start_position=-len(sub) if sub else 0,
+                                display_meta=hint,
+                            )
+                    return
+
+                # Subcommand completion for /reasoning
+                if stripped.startswith("/reasoning "):
+                    sub = stripped[len("/reasoning "):].strip()
+                    for sc, hint in _REASONING_SUBCOMMANDS.items():
                         if sc.startswith(sub):
                             yield Completion(
                                 sc,
