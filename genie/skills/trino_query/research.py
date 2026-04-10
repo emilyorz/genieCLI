@@ -175,7 +175,7 @@ def _run_optimization_loop(
     max_iterations: int,
     verify_runs: int,
     output,
-    build_prompt: Callable[[bool], str],
+    build_prompt: Callable[..., str],
 ) -> dict:
     """Run the optimization loop. Returns summary dict."""
     from genie.core.provider import CompletionRequest
@@ -198,7 +198,7 @@ def _run_optimization_loop(
     _print_metrics(output, baseline["metrics"])
 
     # ── Session setup ──
-    skill_prompt = build_prompt(True)
+    skill_prompt = build_prompt(True, model)
     sys_prompt = (
         f"You are optimizing a Trino SQL query for performance.\n"
         f"Target metric: {metric_key} (lower is better).\n\n"
@@ -465,7 +465,7 @@ def run_trino_research(
     model: str,
     reasoning: str,
     output,
-    build_prompt: Callable[[bool], str],
+    build_prompt: Callable[..., str],
     *,
     # Non-interactive params (used when called with --flags from chat.py)
     sql_file: Optional[str] = None,

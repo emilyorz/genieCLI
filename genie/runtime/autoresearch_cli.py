@@ -36,7 +36,7 @@ def _run_autoresearch(
     model: str,
     reasoning: str,
     output,
-    build_prompt: Callable[[bool], str],
+    build_prompt: Callable[..., str],
 ) -> None:
     from genie.core.provider import CompletionRequest
     from genie.input import _read_input
@@ -92,7 +92,7 @@ def _run_autoresearch(
     except Exception:
         workflow_body = ""
 
-    skill_prompt = build_prompt(True)
+    skill_prompt = build_prompt(True, model)
     sys_prompt = f"{workflow_body}\n\n{skill_prompt}".strip()
     ar_session = new_session(sys_prompt)
     cwd = str(Path.cwd())

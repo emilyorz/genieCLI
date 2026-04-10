@@ -12,11 +12,18 @@ if TYPE_CHECKING:
 
 
 class BaseSkill:
-    """Base class for all skills (bundled and external)."""
+    """Base class for all skills (bundled and external).
+
+    tier controls when this skill is loaded based on model capability:
+      - "core":     always loaded — essential tools for any model
+      - "extended": loaded for mid-tier+ models (e.g. GPT-4o-mini, Gemini Pro)
+      - "full":     loaded only for top-tier models (e.g. GPT-4o, Claude)
+    """
 
     name: str = ""
     description: str = ""
     group: str = "generic"
+    tier: str = "core"  # "core" | "extended" | "full"
     args: list = []
 
     def run(self, **kwargs) -> str:
@@ -113,8 +120,23 @@ class SkillRegistry:
         return cls._skills.get(name)
 
     @classmethod
-    def all(cls) -> list[BaseSkill]:
-        return list(cls._skills.values())
+    def all(cls, tier: str | None = None) -> list[BaseSkill]:
+        """Return all skills, optionally filtered by tier ceiling.
+
+        tier="core"     → only core skills
+        tier="extended" → core + extended
+        tier="full"     → everything (default)
+        tier=None       → everything
+        """
+        if tier is None or tier == "full":
+            return list(cls._skills.values())
+
+        tier_order = {"core": 0, "extended": 1, "full": 2}
+        max_tier = tier_order.get(tier, 2)
+        return [
+            s for s in cls._skills.values()
+            if tier_order.get(getattr(s, "tier", "core"), 0) <= max_tier
+        ]
 
     @classmethod
     def all_tools(cls) -> list[dict]:

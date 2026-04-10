@@ -101,12 +101,16 @@ def _discover_skills(skill_dirs: list[Path] | None = None, legacy: bool = False)
 
 # ── System prompt builder ─────────────────────────────────────────────────────
 
-def _build_system_prompt(cfg: dict, use_skills: bool) -> str:
+def _build_system_prompt(cfg: dict, use_skills: bool, model: str = "") -> str:
     base = cfg.get("systemPrompt", "")
     if not use_skills:
         return base
 
-    skills = SkillRegistry.all()
+    # Filter skills by model capability tier
+    from genie.core.model_profiles import get_profile
+    profile = get_profile(model) if model else None
+    tier = profile.skill_tier if profile else None
+    skills = SkillRegistry.all(tier=tier)
     tool_lines = []
     for skill in skills:
         if skill.args:
@@ -152,7 +156,7 @@ def callback(
     provider_name: Optional[str] = typer.Option(None, "--provider", help="Provider: tgenie/openai/anthropic"),
     skill_dir: Optional[str] = typer.Option(None, "--skill-dir", help="Additional skill directory"),
     debug: bool = typer.Option(False, "-d", "--debug", help="Debug HTTP output"),
-    skills: bool = typer.Option(False, "-s", "--skills", help="Enable skill tools"),
+    skills: bool = typer.Option(True, "-s", "--skills/--no-skills", help="Enable skill tools (default: on)"),
     reasoning: str = typer.Option("disable", "-r", "--reasoning", help="Reasoning level"),
     target: Optional[str] = typer.Argument(None),
 ) -> None:
@@ -195,7 +199,7 @@ def callback(
             output.error(f"File not found: {target}")
             raise typer.Exit(1)
         query = path.read_text(encoding="utf-8", errors="replace")
-        session = new_session(_build_system_prompt(cfg, skills))
+        session = new_session(_build_system_prompt(cfg, skills, resolved_model))
         from genie.chat import _do_send
         from genie.core.context import SkillContext
         ctx_obj = SkillContext(provider=provider, output=output, config=cfg)
@@ -207,7 +211,7 @@ def callback(
         if not query.strip():
             output.error("Empty stdin")
             raise typer.Exit(1)
-        session = new_session(_build_system_prompt(cfg, skills))
+        session = new_session(_build_system_prompt(cfg, skills, resolved_model))
         from genie.chat import _do_send
         from genie.core.context import SkillContext
         ctx_obj = SkillContext(provider=provider, output=output, config=cfg)
