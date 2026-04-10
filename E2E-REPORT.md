@@ -9,12 +9,12 @@
 
 ## Test Results
 
-| Suite | Result | Details |
-|-------|--------|---------|
-| `tests/test_trino_integration.py` | ✅ 10 passed (0.64s) | Live Trino connectivity, catalogs/schemas/tables/queries |
-| `tests/test_trino_query_skill.py` | ✅ 25 passed (0.08s) | Skill-level unit tests |
-| `pytest -q` (full) | ✅ 462 passed (1.16s) | Full regression suite |
-| Autoresearch E2E (PBB query, 3 iter) | ✅ PASS | `cpu=43ms, wall=102ms, splits=236, rows=18594` |
+| Suite                                | Result                | Details                                                  |
+| ------------------------------------ | --------------------- | -------------------------------------------------------- |
+| `tests/test_trino_integration.py`    | ✅ 10 passed (0.64s)  | Live Trino connectivity, catalogs/schemas/tables/queries |
+| `tests/test_trino_query_skill.py`    | ✅ 25 passed (0.08s)  | Skill-level unit tests                                   |
+| `pytest -q` (full)                   | ✅ 462 passed (1.16s) | Full regression suite                                    |
+| Autoresearch E2E (PBB query, 3 iter) | ✅ PASS               | `cpu=43ms, wall=102ms, splits=236, rows=18594`           |
 
 ---
 

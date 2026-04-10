@@ -70,11 +70,11 @@ GenieCLI is a plugin-based AI agent CLI that supports multiple LLM backends (TGe
 
 Protocol-based abstraction with three implementations:
 
-| Provider | File | Features |
-|----------|------|----------|
-| TGenie | `tgenie.py` | Internal gateway, multipart/form-data, SSE streaming, auto token refresh |
-| OpenAI | `openai.py` | OpenAI/Groq/Ollama/LM Studio, SSE streaming, Ollama native mode detection |
-| Anthropic | `anthropic.py` | Anthropic wire format, system prompt extraction, vision support |
+| Provider  | File           | Features                                                                  |
+| --------- | -------------- | ------------------------------------------------------------------------- |
+| TGenie    | `tgenie.py`    | Internal gateway, multipart/form-data, SSE streaming, auto token refresh  |
+| OpenAI    | `openai.py`    | OpenAI/Groq/Ollama/LM Studio, SSE streaming, Ollama native mode detection |
+| Anthropic | `anthropic.py` | Anthropic wire format, system prompt extraction, vision support           |
 
 ### 4. Skill Registry (`core/registry.py`)
 
@@ -86,20 +86,21 @@ Protocol-based abstraction with three implementations:
 
 ### 5. Skills (46 tools across 8 packages)
 
-| Package | Tools | Tier Mix | Description |
-|---------|-------|----------|-------------|
-| **browser** | 30 | 10 core, 14 extended, 6 full | Chrome CDP automation |
-| **file_ops** | 4 | core | File read/write/patch/list |
-| **git_ops** | 5 | core | Git status/diff/commit/log/branch |
-| **shell_ops** | 1 | core | Whitelisted shell commands |
-| **oracle2trino** | 5 | extended | SQL transpilation tools |
-| **trino_linter** | 1 | extended | SQL analysis |
-| **trino_query** | 2 | extended | Query execution + optimization |
-| **deepwiki** | 3 | extended | Wiki documentation generation |
+| Package          | Tools | Tier Mix                     | Description                       |
+| ---------------- | ----- | ---------------------------- | --------------------------------- |
+| **browser**      | 30    | 10 core, 14 extended, 6 full | Chrome CDP automation             |
+| **file_ops**     | 4     | core                         | File read/write/patch/list        |
+| **git_ops**      | 5     | core                         | Git status/diff/commit/log/branch |
+| **shell_ops**    | 1     | core                         | Whitelisted shell commands        |
+| **oracle2trino** | 5     | extended                     | SQL transpilation tools           |
+| **trino_linter** | 1     | extended                     | SQL analysis                      |
+| **trino_query**  | 2     | extended                     | Query execution + optimization    |
+| **deepwiki**     | 3     | extended                     | Wiki documentation generation     |
 
 ### 6. Model Profiles (`core/model_profiles.py`)
 
 Maps model names to capability profiles:
+
 - **Context window size** — determines when to prune
 - **Skill tier** — controls which tools are loaded
 - **Vision/tool call support** — capability flags
@@ -108,6 +109,7 @@ Maps model names to capability profiles:
 ### 7. Context Manager (`core/context_manager.py`)
 
 Prevents context overflow on resource-constrained models:
+
 - **Token estimation** from character count (model-specific ratio)
 - **Pruning trigger** at 70% of available context
 - **Pruning strategy**: Keep system prompt + last 4 messages, summarize middle
@@ -117,6 +119,7 @@ Prevents context overflow on resource-constrained models:
 ### 8. Config System (`core/config.py`)
 
 Merge chain (highest → lowest priority):
+
 1. CLI flags
 2. Environment variables (`GENIE_*`)
 3. TOML (`~/.genie/config.toml`)
@@ -126,6 +129,7 @@ Merge chain (highest → lowest priority):
 ### 9. Autoresearch Runtime (`runtime/`)
 
 Autonomous iteration engine:
+
 - `autoresearch_cli.py` — CLI interface for `/autoresearch` command
 - `run_manager.py` — Run lifecycle management
 - `eval_loop.py` — Evaluation loop with metric tracking
@@ -183,37 +187,37 @@ _chat_loop (REPL)
 
 ## File Map
 
-| Path | Purpose | Lines |
-|------|---------|-------|
-| `genie/__main__.py` | Entry point | 4 |
-| `genie/cli.py` | CLI routing + config | ~300 |
-| `genie/chat.py` | Chat REPL + tool loop | ~650 |
-| `genie/core/registry.py` | Skill registry | ~195 |
-| `genie/core/provider.py` | Provider protocol | ~42 |
-| `genie/core/context.py` | SkillContext DI | ~30 |
-| `genie/core/config.py` | Config loading | ~125 |
-| `genie/core/model_profiles.py` | Model capabilities | ~90 |
-| `genie/core/context_manager.py` | Context management | ~150 |
-| `genie/core/arg.py` | Arg descriptor | ~16 |
-| `genie/core/tool_call.py` | Tool call parsing | ~30 |
-| `genie/skills/browser/` | Browser automation | ~1100 |
-| `genie/skills/file_ops/` | File operations | ~200 |
-| `genie/skills/git_ops/` | Git operations | ~250 |
-| `genie/skills/shell_ops/` | Shell commands | ~105 |
-| `genie/skills/deepwiki/` | Wiki generation | ~200 |
-| `genie/output/human.py` | Rich terminal output | ~100 |
-| `genie/output/machine.py` | JSON output | ~50 |
-| `genie/session/manager.py` | Session persistence | ~50 |
+| Path                            | Purpose               | Lines |
+| ------------------------------- | --------------------- | ----- |
+| `genie/__main__.py`             | Entry point           | 4     |
+| `genie/cli.py`                  | CLI routing + config  | ~300  |
+| `genie/chat.py`                 | Chat REPL + tool loop | ~650  |
+| `genie/core/registry.py`        | Skill registry        | ~195  |
+| `genie/core/provider.py`        | Provider protocol     | ~42   |
+| `genie/core/context.py`         | SkillContext DI       | ~30   |
+| `genie/core/config.py`          | Config loading        | ~125  |
+| `genie/core/model_profiles.py`  | Model capabilities    | ~90   |
+| `genie/core/context_manager.py` | Context management    | ~150  |
+| `genie/core/arg.py`             | Arg descriptor        | ~16   |
+| `genie/core/tool_call.py`       | Tool call parsing     | ~30   |
+| `genie/skills/browser/`         | Browser automation    | ~1100 |
+| `genie/skills/file_ops/`        | File operations       | ~200  |
+| `genie/skills/git_ops/`         | Git operations        | ~250  |
+| `genie/skills/shell_ops/`       | Shell commands        | ~105  |
+| `genie/skills/deepwiki/`        | Wiki generation       | ~200  |
+| `genie/output/human.py`         | Rich terminal output  | ~100  |
+| `genie/output/machine.py`       | JSON output           | ~50   |
+| `genie/session/manager.py`      | Session persistence   | ~50   |
 
 ## Configuration Reference
 
-| Key | Default | Description |
-|-----|---------|-------------|
-| `interface` | `tgenie` | Provider: tgenie/openai/anthropic |
-| `defaultModel` | `gemini-2.5-flash` | Default model name |
-| `systemPrompt` | "You are a helpful AI assistant." | Base system prompt |
-| `openaiApiKey` | "" | API key for OpenAI-compatible providers |
-| `openaiBaseUrl` | `https://api.openai.com/v1` | API base URL |
+| Key             | Default                           | Description                             |
+| --------------- | --------------------------------- | --------------------------------------- |
+| `interface`     | `tgenie`                          | Provider: tgenie/openai/anthropic       |
+| `defaultModel`  | `gemini-2.5-flash`                | Default model name                      |
+| `systemPrompt`  | "You are a helpful AI assistant." | Base system prompt                      |
+| `openaiApiKey`  | ""                                | API key for OpenAI-compatible providers |
+| `openaiBaseUrl` | `https://api.openai.com/v1`       | API base URL                            |
 
 ## Recent Changes (v4.1.0)
 
