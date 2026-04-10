@@ -29,6 +29,7 @@ SLASH_COMMANDS: list[str] = [
     "/autoresearch",
     "/trino",
     "/trino-research",
+    "/model",
     "/reasoning",
     "/renew",
     "/help",

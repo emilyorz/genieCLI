@@ -591,6 +591,10 @@ def _chat_loop(
                 _do_send(provider, session, model, current_reasoning, edited, output, ctx)
 
 
+        elif cmd == "/model":
+            output.print(f"  [cyan]Model:[/cyan] {model}")
+
+
         elif cmd == "/help":
             cmds = [
 
@@ -615,6 +619,8 @@ def _chat_loop(
                 ("/trino",        "Trino connection manager"),
 
                 ("/trino-research","Optimize SQL via autoresearch loop"),
+
+                ("/model",        "Show current model"),
 
                 ("/reasoning",    "Toggle reasoning: disable/low/medium/high"),
 
