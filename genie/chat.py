@@ -424,6 +424,19 @@ def _chat_loop(
             output.print("  [green]Cleared.[/green]")
 
 
+        elif cmd == "/undo":
+            # Remove the last user+assistant exchange (skip system messages).
+            history = session["history"]
+            user_indices = [i for i, m in enumerate(history) if m["role"] == "user"]
+            if not user_indices:
+                output.print("  [dim]Nothing to undo.[/dim]")
+            else:
+                last_user = user_indices[-1]
+                # Drop everything from the last user message onward.
+                session["history"] = history[:last_user]
+                output.print("  [green]Last exchange removed.[/green]")
+
+
         elif cmd == "/reasoning":
             if args and args[0] in REASONING_LEVELS:
 
@@ -668,6 +681,8 @@ def _chat_loop(
                 ("/skills",       "List available skills/tools"),
 
                 ("/clear",        "Clear current conversation"),
+
+                ("/undo",         "Remove last exchange from history"),
 
                 ("/paste",        "Multiline paste mode (Ctrl-D to send)"),
 

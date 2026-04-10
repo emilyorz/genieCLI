@@ -24,6 +24,7 @@ SLASH_COMMANDS: list[str] = [
     "/skills",
     "/tools",
     "/clear",
+    "/undo",
     "/paste",
     "/editor",
     "/autoresearch",
@@ -35,6 +36,33 @@ SLASH_COMMANDS: list[str] = [
     "/help",
     "/exit",
 ]
+
+# Short descriptions shown as display_meta in Tab completions.
+SLASH_COMMAND_HINTS: dict[str, str] = {
+    "/new":            "Start a new conversation",
+    "/sessions":       "List saved conversations",
+    "/load":           "Load conversation by number",
+    "/history":        "Show current conversation",
+    "/skills":         "List available skills/tools",
+    "/tools":          "List available skills/tools",
+    "/clear":          "Clear conversation history",
+    "/undo":           "Remove last exchange from history",
+    "/paste":          "Multiline paste mode (Ctrl-D to send)",
+    "/editor":         "Open editor for input",
+    "/autoresearch":   "Start autonomous iteration loop",
+    "/trino":          "Trino connection manager",
+    "/trino-research": "Optimize SQL via autoresearch loop",
+    "/model":          "Show / switch model",
+    "/reasoning":      "Toggle reasoning: disable/low/medium/high",
+    "/renew":          "Refresh auth token",
+    "/help":           "Show all commands",
+    "/exit":           "Quit",
+}
+
+# Subcommand hints for commands that accept a subcommand argument.
+_MODEL_SUBCOMMANDS: dict[str, str] = {
+    "list": "List available models",
+}
 
 
 def _build_completer():
@@ -52,14 +80,19 @@ def _build_completer():
                 stripped = text.lstrip()
                 if stripped.startswith("/model "):
                     sub = stripped[len("/model "):].strip()
-                    for sc in ("list",):
+                    for sc, hint in _MODEL_SUBCOMMANDS.items():
                         if sc.startswith(sub):
-                            yield Completion(sc, start_position=-len(sub) if sub else 0)
+                            yield Completion(
+                                sc,
+                                start_position=-len(sub) if sub else 0,
+                                display_meta=hint,
+                            )
                     return
 
                 for cmd in SLASH_COMMANDS:
                     if cmd.startswith(word):
-                        yield Completion(cmd, start_position=-len(word))
+                        hint = SLASH_COMMAND_HINTS.get(cmd, "")
+                        yield Completion(cmd, start_position=-len(word), display_meta=hint)
                 return
 
             # Tool name completion: offer registered skill names
