@@ -1,8 +1,49 @@
 """Integration tests for context manager, model profiles, and skill tiers."""
+from __future__ import annotations
+
 import pytest
+
 from genie.core.context_manager import ContextManager
 from genie.core.model_profiles import get_profile
-from genie.core.registry import SkillRegistry
+from genie.core.registry import BaseSkill, SkillRegistry
+
+
+class _CoreSkill(BaseSkill):
+    name = "_test_core"
+    description = "test core"
+    tier = "core"
+
+    def run(self, **kwargs):
+        return "ok"
+
+
+class _ExtendedSkill(BaseSkill):
+    name = "_test_extended"
+    description = "test extended"
+    tier = "extended"
+
+    def run(self, **kwargs):
+        return "ok"
+
+
+class _FullSkill(BaseSkill):
+    name = "_test_full"
+    description = "test full"
+    tier = "full"
+
+    def run(self, **kwargs):
+        return "ok"
+
+
+@pytest.fixture(autouse=True)
+def _seed_registry():
+    """Keep registry state deterministic for this module."""
+    SkillRegistry.clear()
+    SkillRegistry.register(_CoreSkill())
+    SkillRegistry.register(_ExtendedSkill())
+    SkillRegistry.register(_FullSkill())
+    yield
+    SkillRegistry.clear()
 
 
 def _make_msg(role: str, text: str) -> dict:
@@ -12,25 +53,21 @@ def _make_msg(role: str, text: str) -> dict:
     }
 
 
-def test_context_manager_respects_model_profile():
-    """ContextManager should use the correct model profile."""
-    # GPT-4o has 128K context window
-    cm_gpt = ContextManager(model_name="gpt-4o")
-    assert cm_gpt.context_window == 128_000
-
-    # Gemini Flash has 1M context window
-    cm_gemini = ContextManager(model_name="gemini-2.5-flash")
-    assert cm_gemini.context_window == 1_048_576
-
-    # Small Ollama model has 32K context window
-    cm_ollama = ContextManager(model_name="qwen3.5:4b")
-    assert cm_ollama.context_window == 32_768
+@pytest.mark.parametrize(
+    "model_name",
+    ["gpt-4o", "gemini-2.5-flash", "qwen3.5:4b"],
+)
+def test_context_manager_respects_model_profile(model_name: str):
+    """ContextManager should use the exact model profile context window."""
+    profile = get_profile(model_name)
+    cm = ContextManager(model_name=model_name)
+    assert cm.context_window == profile.context_window
 
 
 def test_weak_model_has_different_context_limits_than_strong():
     """Weak models have smaller context windows than strong models."""
-    cm_weak = ContextManager(model_name="qwen3.5:4b")      # 32K
-    cm_strong = ContextManager(model_name="gemini-2.5-flash")  # 1M
+    cm_weak = ContextManager(model_name="qwen3.5:4b")
+    cm_strong = ContextManager(model_name="gemini-2.5-flash")
 
     # Weak model should have less available context
     assert cm_weak.context_window < cm_strong.context_window
@@ -40,32 +77,32 @@ def test_weak_model_has_different_context_limits_than_strong():
 def test_model_profile_skill_tier_mapping():
     """Model profiles should have correct skill tier mappings."""
     profiles = {
-        "gemini-2.5-flash": "core",      # Fast/weak model
-        "gpt-4o": "full",                 # Strong model
-        "claude-opus-4": "full",          # Strongest model
-        "qwen3.5:4b": "core",            # Very weak model
+        "gemini-2.5-flash": "core",
+        "gpt-4o": "full",
+        "claude-opus-4": "full",
+        "qwen3.5:4b": "core",
     }
 
     for model_name, expected_tier in profiles.items():
         profile = get_profile(model_name)
-        assert profile.skill_tier == expected_tier, \
+        assert profile.skill_tier == expected_tier, (
             f"{model_name} should have tier {expected_tier}, got {profile.skill_tier}"
+        )
 
 
 def test_skill_filtering_by_model_tier():
-    """Skill registry filtering by tier should work."""
-    # All tier should return all available skills
-    all_skills = SkillRegistry.all(tier="all")
+    """Skill registry filtering by tier should actually narrow the registry."""
+    all_skills = {skill.name for skill in SkillRegistry.all(tier=None)}
+    core_skills = {skill.name for skill in SkillRegistry.all(tier="core")}
+    extended_skills = {skill.name for skill in SkillRegistry.all(tier="extended")}
+    full_skills = {skill.name for skill in SkillRegistry.all(tier="full")}
 
-    # Core tier should be a subset of all
-    core_skills = SkillRegistry.all(tier="core")
-    for skill in core_skills:
-        assert skill in all_skills, f"Core skill {skill} should be in all skills"
-
-    # Extended tier should be a subset of all
-    extended_skills = SkillRegistry.all(tier="extended")
-    for skill in extended_skills:
-        assert skill in all_skills, f"Extended skill {skill} should be in all skills"
+    assert all_skills == {"_test_core", "_test_extended", "_test_full"}
+    assert core_skills == {"_test_core"}
+    assert extended_skills == {"_test_core", "_test_extended"}
+    assert full_skills == all_skills
+    assert core_skills < all_skills
+    assert extended_skills < all_skills
 
 
 def test_context_status_includes_model_and_tier():

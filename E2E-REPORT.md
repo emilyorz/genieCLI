@@ -1,7 +1,7 @@
 # genieCLI E2E Report
 
 - Time: 2026-04-08 04:07:06 CST
-- Repo: /Users/leeabc/work/emilyorz/genieCLI
+- Repo: /Users/leeabc/work/emilyorz/genieCLI-haiku
 - Branch: e2e/geniecli-0408-0403
 - Status: PASS
 
@@ -11,7 +11,13 @@
 - trino integration tests
 - trino_query skill tests
 - full pytest regression
-- **Autoresearch E2E**: real PBB query optimization (3 iterations, cpu_time_ms)
+- Autoresearch E2E: real PBB query optimization (3 iterations, cpu_time_ms)
+
+## What this run was meant to prove
+- The Trino path is wired end-to-end against the current environment, not a stub.
+- The Trino integration and trino_query skill flows can complete without manual intervention.
+- The repository test suite still passes after the Trino/autoresearch changes in this branch.
+- Autoresearch can run a real optimization loop and emit comparable timing evidence.
 
 ## Artifacts
 - trino-info.json
@@ -26,3 +32,8 @@
 - tests/test_trino_integration.py exit=0
 - tests/test_trino_query_skill.py exit=0
 - full pytest exit=0
+
+## Notes
+- Keep the log artifacts above as the source of truth for exact command output.
+- If repo path or branch changes, regenerate this report instead of copy-pasting it forward.
+- If `claude-fix.log` is absent, no manual repair step was needed during the run.
