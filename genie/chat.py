@@ -18,6 +18,8 @@ import subprocess
 import sys
 from typing import Callable
 
+import requests
+
 from genie.core.registry import SkillRegistry
 from genie.core.tool_call import normalize_result, parse_tool_call
 from genie.output.human import HumanSink
@@ -29,6 +31,52 @@ from genie.session.manager import (
 
 MAX_TOOL_LOOPS = 15
 REASONING_LEVELS = ["disable", "low", "medium", "high"]
+
+
+# ── Model listing helper ────────────────────────────────────────────────────
+
+def _is_ollama(cfg: dict) -> bool:
+    return cfg.get("interface") == "openai" and "localhost:11434" in cfg.get("openaiBaseUrl", "")
+
+
+def _get_ollama_models(cfg: dict) -> list[str] | None:
+    """Return sorted list of Ollama model names, or None if not Ollama / unreachable."""
+    if not _is_ollama(cfg):
+        return None
+    try:
+        resp = requests.get("http://localhost:11434/api/tags", timeout=5)
+        resp.raise_for_status()
+        return sorted(m["name"] for m in resp.json().get("models", []))
+    except Exception:
+        return None
+
+
+def _list_models(cfg: dict, output, current_model: str = "") -> None:
+    """Print available models with active marker."""
+    models = _get_ollama_models(cfg)
+    if models is not None:
+        output.print("  [cyan]Available Ollama models:[/cyan]")
+        for name in models:
+            marker = "[green]●[/green] " if name == current_model else "  "
+            output.print(f"  {marker}{name}")
+        if not models:
+            output.print("  [yellow]No models found in Ollama.[/yellow]")
+    else:
+        default_model = cfg.get("defaultModel", "")
+        if default_model:
+            output.print(f"  [cyan]Configured model:[/cyan] {default_model}")
+        output.print("  [dim]Model listing is supported for Ollama only.[/dim]")
+
+
+def _validate_model(cfg: dict, model_name: str) -> tuple[bool, str]:
+    """Check if model_name is available. Returns (valid, message)."""
+    models = _get_ollama_models(cfg)
+    if models is None:
+        # Non-Ollama provider — can't validate, allow anything
+        return True, ""
+    if model_name in models:
+        return True, ""
+    return False, f"Model '{model_name}' not found. Run /model list to see available models."
 
 
 # ── Pure helpers ──────────────────────────────────────────────────────────────
@@ -592,7 +640,18 @@ def _chat_loop(
 
 
         elif cmd == "/model":
-            output.print(f"  [cyan]Model:[/cyan] {model}")
+            if not args:
+                output.print(f"  [cyan]Model:[/cyan] {model}")
+            elif args[0] == "list":
+                _list_models(cfg, output, current_model=model)
+            else:
+                new_model = args[0]
+                valid, err = _validate_model(cfg, new_model)
+                if not valid:
+                    output.print(f"  [red]{err}[/red]")
+                else:
+                    model = new_model
+                    output.print(f"  [green]Switched model →[/green] {model}")
 
 
         elif cmd == "/help":
@@ -621,6 +680,10 @@ def _chat_loop(
                 ("/trino-research","Optimize SQL via autoresearch loop"),
 
                 ("/model",        "Show current model"),
+
+                ("/model <name>", "Switch to a different model"),
+
+                ("/model list",   "List available models"),
 
                 ("/reasoning",    "Toggle reasoning: disable/low/medium/high"),
 

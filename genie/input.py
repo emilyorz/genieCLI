@@ -48,10 +48,18 @@ def _build_completer():
 
             # Slash command completion: triggered when line starts with /
             if text.lstrip().startswith("/"):
+                # Subcommand completion for /model
+                stripped = text.lstrip()
+                if stripped.startswith("/model "):
+                    sub = stripped[len("/model "):].strip()
+                    for sc in ("list",):
+                        if sc.startswith(sub):
+                            yield Completion(sc, start_position=-len(sub) if sub else 0)
+                    return
+
                 for cmd in SLASH_COMMANDS:
                     if cmd.startswith(word):
                         yield Completion(cmd, start_position=-len(word))
-                # Also offer tool names after a slash command
                 return
 
             # Tool name completion: offer registered skill names
