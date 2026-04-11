@@ -178,3 +178,35 @@ def test_update_title_sets_filename():
     session = sm.new_session()
     sm.update_title(session, "Refactoring tips")
     assert "refactoring-tips" in session["filename"]
+
+
+# ── redo_stack initialization and backfill ────────────────────────────────────
+
+def test_new_session_has_redo_stack():
+    """new_session must initialize redo_stack as an empty list."""
+    session = sm.new_session()
+    assert "redo_stack" in session
+    assert isinstance(session["redo_stack"], list)
+    assert session["redo_stack"] == []
+
+
+def test_load_session_backfills_redo_stack(tmp_path):
+    """load_session must add an empty redo_stack for sessions saved without one."""
+    import json
+
+    # Build a legacy session dict (no redo_stack key)
+    old_session = {
+        "id": "legacy-id",
+        "title": "Old session",
+        "filename": "old_session.json",
+        "history": [],
+    }
+
+    with patch.object(sm, "SESSIONS_DIR", tmp_path):
+        path = tmp_path / "old_session.json"
+        path.write_text(json.dumps(old_session), encoding="utf-8")
+        loaded = sm.load_session("old_session.json")
+
+    assert "redo_stack" in loaded
+    assert isinstance(loaded["redo_stack"], list)
+    assert loaded["redo_stack"] == []
