@@ -7,9 +7,9 @@
 - Naming note: this is a formal long-running workflow, not an "experiments" sandbox.
 - Iteration: 5
 - Owner: Main Agent
-- Status: active
-- Last Updated: 2026-04-11T23:42+08:00
-- Current Focus: /compact shipped and verified; ready to archive v5.
+- Status: archived
+- Last Updated: 2026-04-11T23:45+08:00
+- Current Focus: /compact landed on main; v5 archived and handed off to v6.
 
 ## Goal
 
@@ -33,7 +33,7 @@
 | T1  | complete | P0  | Inspect current genieCLI state, read STATUS.md and the active code paths, and lock the highest-value scope for this iteration | Main Agent | Scope: /compact. Rationale: fills clear/undo gap; pairs with /stats; low-risk list-slice |
 | T2  | complete | P1  | Implement the selected improvement end-to-end                                                                                 | Main Agent | /compact [N] in chat.py + input.py + /help; keeps system msgs + last N turns + marker    |
 | T3  | complete | P1  | Add or update tests for the new behavior                                                                                      | Main Agent | 9 new tests in test_new_commands.py; 550 total pass (+9, 0 regressions)                  |
-| T4  | complete | P0  | Verify the change with observable evidence and update the ledger/status handoff                                               | Main Agent | Verified via full pytest; evidence captured in Verify section and transition log         |
+| T4  | complete | P0  | Verify the change with observable evidence and update the ledger/status handoff                                               | Main Agent | Verified via full pytest; landed on main in PR #20                                 |
 
 ## Verify
 
@@ -44,7 +44,7 @@
   - Diff summary: chat.py (+35 lines /compact handler + /help entry), input.py (+2 lines SLASH_COMMANDS/HINTS), test_new_commands.py (+9 tests)
   - Artifact path: genie/chat.py, genie/input.py, tests/test_new_commands.py
 - Verification result: PASS — +9 new tests, 0 regressions, baseline was 541
-- T4 closure: verified, pending archive/hand-off
+- T4 closure: verified and merged to main (commit 3eff91f, PR #20)
 
 ## Blocked
 
@@ -67,10 +67,17 @@
   content preserved. 550 tests pass.
 - Decision: shipped
 
+### T4 complete & merged — 2026-04-11T23:45+08:00
+
+- Result: /compact merged into main via PR #20 and landed on commit 3eff91f.
+- Decision: accept
+
 ## Transition Log
 
 - 2026-04-11T23:06+08:00 — PLAN — T1 initialized, scope not yet locked.
 - 2026-04-11T23:30+08:00 — IMPL — T1–T3 complete. /compact shipped and tested.
+- 2026-04-11T23:45+08:00 — MERGE — /compact merged to main via PR #20.
+- 2026-04-11T23:45+08:00 — ARCHIVE — v5 archived after merge; v6 will take over next iteration planning.
 
 ## Retro
 
@@ -80,8 +87,8 @@
 
 ## Next Step
 
-- Next action: Commit, push, archive, update STATUS.md.
-- Next owner: Main Agent (T4)
+- Next action: Read STATUS.md and start v6 planning.
+- Next owner: Main Agent
 
 ## Archive / Handoff
 
