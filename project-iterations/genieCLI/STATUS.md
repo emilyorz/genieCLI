@@ -1,8 +1,8 @@
 # Sprint Status
 
-- Last iteration: v5 (complete, archived)
-- Carryover: v5 retro follow-ups carried into v6 as candidate scope only
-- Next action: read TASK-LEDGER-v6.md and execute PLAN
+- Last iteration: v7 (complete — /branch shipped, 575 tests green)
+- Carryover: named branches or branch stack deferred into v8 as candidate scope
+- Next action: start TASK-LEDGER-v8.md; pick next scope from v7 retro candidates
 - Archived:
   - TASK-LEDGER-v1-archived.md
   - TASK-LEDGER-v2-archived.md
@@ -10,8 +10,9 @@
 - Complete:
   - TASK-LEDGER-v3.md (read for retro context)
   - TASK-LEDGER-v4.md (read for retro context)
-- Active:
-  - TASK-LEDGER-v6.md
-- v5 retro follow-ups:
-  - Consider /redo (branching/recovery) if it adds clear value
-  - Consider conversation branching if redo alone is too shallow
+  - TASK-LEDGER-v6.md (read for retro context)
+  - TASK-LEDGER-v7.md (read for retro context)
+- Active: none — ready for v8
+- v7 retro follow-ups:
+  - Named branches or branch stack (if branching becomes heavy use)
+  - Any other UX or harness improvement surfaced by usage

@@ -38,6 +38,7 @@ def new_session(system_prompt: str = "") -> dict:
         "title":      "New conversation",
         "filename":   None,
         "history":    [],
+        "redo_stack": [],
     }
     if system_prompt:
         session["history"].append(new_msg("system", system_prompt))
@@ -55,7 +56,10 @@ def save_session(session: dict) -> None:
 
 def load_session(filename: str) -> dict:
     path = SESSIONS_DIR / filename
-    return json.loads(path.read_text(encoding="utf-8"))
+    session = json.loads(path.read_text(encoding="utf-8"))
+    if not isinstance(session.get("redo_stack"), list):
+        session["redo_stack"] = []
+    return session
 
 
 def list_sessions() -> list[dict]:

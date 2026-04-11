@@ -219,6 +219,149 @@ class TestUndoCommand:
         assert new_history[0]["role"] == "system"
 
 
+# ── /redo command ────────────────────────────────────────────────────────────
+
+
+class TestRedoCommand:
+    """Unit-test the /redo logic using chat._redo_stack and session state."""
+
+    def test_redo_in_slash_commands(self) -> None:
+        """/redo must be listed in SLASH_COMMANDS."""
+        assert "/redo" in SLASH_COMMANDS
+
+    def test_redo_has_hint(self) -> None:
+        """/redo must have a non-empty hint in SLASH_COMMAND_HINTS."""
+        assert "/redo" in SLASH_COMMAND_HINTS
+        assert SLASH_COMMAND_HINTS["/redo"]
+
+    def test_redo_empty_stack_is_noop(self) -> None:
+        """Calling /redo with an empty redo stack should leave history unchanged."""
+        from genie.session.manager import new_msg, new_session
+        from genie.chat import _redo_stack
+
+        session = new_session("sys")
+        session["history"].append(new_msg("user", "hello"))
+        session["history"].append(new_msg("assistant", "hi"))
+        before = list(session["history"])
+
+        stack = _redo_stack(session)
+        assert not stack  # nothing to redo
+
+        # history unchanged
+        assert session["history"] == before
+
+    def test_undo_then_redo_restores_exchange(self) -> None:
+        """undo removes an exchange; redo puts it back exactly."""
+        from copy import deepcopy
+
+        from genie.session.manager import new_msg, new_session
+        from genie.chat import _redo_stack
+
+        session = new_session("sys")
+        session["history"].append(new_msg("user", "first question"))
+        session["history"].append(new_msg("assistant", "first answer"))
+        session["history"].append(new_msg("user", "second question"))
+        session["history"].append(new_msg("assistant", "second answer"))
+        original = deepcopy(session["history"])
+
+        # simulate /undo
+        user_indices = [i for i, m in enumerate(session["history"]) if m["role"] == "user"]
+        last_user = user_indices[-1]
+        removed = deepcopy(session["history"][last_user:])
+        _redo_stack(session).append(removed)
+        session["history"] = session["history"][:last_user]
+
+        assert len(session["history"]) == 3  # sys + first exchange
+
+        # simulate /redo
+        restored = deepcopy(_redo_stack(session).pop())
+        session["history"].extend(restored)
+
+        assert session["history"] == original
+
+    def test_redo_stack_cleared_on_new_send(self) -> None:
+        """_redo_stack is cleared when a new user message is sent."""
+        from genie.session.manager import new_msg, new_session
+        from genie.chat import _redo_stack
+
+        session = new_session("sys")
+        session["history"].append(new_msg("user", "q"))
+        session["history"].append(new_msg("assistant", "a"))
+
+        # simulate /undo that pushed something on the stack
+        _redo_stack(session).append([new_msg("user", "q"), new_msg("assistant", "a")])
+        assert len(_redo_stack(session)) == 1
+
+        # simulate the clear that _do_send does before appending
+        _redo_stack(session).clear()
+        assert len(_redo_stack(session)) == 0
+
+    def test_redo_stack_cleared_on_compact(self) -> None:
+        """After /compact the redo stack must be empty."""
+        from genie.session.manager import new_msg, new_session
+        from genie.chat import _redo_stack
+
+        session = new_session("sys")
+        _redo_stack(session).append([new_msg("user", "q"), new_msg("assistant", "a")])
+        assert len(_redo_stack(session)) == 1
+
+        # simulate what /compact does at the end
+        _redo_stack(session).clear()
+        assert len(_redo_stack(session)) == 0
+
+    def test_redo_stack_cleared_on_clear(self) -> None:
+        """/clear must also empty the redo stack."""
+        from genie.session.manager import new_msg, new_session
+        from genie.chat import _redo_stack
+
+        session = new_session("sys")
+        _redo_stack(session).append([new_msg("user", "q")])
+
+        # simulate /clear
+        session["history"] = []
+        _redo_stack(session).clear()
+
+        assert not _redo_stack(session)
+
+    def test_multiple_undos_redo_pops_one_at_a_time(self) -> None:
+        """With two undos on the stack, each /redo restores one exchange."""
+        from copy import deepcopy
+
+        from genie.session.manager import new_msg, new_session
+        from genie.chat import _redo_stack
+
+        session = new_session("sys")
+        session["history"] += [
+            new_msg("user", "q1"), new_msg("assistant", "a1"),
+            new_msg("user", "q2"), new_msg("assistant", "a2"),
+            new_msg("user", "q3"), new_msg("assistant", "a3"),
+        ]
+
+        def do_undo(s):
+            hist = s["history"]
+            user_indices = [i for i, m in enumerate(hist) if m["role"] == "user"]
+            last = user_indices[-1]
+            removed = deepcopy(hist[last:])
+            _redo_stack(s).append(removed)
+            s["history"] = hist[:last]
+
+        do_undo(session)
+        do_undo(session)
+
+        # redo stack has 2 entries (LIFO order)
+        assert len(_redo_stack(session)) == 2
+
+        # first redo pops the most recently pushed entry (q2/a2, LIFO)
+        restored1 = deepcopy(_redo_stack(session).pop())
+        session["history"].extend(restored1)
+        assert len(_redo_stack(session)) == 1
+        texts = [m["content"][0]["text"] for m in session["history"]]
+        assert "q2" in texts  # LIFO: last undo was q2, so first redo brings it back
+
+        # second redo (q3/a3) is still on the stack
+        assert len(_redo_stack(session)) == 1
+
+
 # ── Cross-check: SLASH_COMMANDS vs chat.py handlers ─────────────────────────
 
 

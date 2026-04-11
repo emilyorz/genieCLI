@@ -16,6 +16,7 @@ from __future__ import annotations
 import json
 import subprocess
 import sys
+from copy import deepcopy
 from typing import Callable
 
 import requests
@@ -77,6 +78,14 @@ def _validate_model(cfg: dict, model_name: str) -> tuple[bool, str]:
     if model_name in models:
         return True, ""
     return False, f"Model '{model_name}' not found. Run /model list to see available models."
+
+
+def _redo_stack(session: dict) -> list[list[dict]]:
+    stack = session.get("redo_stack")
+    if not isinstance(stack, list):
+        stack = []
+        session["redo_stack"] = stack
+    return stack
 
 
 # ── Pure helpers ──────────────────────────────────────────────────────────────
@@ -219,6 +228,7 @@ def _do_send(
     output: HumanSink | MachineSink,
     ctx,
 ) -> None:
+    _redo_stack(session).clear()
     session["history"].append(new_msg("user", user_input))
     if sum(1 for m in session["history"] if m["role"] == "user") == 1:
         update_title(session, user_input)
@@ -400,6 +410,8 @@ def _chat_loop(
 
                 output.print("  [dim](empty)[/dim]")
 
+            exchange_num = 0
+
             for msg in visible:
 
                 text = msg["content"][0]["text"]
@@ -412,7 +424,9 @@ def _chat_loop(
 
                 elif role == "user":
 
-                    output.print(f"  [cyan][You][/cyan]   {escape(text[:120])}")
+                    exchange_num += 1
+
+                    output.print(f"  [cyan][#{exchange_num} You][/cyan]  {escape(text[:120])}")
 
                 elif role == "assistant":
 
@@ -435,6 +449,7 @@ def _chat_loop(
 
         elif cmd == "/clear":
             session["history"] = []
+            _redo_stack(session).clear()
 
             sys_p = build_prompt(use_skills)
 
@@ -453,10 +468,64 @@ def _chat_loop(
                 output.print("  [dim]Nothing to undo.[/dim]")
             else:
                 last_user = user_indices[-1]
+                removed = deepcopy(history[last_user:])
+                _redo_stack(session).append(removed)
                 # Drop everything from the last user message onward.
                 session["history"] = history[:last_user]
                 output.print("  [green]Last exchange removed.[/green]")
 
+        elif cmd == "/redo":
+            redo_stack = _redo_stack(session)
+            if not redo_stack:
+                output.print("  [dim]Nothing to redo.[/dim]")
+            else:
+                restored = deepcopy(redo_stack.pop())
+                session["history"].extend(restored)
+                output.print("  [green]Last undone exchange restored.[/green]")
+
+        elif cmd == "/branch":
+            history = session["history"]
+            # Real user exchanges: role==user, not an internal tool-result round-trip.
+            real_user_indices = [
+                i for i, m in enumerate(history)
+                if m["role"] == "user"
+                and not m["content"][0]["text"].startswith("[Tool result:")
+            ]
+            if not args:
+                output.print(
+                    "  [dim]Usage: /branch <exchange-number>  "
+                    "(use /history to see exchange numbers)[/dim]"
+                )
+            elif not real_user_indices:
+                output.print("  [dim]Nothing to branch.[/dim]")
+            else:
+                try:
+                    n = int(args[0])
+                except ValueError:
+                    output.print(
+                        "  [red]Exchange number must be an integer. "
+                        "Usage: /branch <number>[/red]"
+                    )
+                else:
+                    total = len(real_user_indices)
+                    if n < 1 or n > total:
+                        output.print(
+                            f"  [red]Exchange {n} out of range. "
+                            f"Use 1–{total}.[/red]"
+                        )
+                    elif n == total:
+                        output.print(
+                            f"  [dim]Already at exchange {n}. Nothing to branch.[/dim]"
+                        )
+                    else:
+                        # Trim history to everything before the (n+1)th real user msg.
+                        cut = real_user_indices[n]
+                        _redo_stack(session).clear()
+                        session["history"] = history[:cut]
+                        output.print(
+                            f"  [green]Branched at exchange {n}. "
+                            f"History trimmed to {n} exchange(s).[/green]"
+                        )
 
         elif cmd == "/compact":
             # Keep last N turns (user+assistant pairs). Default 6.
@@ -491,6 +560,7 @@ def _chat_loop(
                     f"keeping last {keep_turns} turns. ~{tokens_saved:,} tokens freed.]",
                 )
                 session["history"] = system_msgs + [marker] + kept
+                _redo_stack(session).clear()
                 output.print(
                     f"  [green]Compacted:[/green] removed {removed} messages, "
                     f"freed ~{tokens_saved:,} tokens."
@@ -790,6 +860,10 @@ def _chat_loop(
                 ("/clear",        "Clear current conversation"),
 
                 ("/undo",         "Remove last exchange from history"),
+
+                ("/redo",         "Restore last undone exchange"),
+
+                ("/branch <n>",   "Fork history at exchange N (see /history for numbers)"),
 
                 ("/compact [n]",  "Prune middle history, keep last n turns (default 6)"),
 
