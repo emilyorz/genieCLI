@@ -410,6 +410,8 @@ def _chat_loop(
 
                 output.print("  [dim](empty)[/dim]")
 
+            exchange_num = 0
+
             for msg in visible:
 
                 text = msg["content"][0]["text"]
@@ -422,7 +424,9 @@ def _chat_loop(
 
                 elif role == "user":
 
-                    output.print(f"  [cyan][You][/cyan]   {escape(text[:120])}")
+                    exchange_num += 1
+
+                    output.print(f"  [cyan][#{exchange_num} You][/cyan]  {escape(text[:120])}")
 
                 elif role == "assistant":
 
@@ -479,6 +483,49 @@ def _chat_loop(
                 session["history"].extend(restored)
                 output.print("  [green]Last undone exchange restored.[/green]")
 
+        elif cmd == "/branch":
+            history = session["history"]
+            # Real user exchanges: role==user, not an internal tool-result round-trip.
+            real_user_indices = [
+                i for i, m in enumerate(history)
+                if m["role"] == "user"
+                and not m["content"][0]["text"].startswith("[Tool result:")
+            ]
+            if not args:
+                output.print(
+                    "  [dim]Usage: /branch <exchange-number>  "
+                    "(use /history to see exchange numbers)[/dim]"
+                )
+            elif not real_user_indices:
+                output.print("  [dim]Nothing to branch.[/dim]")
+            else:
+                try:
+                    n = int(args[0])
+                except ValueError:
+                    output.print(
+                        "  [red]Exchange number must be an integer. "
+                        "Usage: /branch <number>[/red]"
+                    )
+                else:
+                    total = len(real_user_indices)
+                    if n < 1 or n > total:
+                        output.print(
+                            f"  [red]Exchange {n} out of range. "
+                            f"Use 1–{total}.[/red]"
+                        )
+                    elif n == total:
+                        output.print(
+                            f"  [dim]Already at exchange {n}. Nothing to branch.[/dim]"
+                        )
+                    else:
+                        # Trim history to everything before the (n+1)th real user msg.
+                        cut = real_user_indices[n]
+                        _redo_stack(session).clear()
+                        session["history"] = history[:cut]
+                        output.print(
+                            f"  [green]Branched at exchange {n}. "
+                            f"History trimmed to {n} exchange(s).[/green]"
+                        )
 
         elif cmd == "/compact":
             # Keep last N turns (user+assistant pairs). Default 6.
@@ -813,6 +860,10 @@ def _chat_loop(
                 ("/clear",        "Clear current conversation"),
 
                 ("/undo",         "Remove last exchange from history"),
+
+                ("/redo",         "Restore last undone exchange"),
+
+                ("/branch <n>",   "Fork history at exchange N (see /history for numbers)"),
 
                 ("/compact [n]",  "Prune middle history, keep last n turns (default 6)"),
 

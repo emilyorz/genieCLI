@@ -433,7 +433,9 @@ def test_slash_commands_contains_new_commands():
     assert "/export" in SLASH_COMMANDS
     assert "/compact" in SLASH_COMMANDS
     assert "/redo" in SLASH_COMMANDS
+    assert "/branch" in SLASH_COMMANDS
     assert "/stats" in SLASH_COMMAND_HINTS
     assert "/export" in SLASH_COMMAND_HINTS
     assert "/compact" in SLASH_COMMAND_HINTS
     assert "/redo" in SLASH_COMMAND_HINTS
+    assert "/branch" in SLASH_COMMAND_HINTS
