@@ -458,6 +458,46 @@ def _chat_loop(
                 output.print("  [green]Last exchange removed.[/green]")
 
 
+        elif cmd == "/compact":
+            # Keep last N turns (user+assistant pairs). Default 6.
+            try:
+                keep_turns = int(args[0]) if args else 6
+            except ValueError:
+                keep_turns = 6
+            keep_turns = max(1, keep_turns)
+
+            history = session["history"]
+            system_msgs = [m for m in history if m["role"] == "system"]
+            non_system = [m for m in history if m["role"] != "system"]
+            keep_count = keep_turns * 2
+
+            if len(non_system) <= keep_count:
+                output.print(
+                    f"  [dim]Nothing to compact "
+                    f"({len(non_system)} messages ≤ {keep_count} keep limit).[/dim]"
+                )
+            else:
+                removed = len(non_system) - keep_count
+                chars_removed = sum(
+                    len(m["content"][0]["text"])
+                    for m in non_system[: len(non_system) - keep_count]
+                    if m.get("content") and m["content"]
+                )
+                tokens_saved = chars_removed // 4
+                kept = non_system[-keep_count:]
+                marker = new_msg(
+                    "user",
+                    f"[Context compacted: {removed} messages removed, "
+                    f"keeping last {keep_turns} turns. ~{tokens_saved:,} tokens freed.]",
+                )
+                session["history"] = system_msgs + [marker] + kept
+                output.print(
+                    f"  [green]Compacted:[/green] removed {removed} messages, "
+                    f"freed ~{tokens_saved:,} tokens."
+                )
+                output.print(f"  [dim]Keeping last {keep_turns} turns. Use /stats to verify.[/dim]")
+
+
         elif cmd == "/reasoning":
             if args and args[0] in REASONING_LEVELS:
 
@@ -750,6 +790,8 @@ def _chat_loop(
                 ("/clear",        "Clear current conversation"),
 
                 ("/undo",         "Remove last exchange from history"),
+
+                ("/compact [n]",  "Prune middle history, keep last n turns (default 6)"),
 
                 ("/stats",        "Show session stats (turns, ~tokens, model)"),
 

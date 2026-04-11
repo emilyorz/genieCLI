@@ -1,4 +1,4 @@
-"""Tests for /stats, /export, and /load <n> direct-arg features."""
+"""Tests for /stats, /export, /load <n> direct-arg, and /compact features."""
 from __future__ import annotations
 
 import json
@@ -295,11 +295,143 @@ def test_load_no_sessions_prints_message():
     assert any("No sessions" in p for p in output.printed)
 
 
+# ── /compact ──────────────────────────────────────────────────────────────────
+
+def _make_long_session(turns: int = 6) -> dict:
+    """Return a session with `turns` user/assistant pairs plus a system message."""
+    session = new_session("You are a helpful assistant.")
+    session["title"] = "Long session"
+    for i in range(turns):
+        session["history"].append(new_msg("user", f"Question {i + 1}"))
+        session["history"].append(new_msg("assistant", f"Answer {i + 1}"))
+    return session
+
+
+def _invoke_compact(session: dict, keep_turns: int | None = None) -> _CaptureSink:
+    """Reproduce the /compact handler from chat.py for unit-testing."""
+    from genie.session.manager import new_msg as _new_msg
+
+    output = _CaptureSink()
+    _keep = keep_turns if keep_turns is not None else 6
+    _keep = max(1, _keep)
+
+    history = session["history"]
+    system_msgs = [m for m in history if m["role"] == "system"]
+    non_system = [m for m in history if m["role"] != "system"]
+    keep_count = _keep * 2
+
+    if len(non_system) <= keep_count:
+        output.print(
+            f"  [dim]Nothing to compact "
+            f"({len(non_system)} messages ≤ {keep_count} keep limit).[/dim]"
+        )
+    else:
+        removed = len(non_system) - keep_count
+        chars_removed = sum(
+            len(m["content"][0]["text"])
+            for m in non_system[: len(non_system) - keep_count]
+            if m.get("content") and m["content"]
+        )
+        tokens_saved = chars_removed // 4
+        kept = non_system[-keep_count:]
+        marker = _new_msg(
+            "user",
+            f"[Context compacted: {removed} messages removed, "
+            f"keeping last {_keep} turns. ~{tokens_saved:,} tokens freed.]",
+        )
+        session["history"] = system_msgs + [marker] + kept
+        output.print(
+            f"  [green]Compacted:[/green] removed {removed} messages, "
+            f"freed ~{tokens_saved:,} tokens."
+        )
+        output.print(f"  [dim]Keeping last {_keep} turns. Use /stats to verify.[/dim]")
+
+    return output
+
+
+def test_compact_reduces_history():
+    session = _make_long_session(turns=10)
+    before = len(session["history"])
+    _invoke_compact(session, keep_turns=4)
+    after = len(session["history"])
+    assert after < before
+
+
+def test_compact_keeps_system_message():
+    session = _make_long_session(turns=10)
+    _invoke_compact(session, keep_turns=4)
+    system_count = sum(1 for m in session["history"] if m["role"] == "system")
+    assert system_count == 1
+
+
+def test_compact_keeps_correct_turn_count():
+    session = _make_long_session(turns=10)
+    _invoke_compact(session, keep_turns=4)
+    # 1 system + 1 marker + 8 (4 turns * 2 messages each)
+    assert len(session["history"]) == 1 + 1 + 8
+
+
+def test_compact_inserts_marker():
+    session = _make_long_session(turns=10)
+    _invoke_compact(session, keep_turns=4)
+    # The marker is inserted right after system messages.
+    non_system = [m for m in session["history"] if m["role"] != "system"]
+    first_non_system = non_system[0]
+    assert "[Context compacted:" in first_non_system["content"][0]["text"]
+
+
+def test_compact_default_keep_6_turns():
+    session = _make_long_session(turns=12)
+    _invoke_compact(session)  # default = 6
+    non_system = [m for m in session["history"] if m["role"] != "system"]
+    # 1 marker + 12 messages (6 turns * 2)
+    assert len(non_system) == 1 + 12
+
+
+def test_compact_nothing_to_compact_when_small():
+    """Session with only 3 turns should not be compacted with default keep=6."""
+    session = _make_long_session(turns=3)
+    original_len = len(session["history"])
+    sink = _invoke_compact(session, keep_turns=6)
+    assert len(session["history"]) == original_len
+    assert any("Nothing to compact" in p for p in sink.printed)
+
+
+def test_compact_prints_confirmation():
+    session = _make_long_session(turns=10)
+    sink = _invoke_compact(session, keep_turns=4)
+    assert any("Compacted" in p for p in sink.printed)
+
+
+def test_compact_keep_1_turn_minimum():
+    """keep_turns=0 should clamp to 1."""
+    session = _make_long_session(turns=5)
+    _invoke_compact(session, keep_turns=0)
+    non_system = [m for m in session["history"] if m["role"] != "system"]
+    # 1 marker + 2 messages (1 turn * 2)
+    assert len(non_system) == 1 + 2
+
+
+def test_compact_preserves_recent_content():
+    """The most recent user message must survive compaction."""
+    session = _make_long_session(turns=8)
+    _invoke_compact(session, keep_turns=2)
+    texts = [
+        m["content"][0]["text"]
+        for m in session["history"]
+        if m["role"] in ("user", "assistant") and not m["content"][0]["text"].startswith("[Context")
+    ]
+    assert "Question 8" in texts
+    assert "Answer 8" in texts
+
+
 # ── SLASH_COMMANDS list completeness ──────────────────────────────────────────
 
 def test_slash_commands_contains_new_commands():
     from genie.input import SLASH_COMMANDS, SLASH_COMMAND_HINTS
     assert "/stats" in SLASH_COMMANDS
     assert "/export" in SLASH_COMMANDS
+    assert "/compact" in SLASH_COMMANDS
     assert "/stats" in SLASH_COMMAND_HINTS
     assert "/export" in SLASH_COMMAND_HINTS
+    assert "/compact" in SLASH_COMMAND_HINTS
