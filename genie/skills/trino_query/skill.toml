@@ -1,8 +1,0 @@
-[skill]
-name = "trino_query"
-version = "1.0.0"
-description = "Execute SQL on local Trino — validate transpiled queries and run EXPLAIN plans"
-group = "trino_query"
-
-[skill.requires]
-python = ["trino"]

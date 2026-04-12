@@ -79,7 +79,7 @@ Protocol-based abstraction with three implementations:
 ### 4. Skill Registry (`core/registry.py`)
 
 - **Singleton pattern** with class-level `_skills` dict
-- **Discovery**: Scans directories for `skill.toml` + `__init__.py` pairs
+- **Discovery**: Scans directories for `SKILL.md` + `__init__.py` pairs (Anthropic-style skill format)
 - **Tier system**: Skills have `tier` attribute (`core`/`extended`/`full`) for model-aware loading
 - **Dispatch**: `run_tool(name, args, ctx)` with validation + error handling
 - **Clear hooks**: External state (e.g., discovery flags) stays in sync

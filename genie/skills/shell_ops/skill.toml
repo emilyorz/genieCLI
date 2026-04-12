@@ -1,5 +1,0 @@
-[skill]
-name = "shell_ops"
-version = "1.0.0"
-description = "Safe whitelisted shell command execution"
-group = "shell"

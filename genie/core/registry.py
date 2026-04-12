@@ -155,7 +155,12 @@ class SkillRegistry:
 
     @classmethod
     def discover(cls, paths: list[Path]) -> None:
-        """Scan directories for skill.toml + __init__.py packages."""
+        """Scan directories for SKILL.md + __init__.py skill packages.
+
+        Each subdirectory with both a SKILL.md (Anthropic-style metadata)
+        and an __init__.py (Python execution layer) is loaded as a skill.
+        Legacy skill.toml is also accepted as a fallback marker.
+        """
         for base in paths:
             base = Path(base)
             if not base.is_dir():
@@ -164,8 +169,11 @@ class SkillRegistry:
                 if not skill_dir.is_dir():
                     continue
                 init_file = skill_dir / "__init__.py"
+                skill_md = skill_dir / "SKILL.md"
                 toml_file = skill_dir / "skill.toml"
-                if not init_file.exists() or not toml_file.exists():
+                if not init_file.exists():
+                    continue
+                if not skill_md.exists() and not toml_file.exists():
                     continue
                 _load_skill_package(skill_dir)
 
@@ -209,3 +217,24 @@ def _load_skill_package(skill_dir: Path) -> None:
     except Exception as exc:
         import warnings
         warnings.warn(f"Failed to load skill '{skill_dir.name}': {exc}", stacklevel=2)
+
+
+def parse_skill_md(path: Path) -> dict:
+    """Parse SKILL.md YAML frontmatter into a dict.
+
+    Returns an empty dict if the file has no valid frontmatter.
+    """
+    import yaml
+
+    text = path.read_text(encoding="utf-8")
+    if not text.startswith("---"):
+        return {}
+    end = text.find("---", 3)
+    if end == -1:
+        return {}
+    frontmatter = text[3:end]
+    try:
+        data = yaml.safe_load(frontmatter)
+        return data if isinstance(data, dict) else {}
+    except yaml.YAMLError:
+        return {}

@@ -112,6 +112,58 @@ def test_cli_discovery_flag_reset_on_clear():
     assert cli_mod._skills_discovered is False
 
 
+# ── SKILL.md support tests ───────────────────────────────────────────────────
+
+def test_parse_skill_md_valid(tmp_path):
+    """parse_skill_md extracts YAML frontmatter from a SKILL.md file."""
+    from genie.core.registry import parse_skill_md
+    md = tmp_path / "SKILL.md"
+    md.write_text(
+        "---\nname: test-skill\ndescription: A test skill\n"
+        "version: 1.0.0\ngroup: test\ntier: core\n---\n\n# Test Skill\n"
+    )
+    data = parse_skill_md(md)
+    assert data["name"] == "test-skill"
+    assert data["tier"] == "core"
+    assert data["group"] == "test"
+
+
+def test_parse_skill_md_no_frontmatter(tmp_path):
+    """parse_skill_md returns {} when no frontmatter is present."""
+    from genie.core.registry import parse_skill_md
+    md = tmp_path / "SKILL.md"
+    md.write_text("# Just a heading\nNo frontmatter here.\n")
+    assert parse_skill_md(md) == {}
+
+
+def test_discover_accepts_skill_md(tmp_path, monkeypatch):
+    """discover() should accept a dir with SKILL.md + __init__.py (no skill.toml)."""
+    skill_dir = tmp_path / "fake_skill"
+    skill_dir.mkdir()
+    (skill_dir / "SKILL.md").write_text(
+        "---\nname: fake\ndescription: fake\n---\n"
+    )
+    (skill_dir / "__init__.py").write_text(
+        "from genie.core.registry import BaseSkill, SkillRegistry\n"
+        "class FakeSkill(BaseSkill):\n"
+        "    name = '_test_discover_md'\n"
+        "    description = 'fake'\n"
+        "    def run(self, **kw): return 'ok'\n"
+        "def register(reg): reg.register(FakeSkill())\n"
+    )
+    # Make the fake skill importable
+    monkeypatch.syspath_prepend(str(tmp_path))
+    import sys
+    sys.modules.pop("genie.skills.fake_skill", None)
+    # Patch the package name construction
+    monkeypatch.setattr(
+        "genie.core.registry._load_skill_package",
+        lambda d: __import__(d.name).register(SkillRegistry),
+    )
+    SkillRegistry.discover([tmp_path])
+    assert SkillRegistry.get("_test_discover_md") is not None
+
+
 def test_discover_legacy_absent_module_is_silent():
     """A completely missing legacy package must not warn (optional path)."""
     import warnings

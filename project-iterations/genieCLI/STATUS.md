@@ -1,8 +1,7 @@
 # Sprint Status
 
-- Last iteration: v7 (complete — /branch shipped, 575 tests green)
-- Carryover: named branches or branch stack deferred into v8 as candidate scope
-- Next action: start TASK-LEDGER-v8.md; pick next scope from v7 retro candidates
+- Last iteration: v8 (complete — Anthropic-style SKILL.md migration shipped, 557 tests green)
+- Carryover: none — skill architecture migration is complete
 - Archived:
   - TASK-LEDGER-v1-archived.md
   - TASK-LEDGER-v2-archived.md
@@ -12,7 +11,13 @@
   - TASK-LEDGER-v4.md (read for retro context)
   - TASK-LEDGER-v6.md (read for retro context)
   - TASK-LEDGER-v7.md (read for retro context)
-- Active: none — ready for v8
-- v7 retro follow-ups:
-  - Named branches or branch stack (if branching becomes heavy use)
-  - Any other UX or harness improvement surfaced by usage
+  - TASK-LEDGER-v8.md (skill-architecture migration — SKILL.md)
+- Active: none
+- v8 summary:
+  - Migrated genieCLI skill system from skill.toml + __init__.py to Anthropic-style SKILL.md + __init__.py
+  - 8 bundled skills converted, 53 tools load correctly
+  - registry.py discover() supports SKILL.md as primary marker (skill.toml fallback for external dirs)
+  - parse_skill_md() utility added for YAML frontmatter extraction
+  - MIGRATION-MAP.md documents the full architecture and design decisions
+  - 20 pre-existing trino linter/integration test failures remain (not related to this migration)
+- Next action: pick next scope or address the 20 pre-existing trino test failures

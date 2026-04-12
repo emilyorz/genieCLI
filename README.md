@@ -107,6 +107,69 @@ Autoresearch 自主迭代引擎，作為 plugin 載入，不耦合 core。
 
 ---
 
+## 如何撰寫 Skill
+
+每個 skill 是 `genie/skills/<name>/` 下的一個目錄，需要兩個檔案：
+
+| 檔案 | 用途 |
+|------|------|
+| `SKILL.md` | Anthropic-style metadata + 使用說明（discovery 的依據） |
+| `__init__.py` | `BaseSkill` 子類別 + `register()` 函式（實際執行邏輯） |
+
+選用子目錄：`references/`（大型參考文件）、`scripts/`（可重用腳本）、`assets/`（靜態檔案）。
+
+### SKILL.md 模板
+
+```markdown
+---
+name: my-skill
+description: >-
+  清楚描述這個 skill 何時該被使用，以及它能完成什麼事。
+  description 是最重要的 trigger — 比 body 更直接影響是否啟用。
+version: 1.0.0
+group: my_group
+tier: core          # core（所有模型）/ extended（中階+）/ full（頂階）
+requires:           # 選填
+  python: [some-lib]
+  system: [some-requirement]
+---
+
+# My Skill
+
+簡要說明這個 skill 提供哪些 tools、何時使用、怎麼用。
+
+保持短、直接、可執行。大型參考資料拆到 `references/`，可重用腳本放 `scripts/`。
+```
+
+### __init__.py 最小範例
+
+```python
+from genie.core.arg import Arg
+from genie.core.registry import BaseSkill
+
+class MyTool(BaseSkill):
+    name = "my_tool"
+    description = "做什麼事"
+    group = "my_group"
+    tier = "core"
+    args = [Arg(name="input", type="str", description="輸入", required=True)]
+
+    def run(self, input="") -> str:
+        return f"result: {input}"
+
+def register(registry) -> None:
+    registry.register(MyTool())
+```
+
+### 注意事項
+
+- `description` 要寫「何時用」+「完成什麼」；這比 body 更影響 trigger。
+- `tier` 決定哪些模型看得到這個 skill：`core` 永遠載入，`extended` 和 `full` 視模型能力。
+- Tool name（`BaseSkill.name`）是全域唯一的，不要和既有 tools 撞名。
+- `run()` 回傳 `str`；複雜資料用 JSON serialize。
+
+---
+
 ## 快速開始
 
 ### 前置需求

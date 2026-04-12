@@ -1,5 +1,0 @@
-[skill]
-name = "file_ops"
-version = "1.0.0"
-description = "File read/write/list operations"
-group = "file"

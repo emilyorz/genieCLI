@@ -1,5 +1,0 @@
-[skill]
-name = "deepwiki"
-version = "1.0.0"
-description = "Generate wiki documentation for repositories using DeepWiki"
-group = "analysis"
