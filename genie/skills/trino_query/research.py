@@ -372,6 +372,16 @@ def _run_optimization_loop(
             "hypothesis": hypothesis,
         })
 
+        # Early exit: 3 consecutive non-improvements → plateau
+        if len(history) >= 3:
+            last_3 = history[-3:]
+            if all(h["status"] != "improved" for h in last_3):
+                output.progress(
+                    f"\n  [EARLY STOP] 3 consecutive iterations without improvement — "
+                    f"optimization has plateaued."
+                )
+                break
+
     # ── Summary ──
     kept_count = sum(1 for h in history if h["status"] == "improved")
     total_improvement = best_metric - baseline_metric
@@ -446,6 +456,23 @@ def _generate_report(result: dict, metric_key: str, model: str, verify_runs: int
         lines.append("```sql")
         lines.append(result["best_sql"])
         lines.append("```")
+        lines.append("")
+
+        # Side-by-side diff
+        import difflib
+        diff = difflib.unified_diff(
+            result["original_sql"].splitlines(keepends=True),
+            result["best_sql"].splitlines(keepends=True),
+            fromfile="Original",
+            tofile="Optimized",
+        )
+        diff_text = "".join(diff)
+        if diff_text:
+            lines.append("## Diff")
+            lines.append("")
+            lines.append("```diff")
+            lines.append(diff_text.rstrip())
+            lines.append("```")
     else:
         lines.append("## Result")
         lines.append("")

@@ -49,7 +49,12 @@ class TrinoProfile:
 
     def connect(self, catalog: str | None = None, schema: str | None = None):
         """Create a trino.dbapi connection using this profile."""
-        import trino.dbapi
+        try:
+            import trino.dbapi
+        except ImportError:
+            raise ImportError(
+                "Trino Python driver not installed. Run: pip install trino"
+            ) from None
         return trino.dbapi.connect(
             host=self.host,
             port=self.port,

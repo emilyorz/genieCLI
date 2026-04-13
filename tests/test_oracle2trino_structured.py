@@ -5,6 +5,12 @@ import json
 
 import pytest
 
+try:
+    import sqlglot
+    _has_sqlglot = True
+except ImportError:
+    _has_sqlglot = False
+
 from genie.skills.oracle2trino import AnalyzeOracleSP, TranspileSQL
 from genie.skills.oracle2trino.models import ConversionResult, UnsupportedConstruct
 from genie.skills.oracle2trino.patterns import (
@@ -50,6 +56,7 @@ def test_transpile_sql_field_types():
     assert isinstance(result["manual_fix_notes"], list)
 
 
+@pytest.mark.skipif(not _has_sqlglot, reason="sqlglot not installed")
 def test_transpile_clean_sql_high_confidence():
     result = _run_transpile("SELECT id, name FROM users WHERE id = 1")
     assert result["confidence"] == 1.0
@@ -102,6 +109,7 @@ def test_no_duplicate_constructs_in_unsupported():
 
 # ── transpile_sql: confidence calculation ─────────────────────────────────────
 
+@pytest.mark.skipif(not _has_sqlglot, reason="sqlglot not installed")
 def test_confidence_decreases_with_high_severity():
     clean = _run_transpile("SELECT id FROM t WHERE id = 1")
     heavy = _run_transpile("SELECT * FROM t WHERE ROWNUM < 10 CONNECT BY PRIOR id = parent_id")
@@ -196,6 +204,7 @@ def test_analyze_sp_low_confidence_for_heavy_plsql():
     assert result["confidence"] < 1.0
 
 
+@pytest.mark.skipif(not _has_sqlglot, reason="sqlglot not installed")
 def test_analyze_sp_clean_sql_no_manual_notes():
     result = _run_analyze("SELECT id, name FROM users WHERE id = 1")
     assert result["manual_fix_notes"] == []

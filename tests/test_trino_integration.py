@@ -9,8 +9,9 @@ import os
 
 import pytest
 
-# Skip entire module if Trino is not reachable
+# Skip entire module if trino driver missing or Trino not reachable
 try:
+    import trino.dbapi  # noqa: F401
     import urllib.request
     urllib.request.urlopen("http://localhost:8085/v1/info", timeout=2)
     TRINO_AVAILABLE = True

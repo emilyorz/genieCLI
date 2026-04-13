@@ -715,9 +715,23 @@ def _chat_loop(
 
                     output.print(f"  [green]✓ Connected to {p.display_name()}[/green]")
 
+                except ImportError:
+
+                    output.print(f"  [red]✗ Trino driver not installed[/red]")
+                    output.print(f"  [dim]Run: pip install trino[/dim]")
+
+                except ConnectionRefusedError:
+
+                    output.print(f"  [red]✗ Connection refused — is Trino running at {p.display_name()}?[/red]")
+
                 except Exception as exc:
 
-                    output.print(f"  [red]✗ Connection failed: {exc}[/red]")
+                    err_str = str(exc)
+                    output.print(f"  [red]✗ Connection failed: {err_str}[/red]")
+                    if "timeout" in err_str.lower() or "timed out" in err_str.lower():
+                        output.print(f"  [dim]Check: is {p.host}:{p.port} reachable?[/dim]")
+                    elif "refused" in err_str.lower():
+                        output.print(f"  [dim]Check: is Trino running on port {p.port}?[/dim]")
 
             else:
 
@@ -869,9 +883,9 @@ def _chat_loop(
 
                 ("/autoresearch", "Start autonomous iteration loop"),
 
-                ("/trino",        "Trino connection manager"),
+                ("/trino",        "Trino profiles: /trino [use|add|remove|test]"),
 
-                ("/trino-research","Optimize SQL via autoresearch loop"),
+                ("/trino-research","Optimize SQL: --file F --metric M --iterations N --runs N"),
 
                 ("/model",        "Show current model"),
 
