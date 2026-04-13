@@ -2,6 +2,12 @@
 
 ## 版本歷程
 
+### E2E Run — e2e/geniecli-0413-0400（2026-04-13 04:05 AM）
+
+- **Commit**: `4c69024` — chore: record genieCLI 4am E2E run
+- **Branch**: `e2e/geniecli-0413-0400` → GitHub
+- **Status**: 完成，push 到 remote
+
 ### Phase 4 — v4.1.0（2026-04-03）
 
 - **技術債清理**：刪除 27 個 legacy 檔案（~4900 行 dead code），repo 只剩 `genie/` package
