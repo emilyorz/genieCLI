@@ -20,6 +20,7 @@ import time
 from pathlib import Path
 from typing import Callable, Optional
 
+from genie.core.sql_extraction import extract_sql_from_reply
 from genie.skills.trino_query.connection import get_active_profile
 from genie.skills.trino_query import QueryMetrics, _extract_metrics
 
@@ -139,27 +140,6 @@ def _lint_sql(sql: str) -> tuple[bool, str]:
         return False, f"lint error: {e}"
 
 
-def _extract_sql_from_reply(reply: str) -> Optional[str]:
-    """Extract SQL from AI reply.
-
-    Tries in order:
-    1. Fenced ```sql ... ``` block
-    2. Fenced ``` ... ``` block that looks like SQL
-    3. None (no SQL found)
-    """
-    # Try ```sql block first
-    sql_blocks = re.findall(r"```sql\s*\n(.*?)```", reply, re.DOTALL | re.IGNORECASE)
-    if sql_blocks:
-        return sql_blocks[-1].strip().rstrip(";")
-
-    # Try generic fenced block
-    generic_blocks = re.findall(r"```\s*\n(.*?)```", reply, re.DOTALL)
-    for block in reversed(generic_blocks):
-        block = block.strip()
-        if any(kw in block.upper() for kw in ["SELECT", "WITH", "INSERT", "UPDATE", "DELETE"]):
-            return block.rstrip(";")
-
-    return None
 
 
 # ---------------------------------------------------------------------------
@@ -259,7 +239,7 @@ def _run_optimization_loop(
         session["history"].append(new_msg("assistant", reply))
 
         # Extract SQL
-        candidate_sql = _extract_sql_from_reply(reply)
+        candidate_sql = extract_sql_from_reply(reply)
         if not candidate_sql:
             output.progress("  [SKIP] No SQL found in AI response.")
             session["history"].append(new_msg("user", "I couldn't find a SQL block in your response. Return the COMPLETE SQL in a ```sql block."))
@@ -268,7 +248,7 @@ def _run_optimization_loop(
             reply2 = provider.complete_text(req2)
             if reply2:
                 session["history"].append(new_msg("assistant", reply2))
-                candidate_sql = _extract_sql_from_reply(reply2)
+                candidate_sql = extract_sql_from_reply(reply2)
             if not candidate_sql:
                 output.progress("  [SKIP] Still no SQL — skipping iteration.")
                 history.append({

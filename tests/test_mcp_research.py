@@ -7,6 +7,7 @@ from unittest.mock import MagicMock, patch
 import pytest
 
 from genie.skills.mcp_trino.client import McpClient, McpConfig
+from genie.core.sql_extraction import extract_sql_from_reply as _extract_sql_from_reply
 from genie.skills.mcp_trino.research import (
     ColumnInfo,
     EnhancementReport,
@@ -17,7 +18,6 @@ from genie.skills.mcp_trino.research import (
     TableMetadata,
     TableSuggestion,
     _execute_via_mcp,
-    _extract_sql_from_reply,
     _extract_table_names,
     _fetch_explain_analyze,
     _generate_table_suggestions,

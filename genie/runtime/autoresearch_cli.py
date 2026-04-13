@@ -40,7 +40,7 @@ def _run_autoresearch(
 ) -> None:
     from genie.core.provider import CompletionRequest
     from genie.input import _read_input
-    from genie.runtime.eval_loop import RunConfig, RunManager
+    from genie.runtime.run_manager import RunConfig, RunManager
 
     output.progress("== Autoresearch Setup ==")
     output.progress("Press Enter to accept defaults shown in brackets.")

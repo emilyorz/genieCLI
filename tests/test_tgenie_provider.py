@@ -8,6 +8,8 @@ import responses as rsps_lib
 from genie.core.provider import CompletionRequest
 from genie.providers.tgenie import TGenieProvider, set_debug
 
+from conftest import _msg
+
 
 ENDPOINT = "https://tgenie.internal"
 
@@ -21,10 +23,6 @@ def _cfg(**kwargs) -> dict:
     }
     base.update(kwargs)
     return base
-
-
-def _msg(role: str, text: str) -> dict:
-    return {"role": role, "content": [{"type": "text", "text": text}]}
 
 
 SSE_BODY = (

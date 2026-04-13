@@ -9,11 +9,10 @@ import responses as rsps_lib
 from genie.core.provider import CompletionRequest
 from genie.providers.openai import OpenAIProvider, _history_to_openai, set_debug
 
+from conftest import _msg
+
 
 # ── _history_to_openai helper ─────────────────────────────────────────────────
-
-def _msg(role: str, text: str) -> dict:
-    return {"role": role, "content": [{"type": "text", "text": text}]}
 
 
 def test_history_to_openai_basic():

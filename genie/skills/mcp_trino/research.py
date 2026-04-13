@@ -21,6 +21,7 @@ from datetime import datetime
 from pathlib import Path
 from typing import Any, Callable, Optional
 
+from genie.core.sql_extraction import extract_sql_from_reply
 from .client import McpClient, McpConfig, load_mcp_config
 
 # sqlglot is already a project dependency — used for table name extraction
@@ -589,19 +590,6 @@ def _results_equivalent(rows_a: list, rows_b: list) -> tuple[bool, str]:
     return True, "exact match"
 
 
-def _extract_sql_from_reply(reply: str) -> Optional[str]:
-    """Extract SQL from AI reply (```sql block)."""
-    sql_blocks = re.findall(r"```sql\s*\n(.*?)```", reply, re.DOTALL | re.IGNORECASE)
-    if sql_blocks:
-        return sql_blocks[-1].strip().rstrip(";")
-
-    generic_blocks = re.findall(r"```\s*\n(.*?)```", reply, re.DOTALL)
-    for block in reversed(generic_blocks):
-        block = block.strip()
-        if any(kw in block.upper() for kw in ["SELECT", "WITH", "INSERT", "UPDATE", "DELETE"]):
-            return block.rstrip(";")
-
-    return None
 
 
 # ---------------------------------------------------------------------------
@@ -1037,7 +1025,7 @@ def run_mcp_enhancement(
         session["history"].append(new_msg("assistant", reply))
 
         # Extract SQL
-        candidate_sql = _extract_sql_from_reply(reply)
+        candidate_sql = extract_sql_from_reply(reply)
         if not candidate_sql:
             if output:
                 output.progress("  [SKIP] No SQL found in AI response.")

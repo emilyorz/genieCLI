@@ -54,16 +54,6 @@ def test_compute_confidence_floors_at_zero():
     assert compute_confidence(issues) == 0.0
 
 
-def test_reexport_from_oracle2trino():
-    """Verify the backward-compat re-export from oracle2trino.patterns works."""
-    from genie.skills.oracle2trino.patterns import (
-        ORACLE_CONSTRUCTS as reexported,
-        get_construct_meta as reexported_meta,
-    )
-    assert reexported is ORACLE_CONSTRUCTS
-    assert reexported_meta is get_construct_meta
-
-
 def test_lint_rules_import_from_core():
     """Verify lint rules (now in genie/core/) import from core, not cross-skill."""
     import inspect

@@ -1,4 +1,4 @@
-"""Shared test fixtures: FakeProvider and NullSink."""
+"""Shared test fixtures and helpers for genieCLI tests."""
 from __future__ import annotations
 
 from typing import Any, Iterator
@@ -6,6 +6,11 @@ from typing import Any, Iterator
 import pytest
 
 from genie.core.provider import CompletionRequest, Delta, ProviderCapabilities
+
+
+def _msg(role: str, text: str) -> dict:
+    """Build a message dict in the internal content-array format."""
+    return {"role": role, "content": [{"type": "text", "text": text}]}
 
 
 class FakeProvider:

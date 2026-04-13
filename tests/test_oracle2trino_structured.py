@@ -13,7 +13,7 @@ except ImportError:
 
 from genie.skills.oracle2trino import AnalyzeOracleSP, TranspileSQL
 from genie.skills.oracle2trino.models import ConversionResult, UnsupportedConstruct
-from genie.skills.oracle2trino.patterns import (
+from genie.core.sql_patterns import (
     ORACLE_CONSTRUCTS,
     compute_confidence,
     get_construct_meta,

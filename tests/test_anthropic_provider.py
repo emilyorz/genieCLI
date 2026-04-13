@@ -8,9 +8,7 @@ import responses as rsps_lib
 from genie.core.provider import CompletionRequest
 from genie.providers.anthropic import AnthropicProvider, set_debug
 
-
-def _msg(role: str, text: str) -> dict:
-    return {"role": role, "content": [{"type": "text", "text": text}]}
+from conftest import _msg
 
 
 SSE_STREAM = (
