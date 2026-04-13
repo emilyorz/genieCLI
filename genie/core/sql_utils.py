@@ -1,4 +1,4 @@
-"""Shared SQL text utilities — used by oracle2trino and trino_linter skills."""
+"""Shared SQL text utilities — used by oracle2trino and lint engine."""
 from __future__ import annotations
 
 

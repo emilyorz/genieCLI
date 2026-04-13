@@ -23,6 +23,9 @@ from typing import Any, Callable, Optional
 
 from .client import McpClient, McpConfig, load_mcp_config
 
+# sqlglot is already a project dependency — used for table name extraction
+import sqlglot
+
 
 # ---------------------------------------------------------------------------
 # Data structures
@@ -90,6 +93,392 @@ class EnhancementReport:
     data_consistency_reason: str
     mcp_server_url: str
     verify_runs: int
+    table_suggestions: list[TableSuggestion] = field(default_factory=list)
+    original_explain: ExplainAnalyzeResult | None = None
+    enhanced_explain: ExplainAnalyzeResult | None = None
+
+
+@dataclass
+class ColumnInfo:
+    """Column metadata from information_schema."""
+    column_name: str
+    data_type: str
+    is_nullable: str
+    ordinal_position: int
+
+
+@dataclass
+class TableMetadata:
+    """Metadata for a single table."""
+    catalog: str
+    schema: str
+    table_name: str
+    columns: list[ColumnInfo] = field(default_factory=list)
+    properties: dict[str, str] = field(default_factory=dict)
+
+
+@dataclass
+class TableSuggestion:
+    """A single table-level optimization suggestion."""
+    table: str
+    category: str  # partition | bucket | data_type | sort | general
+    suggestion: str
+    suggestion_zh: str  # 繁體中文 version
+    severity: str = "info"  # info | warning | critical
+
+
+# ---------------------------------------------------------------------------
+# Table metadata helpers
+# ---------------------------------------------------------------------------
+
+def _extract_table_names(sql: str) -> list[tuple[str, str, str]]:
+    """Extract (catalog, schema, table) tuples from SQL using sqlglot.
+
+    Returns tuples where catalog/schema may be empty strings if not qualified.
+    """
+    tables = set()
+    try:
+        for statement in sqlglot.parse(sql, dialect="trino"):
+            if statement is None:
+                continue
+            for table in statement.find_all(sqlglot.exp.Table):
+                catalog = table.catalog or ""
+                schema = table.db or ""
+                name = table.name or ""
+                if name and not name.startswith("__"):
+                    tables.add((catalog, schema, name))
+    except sqlglot.errors.ParseError:
+        pass
+    return sorted(tables)
+
+
+def _fetch_table_metadata(
+    client: McpClient,
+    tables: list[tuple[str, str, str]],
+    default_catalog: str = "",
+    default_schema: str = "",
+) -> list[TableMetadata]:
+    """Query information_schema.columns and table properties via MCP.
+
+    Gracefully returns empty list if the MCP server can't handle these queries.
+    """
+    results = []
+    for catalog, schema, table_name in tables:
+        cat = catalog or default_catalog
+        sch = schema or default_schema
+        if not cat or not sch:
+            continue
+
+        meta = TableMetadata(catalog=cat, schema=sch, table_name=table_name)
+
+        # Query columns
+        col_sql = (
+            f"SELECT column_name, data_type, is_nullable, ordinal_position "
+            f"FROM {cat}.information_schema.columns "
+            f"WHERE table_schema = '{sch}' AND table_name = '{table_name}' "
+            f"ORDER BY ordinal_position"
+        )
+        try:
+            result = _execute_via_mcp(client, col_sql)
+            if not result.get("error") and result.get("rows"):
+                for row in result["rows"]:
+                    if isinstance(row, dict):
+                        meta.columns.append(ColumnInfo(
+                            column_name=row.get("column_name", ""),
+                            data_type=row.get("data_type", ""),
+                            is_nullable=row.get("is_nullable", ""),
+                            ordinal_position=int(row.get("ordinal_position", 0)),
+                        ))
+        except Exception:
+            pass
+
+        # Query table properties (Trino system metadata)
+        prop_sql = (
+            f"SELECT property_name, property_value "
+            f"FROM system.metadata.table_properties "
+            f"WHERE catalog_name = '{cat}' "
+            f"AND schema_name = '{sch}' "
+            f"AND table_name = '{table_name}'"
+        )
+        try:
+            result = _execute_via_mcp(client, prop_sql)
+            if not result.get("error") and result.get("rows"):
+                for row in result["rows"]:
+                    if isinstance(row, dict):
+                        key = row.get("property_name", "")
+                        val = row.get("property_value", "")
+                        if key:
+                            meta.properties[key] = val
+        except Exception:
+            pass
+
+        if meta.columns or meta.properties:
+            results.append(meta)
+
+    return results
+
+
+def _generate_table_suggestions(metadata: list[TableMetadata]) -> list[TableSuggestion]:
+    """Analyze table metadata and generate optimization suggestions."""
+    suggestions: list[TableSuggestion] = []
+
+    for meta in metadata:
+        fqn = f"{meta.catalog}.{meta.schema}.{meta.table_name}"
+
+        # ── Partition analysis ──
+        partitioning = meta.properties.get("partitioning", "")
+        if not partitioning or partitioning == "[]":
+            # Check for date/timestamp columns that could be partition keys
+            date_cols = [
+                c for c in meta.columns
+                if any(t in c.data_type.lower() for t in ["date", "timestamp"])
+            ]
+            if date_cols:
+                col_names = ", ".join(c.column_name for c in date_cols[:3])
+                suggestions.append(TableSuggestion(
+                    table=fqn,
+                    category="partition",
+                    suggestion=(
+                        f"No partitioning detected. Consider partitioning by "
+                        f"date/timestamp column(s): {col_names}. "
+                        f"This enables partition pruning and reduces scan volume."
+                    ),
+                    suggestion_zh=(
+                        f"未偵測到分區設定。建議使用日期/時間戳記欄位進行分區："
+                        f"{col_names}。"
+                        f"啟用分區裁剪可大幅減少掃描量。"
+                    ),
+                    severity="warning",
+                ))
+
+        # ── Bucketing analysis ──
+        bucket_count = meta.properties.get("bucket_count", "")
+        if not bucket_count or bucket_count == "0":
+            id_cols = [
+                c for c in meta.columns
+                if any(k in c.column_name.lower() for k in ["_id", "id", "_key", "key"])
+                and c.data_type.lower() in ("integer", "bigint", "varchar")
+            ]
+            if id_cols:
+                col_names = ", ".join(c.column_name for c in id_cols[:2])
+                suggestions.append(TableSuggestion(
+                    table=fqn,
+                    category="bucket",
+                    suggestion=(
+                        f"No bucketing configured. For tables frequently joined on "
+                        f"{col_names}, bucketing can improve join performance "
+                        f"by enabling bucket-pruned joins."
+                    ),
+                    suggestion_zh=(
+                        f"未設定分桶。若此表經常以 {col_names} 進行 JOIN，"
+                        f"建議設定 bucketing 以啟用分桶裁剪，提升 JOIN 效能。"
+                    ),
+                    severity="info",
+                ))
+
+        # ── Data type analysis ──
+        for col in meta.columns:
+            dtype = col.data_type.lower()
+            # varchar without length → potential issue
+            if dtype == "varchar" and col.column_name.lower().endswith(("_id", "_code", "_type")):
+                suggestions.append(TableSuggestion(
+                    table=fqn,
+                    category="data_type",
+                    suggestion=(
+                        f"Column '{col.column_name}' is varchar (unbounded). "
+                        f"Consider varchar(N) with explicit length for ID/code columns "
+                        f"to improve memory estimation and query planning."
+                    ),
+                    suggestion_zh=(
+                        f"欄位 '{col.column_name}' 使用無限長度 varchar。"
+                        f"建議 ID/代碼欄位使用 varchar(N) 指定長度，"
+                        f"有助於記憶體估算與查詢規劃。"
+                    ),
+                    severity="info",
+                ))
+            # double where decimal might be better
+            if dtype == "double" and any(
+                k in col.column_name.lower()
+                for k in ["amount", "price", "cost", "revenue", "balance"]
+            ):
+                suggestions.append(TableSuggestion(
+                    table=fqn,
+                    category="data_type",
+                    suggestion=(
+                        f"Column '{col.column_name}' uses DOUBLE. "
+                        f"For financial/monetary data, consider DECIMAL(p,s) "
+                        f"to avoid floating-point precision issues."
+                    ),
+                    suggestion_zh=(
+                        f"欄位 '{col.column_name}' 使用 DOUBLE 型別。"
+                        f"財務/金額資料建議改用 DECIMAL(p,s)，"
+                        f"避免浮點數精度問題。"
+                    ),
+                    severity="warning",
+                ))
+
+        # ── Sort order analysis ──
+        sort_order = meta.properties.get("sorted_by", meta.properties.get("sort_order", ""))
+        if not sort_order or sort_order == "[]":
+            if len(meta.columns) > 10:
+                suggestions.append(TableSuggestion(
+                    table=fqn,
+                    category="sort",
+                    suggestion=(
+                        f"No sort order configured on a wide table ({len(meta.columns)} columns). "
+                        f"Setting a sort order on frequently filtered columns "
+                        f"can improve min/max predicate pushdown and file skipping."
+                    ),
+                    suggestion_zh=(
+                        f"寬表（{len(meta.columns)} 欄位）未設定排序。"
+                        f"建議對經常用於篩選的欄位設定排序，"
+                        f"可提升 min/max 述詞下推與檔案跳過效率。"
+                    ),
+                    severity="info",
+                ))
+
+    return suggestions
+
+
+@dataclass
+class ExplainAnalyzeResult:
+    """Parsed EXPLAIN ANALYZE output from Trino."""
+    raw_text: str
+    stages: list[dict] = field(default_factory=list)
+    total_cpu_ms: float = 0.0
+    total_wall_ms: float = 0.0
+    total_memory_bytes: int = 0
+    total_input_rows: int = 0
+    total_output_rows: int = 0
+    available: bool = True
+
+
+# ---------------------------------------------------------------------------
+# EXPLAIN ANALYZE helpers
+# ---------------------------------------------------------------------------
+
+def _fetch_explain_analyze(client: McpClient, sql: str) -> ExplainAnalyzeResult:
+    """Run EXPLAIN ANALYZE via MCP and parse the output.
+
+    Returns ExplainAnalyzeResult with available=False if the query fails
+    (e.g. MCP server doesn't support EXPLAIN ANALYZE, or the query errors out).
+    This is the fallback-safe path — never raises.
+    """
+    explain_sql = f"EXPLAIN ANALYZE {sql}"
+    try:
+        result = _execute_via_mcp(client, explain_sql)
+        if result.get("error"):
+            return ExplainAnalyzeResult(
+                raw_text=str(result["error"]),
+                available=False,
+            )
+
+        # EXPLAIN ANALYZE returns text rows, not tabular data
+        rows = result.get("rows", [])
+        raw_lines = []
+        for row in rows:
+            if isinstance(row, dict):
+                # Trino returns single-column result with plan text
+                line = str(next(iter(row.values()), ""))
+            else:
+                line = str(row)
+            raw_lines.append(line)
+
+        raw_text = "\n".join(raw_lines)
+        if not raw_text.strip():
+            raw_text = result.get("raw", "")
+
+        # Parse stage-level metrics from EXPLAIN ANALYZE output
+        stages = _parse_explain_stages(raw_text)
+
+        # Aggregate totals
+        total_cpu = sum(s.get("cpu_ms", 0) for s in stages)
+        total_wall = sum(s.get("wall_ms", 0) for s in stages)
+        total_mem = max((s.get("memory_bytes", 0) for s in stages), default=0)
+        total_input = sum(s.get("input_rows", 0) for s in stages)
+        total_output = sum(s.get("output_rows", 0) for s in stages)
+
+        return ExplainAnalyzeResult(
+            raw_text=raw_text,
+            stages=stages,
+            total_cpu_ms=total_cpu,
+            total_wall_ms=total_wall,
+            total_memory_bytes=total_mem,
+            total_input_rows=total_input,
+            total_output_rows=total_output,
+            available=True,
+        )
+    except Exception as exc:
+        return ExplainAnalyzeResult(
+            raw_text=f"EXPLAIN ANALYZE failed: {exc}",
+            available=False,
+        )
+
+
+def _parse_explain_stages(text: str) -> list[dict]:
+    """Extract stage-level metrics from Trino EXPLAIN ANALYZE text output.
+
+    Trino EXPLAIN ANALYZE output contains lines like:
+        Fragment 1 [HASH]
+            CPU: 1.23s, Scheduled: 2.00s, Blocked: ...
+            Input: 1000 rows (50kB), Output: 100 rows (5kB)
+            ...
+
+    This parser extracts what it can and is lenient about format changes.
+    """
+    stages: list[dict] = []
+    current_stage: dict | None = None
+
+    for line in text.split("\n"):
+        stripped = line.strip()
+
+        # Detect stage/fragment boundaries
+        fragment_match = re.match(r"(?:Fragment|Stage)\s+(\d+)", stripped, re.IGNORECASE)
+        if fragment_match:
+            if current_stage:
+                stages.append(current_stage)
+            current_stage = {"id": int(fragment_match.group(1))}
+            continue
+
+        if current_stage is None:
+            continue
+
+        # Parse CPU/wall time: "CPU: 1.23s" or "CPU: 123.00ms"
+        cpu_match = re.search(r"CPU:\s*([\d.]+)(ms|s)", stripped, re.IGNORECASE)
+        if cpu_match:
+            val = float(cpu_match.group(1))
+            if cpu_match.group(2).lower() == "s":
+                val *= 1000
+            current_stage["cpu_ms"] = val
+
+        wall_match = re.search(r"(?:Scheduled|Wall):\s*([\d.]+)(ms|s)", stripped, re.IGNORECASE)
+        if wall_match:
+            val = float(wall_match.group(1))
+            if wall_match.group(2).lower() == "s":
+                val *= 1000
+            current_stage["wall_ms"] = val
+
+        # Parse memory: "Peak Memory: 1.5MB" or "Memory: 1234B"
+        mem_match = re.search(r"(?:Peak\s+)?Memory:\s*([\d.]+)\s*(B|KB|MB|GB)", stripped, re.IGNORECASE)
+        if mem_match:
+            val = float(mem_match.group(1))
+            unit = mem_match.group(2).upper()
+            multiplier = {"B": 1, "KB": 1024, "MB": 1024**2, "GB": 1024**3}
+            current_stage["memory_bytes"] = int(val * multiplier.get(unit, 1))
+
+        # Parse rows: "Input: 1000 rows" / "Output: 100 rows"
+        input_match = re.search(r"Input:\s*([\d,]+)\s*rows?", stripped, re.IGNORECASE)
+        if input_match:
+            current_stage["input_rows"] = int(input_match.group(1).replace(",", ""))
+
+        output_match = re.search(r"Output:\s*([\d,]+)\s*rows?", stripped, re.IGNORECASE)
+        if output_match:
+            current_stage["output_rows"] = int(output_match.group(1).replace(",", ""))
+
+    if current_stage:
+        stages.append(current_stage)
+
+    return stages
 
 
 # ---------------------------------------------------------------------------
@@ -219,32 +608,151 @@ def _extract_sql_from_reply(reply: str) -> Optional[str]:
 # Report generation (fixed format)
 # ---------------------------------------------------------------------------
 
-def generate_report(report: EnhancementReport) -> str:
+_LABELS_EN = {
+    "title": "Trino Query Enhancement Report",
+    "meta": "Meta",
+    "perf": "Performance Comparison",
+    "summary": "Summary",
+    "iter_history": "Iteration History",
+    "orig_sql": "Original SQL",
+    "orig_result": "Original Result (sample)",
+    "enh_sql": "Enhanced SQL",
+    "enh_result": "Enhanced Result (sample)",
+    "table_suggestions": "Table Structure Suggestions",
+    "field": "Field",
+    "value": "Value",
+    "metric": "Metric",
+    "original": "Original",
+    "enhanced": "Enhanced",
+    "delta": "Delta",
+    "change_pct": "Change %",
+    "round": "Round",
+    "status": "Status",
+    "metric_value": "Metric Value",
+    "hypothesis": "Hypothesis",
+    "baseline": "Baseline",
+    "best": "Best",
+    "improvement": "Improvement",
+    "orig_rows": "Original Row Count",
+    "enh_rows": "Enhanced Row Count",
+    "data_consistent": "Data Consistent",
+    "consistency_detail": "Consistency Detail",
+    "lower_better": "lower is better",
+    "median": "median",
+    "no_improve": "no improvement found — original SQL unchanged",
+    "no_data": "no data",
+    "generated_by": "Generated by genieCLI mcp_trino research at",
+    "table": "Table",
+    "category": "Category",
+    "severity": "Severity",
+    "suggestion": "Suggestion",
+    "no_suggestions": "No table structure issues detected.",
+    "explain_analyze": "EXPLAIN ANALYZE",
+    "explain_original": "Original Query Plan",
+    "explain_enhanced": "Enhanced Query Plan",
+    "explain_unavailable": "EXPLAIN ANALYZE data not available.",
+    "stage": "Stage",
+    "cpu_ms": "CPU (ms)",
+    "wall_ms": "Wall (ms)",
+    "memory": "Memory",
+    "input_rows": "Input Rows",
+    "output_rows": "Output Rows",
+    "timestamp": "Timestamp",
+    "mcp_server": "MCP Server",
+    "target_metric": "Target Metric",
+    "verify_runs": "Verify Runs",
+    "iterations": "Iterations",
+}
+
+_LABELS_ZH = {
+    "title": "Trino 查詢優化報告",
+    "meta": "基本資訊",
+    "perf": "效能比較",
+    "summary": "摘要",
+    "iter_history": "迭代歷程",
+    "orig_sql": "原始 SQL",
+    "orig_result": "原始結果（樣本）",
+    "enh_sql": "優化後 SQL",
+    "enh_result": "優化後結果（樣本）",
+    "table_suggestions": "表結構優化建議",
+    "field": "欄位",
+    "value": "值",
+    "metric": "指標",
+    "original": "原始",
+    "enhanced": "優化後",
+    "delta": "差異",
+    "change_pct": "變化 %",
+    "round": "輪次",
+    "status": "狀態",
+    "metric_value": "指標值",
+    "hypothesis": "假說",
+    "baseline": "基線",
+    "best": "最佳",
+    "improvement": "改善",
+    "orig_rows": "原始列數",
+    "enh_rows": "優化後列數",
+    "data_consistent": "資料一致性",
+    "consistency_detail": "一致性細節",
+    "lower_better": "越低越好",
+    "median": "中位數",
+    "no_improve": "未找到改善方案 — 原始 SQL 不變",
+    "no_data": "無資料",
+    "generated_by": "由 genieCLI mcp_trino research 產生於",
+    "table": "表名",
+    "category": "類別",
+    "severity": "嚴重度",
+    "suggestion": "建議",
+    "no_suggestions": "未偵測到表結構問題。",
+    "explain_analyze": "EXPLAIN ANALYZE",
+    "explain_original": "原始查詢計畫",
+    "explain_enhanced": "優化後查詢計畫",
+    "explain_unavailable": "EXPLAIN ANALYZE 資料不可用。",
+    "stage": "階段",
+    "cpu_ms": "CPU (ms)",
+    "wall_ms": "Wall (ms)",
+    "memory": "記憶體",
+    "input_rows": "輸入列數",
+    "output_rows": "輸出列數",
+    "timestamp": "時間戳記",
+    "mcp_server": "MCP 伺服器",
+    "target_metric": "目標指標",
+    "verify_runs": "驗證次數",
+    "iterations": "迭代次數",
+}
+
+
+def generate_report(report: EnhancementReport, locale: str = "en") -> str:
     """Generate a fixed-format markdown report.
 
     This template is ALWAYS the same structure — sections, headers, and table
     columns never change between runs. Only the data values differ.
+
+    Args:
+        report: The enhancement report data.
+        locale: "en" for English, "zh" for Traditional Chinese.
+                SQL, metrics, and column names always stay English.
     """
+    L = _LABELS_ZH if locale == "zh" else _LABELS_EN
     lines = []
 
     # ── Header ──
-    lines.append("# Trino Query Enhancement Report")
+    lines.append(f"# {L['title']}")
     lines.append("")
-    lines.append("## Meta")
+    lines.append(f"## {L['meta']}")
     lines.append("")
-    lines.append("| Field | Value |")
+    lines.append(f"| {L['field']} | {L['value']} |")
     lines.append("|-------|-------|")
-    lines.append(f"| Timestamp | {report.timestamp} |")
-    lines.append(f"| MCP Server | {report.mcp_server_url} |")
-    lines.append(f"| Target Metric | {report.metric_key} (lower is better) |")
-    lines.append(f"| Verify Runs | {report.verify_runs} (median) |")
-    lines.append(f"| Iterations | {len(report.iterations)} |")
+    lines.append(f"| {L['timestamp']} | {report.timestamp} |")
+    lines.append(f"| {L['mcp_server']} | {report.mcp_server_url} |")
+    lines.append(f"| {L['target_metric']} | {report.metric_key} ({L['lower_better']}) |")
+    lines.append(f"| {L['verify_runs']} | {report.verify_runs} ({L['median']}) |")
+    lines.append(f"| {L['iterations']} | {len(report.iterations)} |")
     lines.append("")
 
     # ── Performance Comparison ──
-    lines.append("## Performance Comparison")
+    lines.append(f"## {L['perf']}")
     lines.append("")
-    lines.append("| Metric | Original | Enhanced | Delta | Change % |")
+    lines.append(f"| {L['metric']} | {L['original']} | {L['enhanced']} | {L['delta']} | {L['change_pct']} |")
     lines.append("|--------|----------|----------|-------|----------|")
 
     for attr in ["query_time_ms", "cpu_time_ms", "wall_time_ms"]:
@@ -264,23 +772,23 @@ def generate_report(report: EnhancementReport) -> str:
     lines.append("")
 
     # ── Summary ──
-    lines.append("## Summary")
+    lines.append(f"## {L['summary']}")
     lines.append("")
-    lines.append("| Field | Value |")
+    lines.append(f"| {L['field']} | {L['value']} |")
     lines.append("|-------|-------|")
-    lines.append(f"| Baseline ({report.metric_key}) | {report.baseline_value:.1f} |")
-    lines.append(f"| Best ({report.metric_key}) | {report.best_value:.1f} |")
-    lines.append(f"| Improvement | {report.improvement_abs:+.1f} ({report.improvement_pct:+.1f}%) |")
-    lines.append(f"| Original Row Count | {report.original_row_count} |")
-    lines.append(f"| Enhanced Row Count | {report.enhanced_row_count} |")
-    lines.append(f"| Data Consistent | {'YES' if report.data_consistent else 'NO'} |")
-    lines.append(f"| Consistency Detail | {report.data_consistency_reason} |")
+    lines.append(f"| {L['baseline']} ({report.metric_key}) | {report.baseline_value:.1f} |")
+    lines.append(f"| {L['best']} ({report.metric_key}) | {report.best_value:.1f} |")
+    lines.append(f"| {L['improvement']} | {report.improvement_abs:+.1f} ({report.improvement_pct:+.1f}%) |")
+    lines.append(f"| {L['orig_rows']} | {report.original_row_count} |")
+    lines.append(f"| {L['enh_rows']} | {report.enhanced_row_count} |")
+    lines.append(f"| {L['data_consistent']} | {'YES' if report.data_consistent else 'NO'} |")
+    lines.append(f"| {L['consistency_detail']} | {report.data_consistency_reason} |")
     lines.append("")
 
     # ── Iteration History ──
-    lines.append("## Iteration History")
+    lines.append(f"## {L['iter_history']}")
     lines.append("")
-    lines.append("| Round | Status | Metric Value | Delta | Hypothesis |")
+    lines.append(f"| {L['round']} | {L['status']} | {L['metric_value']} | {L['delta']} | {L['hypothesis']} |")
     lines.append("|-------|--------|-------------|-------|------------|")
 
     for it in report.iterations:
@@ -292,7 +800,7 @@ def generate_report(report: EnhancementReport) -> str:
     lines.append("")
 
     # ── Original SQL ──
-    lines.append("## Original SQL")
+    lines.append(f"## {L['orig_sql']}")
     lines.append("")
     lines.append("```sql")
     lines.append(report.original_sql)
@@ -300,7 +808,7 @@ def generate_report(report: EnhancementReport) -> str:
     lines.append("")
 
     # ── Original Result (sample) ──
-    lines.append("## Original Result (sample)")
+    lines.append(f"## {L['orig_result']}")
     lines.append("")
     if report.original_columns:
         lines.append("| " + " | ".join(report.original_columns) + " |")
@@ -312,22 +820,22 @@ def generate_report(report: EnhancementReport) -> str:
                 vals = [str(v) for v in row]
             lines.append("| " + " | ".join(vals) + " |")
     else:
-        lines.append("_(no data)_")
+        lines.append(f"_({L['no_data']})_")
     lines.append("")
 
     # ── Enhanced SQL ──
-    lines.append("## Enhanced SQL")
+    lines.append(f"## {L['enh_sql']}")
     lines.append("")
     if report.enhanced_sql != report.original_sql:
         lines.append("```sql")
         lines.append(report.enhanced_sql)
         lines.append("```")
     else:
-        lines.append("_(no improvement found — original SQL unchanged)_")
+        lines.append(f"_({L['no_improve']})_")
     lines.append("")
 
     # ── Enhanced Result (sample) ──
-    lines.append("## Enhanced Result (sample)")
+    lines.append(f"## {L['enh_result']}")
     lines.append("")
     if report.enhanced_columns:
         lines.append("| " + " | ".join(report.enhanced_columns) + " |")
@@ -339,12 +847,64 @@ def generate_report(report: EnhancementReport) -> str:
                 vals = [str(v) for v in row]
             lines.append("| " + " | ".join(vals) + " |")
     else:
-        lines.append("_(no data)_")
+        lines.append(f"_({L['no_data']})_")
     lines.append("")
+
+    # ── Table Structure Suggestions ──
+    lines.append(f"## {L['table_suggestions']}")
+    lines.append("")
+    if report.table_suggestions:
+        lines.append(f"| {L['table']} | {L['category']} | {L['severity']} | {L['suggestion']} |")
+        lines.append("|-------|----------|----------|------------|")
+        for s in report.table_suggestions:
+            text = s.suggestion_zh if locale == "zh" else s.suggestion
+            lines.append(f"| {s.table} | {s.category} | {s.severity} | {text} |")
+    else:
+        lines.append(f"_({L['no_suggestions']})_")
+    lines.append("")
+
+    # ── EXPLAIN ANALYZE ──
+    lines.append(f"## {L['explain_analyze']}")
+    lines.append("")
+
+    def _render_explain(explain: ExplainAnalyzeResult | None, label: str) -> None:
+        lines.append(f"### {label}")
+        lines.append("")
+        if explain is None or not explain.available:
+            lines.append(f"_({L['explain_unavailable']})_")
+            lines.append("")
+            return
+        if explain.stages:
+            lines.append(f"| {L['stage']} | {L['cpu_ms']} | {L['wall_ms']} | {L['memory']} | {L['input_rows']} | {L['output_rows']} |")
+            lines.append("|-------|---------|---------|--------|------------|-------------|")
+            for s in explain.stages:
+                mem = s.get("memory_bytes", 0)
+                mem_str = f"{mem / 1024 / 1024:.1f}MB" if mem > 1024 * 1024 else f"{mem / 1024:.1f}KB" if mem > 1024 else f"{mem}B"
+                lines.append(
+                    f"| {s.get('id', '?')} "
+                    f"| {s.get('cpu_ms', 0):.0f} "
+                    f"| {s.get('wall_ms', 0):.0f} "
+                    f"| {mem_str} "
+                    f"| {s.get('input_rows', 0):,} "
+                    f"| {s.get('output_rows', 0):,} |"
+                )
+            lines.append("")
+        else:
+            lines.append("```")
+            # Truncate raw text to first 50 lines to keep report manageable
+            raw_lines = explain.raw_text.split("\n")[:50]
+            lines.append("\n".join(raw_lines))
+            if len(explain.raw_text.split("\n")) > 50:
+                lines.append("... (truncated)")
+            lines.append("```")
+            lines.append("")
+
+    _render_explain(report.original_explain, L["explain_original"])
+    _render_explain(report.enhanced_explain, L["explain_enhanced"])
 
     # ── Footer ──
     lines.append("---")
-    lines.append(f"_Generated by genieCLI mcp_trino research at {report.timestamp}_")
+    lines.append(f"_{L['generated_by']} {report.timestamp}_")
     lines.append("")
 
     return "\n".join(lines)
@@ -401,6 +961,18 @@ def run_mcp_enhancement(
         output.progress(f"  Baseline {metric_key}: {baseline.median_metric:.1f} (median of {verify_runs} runs)")
         output.progress(f"  Baseline rows: {baseline.row_count}")
         output.print(f"    [dim]{baseline.metrics.summary()}[/dim]")
+
+    # ── EXPLAIN ANALYZE baseline ──
+    original_explain: ExplainAnalyzeResult | None = None
+    if output:
+        output.progress("  Running EXPLAIN ANALYZE on baseline...")
+    original_explain = _fetch_explain_analyze(client, sql)
+    if output:
+        if original_explain.available:
+            output.progress(f"  EXPLAIN ANALYZE: {len(original_explain.stages)} stage(s), "
+                          f"CPU={original_explain.total_cpu_ms:.0f}ms")
+        else:
+            output.progress("  EXPLAIN ANALYZE: unavailable (fallback to MCP metrics)")
 
     # ── Session setup ──
     skill_prompt = build_prompt(True, model) if build_prompt else ""
@@ -554,6 +1126,30 @@ def run_mcp_enhancement(
             hypothesis=hypothesis, sql=candidate_sql,
         ))
 
+    # ── EXPLAIN ANALYZE enhanced ──
+    enhanced_explain: ExplainAnalyzeResult | None = None
+    if best_sql != sql:
+        if output:
+            output.progress("  Running EXPLAIN ANALYZE on enhanced SQL...")
+        enhanced_explain = _fetch_explain_analyze(client, best_sql)
+        if output and enhanced_explain.available:
+            output.progress(f"  Enhanced EXPLAIN: {len(enhanced_explain.stages)} stage(s), "
+                          f"CPU={enhanced_explain.total_cpu_ms:.0f}ms")
+
+    # ── Table metadata + suggestions ──
+    table_suggestions: list[TableSuggestion] = []
+    table_refs = _extract_table_names(sql)
+    if table_refs and output:
+        output.progress(f"  Fetching table metadata for {len(table_refs)} table(s)...")
+    if table_refs:
+        try:
+            metadata = _fetch_table_metadata(client, table_refs)
+            table_suggestions = _generate_table_suggestions(metadata)
+            if output and table_suggestions:
+                output.progress(f"  Found {len(table_suggestions)} table suggestion(s).")
+        except Exception:
+            pass  # graceful skip
+
     # ── Build report ──
     improvement_abs = best_metric - baseline.median_metric
     improvement_pct = (improvement_abs / baseline.median_metric * 100) if baseline.median_metric else 0
@@ -583,6 +1179,9 @@ def run_mcp_enhancement(
         data_consistency_reason=final_reason,
         mcp_server_url=client.config.url,
         verify_runs=verify_runs,
+        table_suggestions=table_suggestions,
+        original_explain=original_explain,
+        enhanced_explain=enhanced_explain,
     )
 
     # Print summary

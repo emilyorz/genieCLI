@@ -8,12 +8,20 @@ import pytest
 
 from genie.skills.mcp_trino.client import McpClient, McpConfig
 from genie.skills.mcp_trino.research import (
+    ColumnInfo,
     EnhancementReport,
+    ExplainAnalyzeResult,
     IterationRecord,
     MeasureResult,
     RunMetrics,
+    TableMetadata,
+    TableSuggestion,
     _execute_via_mcp,
     _extract_sql_from_reply,
+    _extract_table_names,
+    _fetch_explain_analyze,
+    _generate_table_suggestions,
+    _parse_explain_stages,
     _results_equivalent,
     generate_report,
 )
@@ -192,3 +200,386 @@ class TestGenerateReport:
         md1 = generate_report(report)
         md2 = generate_report(report)
         assert md1 == md2
+
+    def test_report_has_table_suggestions_section(self):
+        report = self._make_report()
+        md = generate_report(report)
+        assert "## Table Structure Suggestions" in md
+
+    def test_report_shows_suggestions_when_present(self):
+        report = self._make_report()
+        report.table_suggestions = [
+            TableSuggestion(
+                table="cat.sch.orders",
+                category="partition",
+                suggestion="Consider partitioning by order_date.",
+                suggestion_zh="建議使用 order_date 進行分區。",
+                severity="warning",
+            ),
+        ]
+        md = generate_report(report)
+        assert "cat.sch.orders" in md
+        assert "partition" in md
+        assert "Consider partitioning" in md
+
+    def test_report_no_suggestions_message(self):
+        report = self._make_report()
+        report.table_suggestions = []
+        md = generate_report(report)
+        assert "No table structure issues detected" in md
+
+
+# ── Chinese Locale ──────────────────────────────────────────────────────────
+
+
+class TestChineseLocale:
+    def _make_report(self) -> EnhancementReport:
+        return EnhancementReport(
+            timestamp="2026-04-13 14:00:00",
+            original_sql="SELECT * FROM t",
+            original_result_sample=[],
+            original_columns=[],
+            original_row_count=0,
+            original_metrics=RunMetrics(query_time_ms=100),
+            enhanced_sql="SELECT id FROM t",
+            enhanced_result_sample=[],
+            enhanced_columns=[],
+            enhanced_row_count=0,
+            enhanced_metrics=RunMetrics(query_time_ms=60),
+            metric_key="query_time_ms",
+            baseline_value=100.0,
+            best_value=60.0,
+            improvement_abs=-40.0,
+            improvement_pct=-40.0,
+            iterations=[],
+            data_consistent=True,
+            data_consistency_reason="exact match",
+            mcp_server_url="http://localhost:8811",
+            verify_runs=3,
+        )
+
+    def test_zh_headers(self):
+        report = self._make_report()
+        md = generate_report(report, locale="zh")
+        assert "# Trino 查詢優化報告" in md
+        assert "## 基本資訊" in md
+        assert "## 效能比較" in md
+        assert "## 摘要" in md
+        assert "## 迭代歷程" in md
+        assert "## 原始 SQL" in md
+        assert "## 優化後 SQL" in md
+        assert "## 表結構優化建議" in md
+
+    def test_zh_summary_labels(self):
+        report = self._make_report()
+        md = generate_report(report, locale="zh")
+        assert "基線" in md
+        assert "最佳" in md
+        assert "改善" in md
+        assert "越低越好" in md
+
+    def test_zh_sql_stays_english(self):
+        report = self._make_report()
+        md = generate_report(report, locale="zh")
+        assert "SELECT * FROM t" in md
+        assert "SELECT id FROM t" in md
+
+    def test_zh_metrics_stay_english(self):
+        report = self._make_report()
+        md = generate_report(report, locale="zh")
+        assert "query_time_ms" in md
+
+    def test_zh_suggestion_uses_chinese_text(self):
+        report = self._make_report()
+        report.table_suggestions = [
+            TableSuggestion(
+                table="cat.sch.t",
+                category="partition",
+                suggestion="Consider partitioning by date.",
+                suggestion_zh="建議使用日期進行分區。",
+                severity="warning",
+            ),
+        ]
+        md = generate_report(report, locale="zh")
+        assert "建議使用日期進行分區" in md
+        assert "Consider partitioning" not in md
+
+    def test_en_is_default(self):
+        report = self._make_report()
+        md = generate_report(report)
+        assert "# Trino Query Enhancement Report" in md
+        assert "Trino 查詢優化報告" not in md
+
+
+# ── Table Name Extraction ───────────────────────────────────────────────────
+
+
+class TestExtractTableNames:
+    def test_simple_select(self):
+        tables = _extract_table_names("SELECT a FROM my_catalog.my_schema.orders")
+        assert ("my_catalog", "my_schema", "orders") in tables
+
+    def test_unqualified_table(self):
+        tables = _extract_table_names("SELECT a FROM orders")
+        assert any(t[2] == "orders" for t in tables)
+
+    def test_join_multiple_tables(self):
+        sql = "SELECT a FROM cat.sch.orders o JOIN cat.sch.items i ON o.id = i.order_id"
+        tables = _extract_table_names(sql)
+        names = {t[2] for t in tables}
+        assert "orders" in names
+        assert "items" in names
+
+    def test_subquery(self):
+        sql = "SELECT * FROM (SELECT id FROM cat.sch.events) e"
+        tables = _extract_table_names(sql)
+        assert any(t[2] == "events" for t in tables)
+
+    def test_invalid_sql_returns_empty(self):
+        tables = _extract_table_names("THIS IS NOT SQL AT ALL <<<>>>")
+        assert tables == []
+
+    def test_cte(self):
+        sql = "WITH cte AS (SELECT id FROM cat.sch.users) SELECT * FROM cte"
+        tables = _extract_table_names(sql)
+        names = {t[2] for t in tables}
+        assert "users" in names
+
+
+# ── Table Suggestions ───────────────────────────────────────────────────────
+
+
+class TestGenerateTableSuggestions:
+    def test_no_partition_suggests_partition(self):
+        meta = [TableMetadata(
+            catalog="cat", schema="sch", table_name="events",
+            columns=[
+                ColumnInfo("event_id", "bigint", "NO", 1),
+                ColumnInfo("event_date", "date", "NO", 2),
+                ColumnInfo("payload", "varchar", "YES", 3),
+            ],
+            properties={"partitioning": "[]"},
+        )]
+        suggestions = _generate_table_suggestions(meta)
+        partition_sugs = [s for s in suggestions if s.category == "partition"]
+        assert len(partition_sugs) == 1
+        assert "event_date" in partition_sugs[0].suggestion
+        assert "event_date" in partition_sugs[0].suggestion_zh
+
+    def test_no_bucket_suggests_bucket(self):
+        meta = [TableMetadata(
+            catalog="cat", schema="sch", table_name="orders",
+            columns=[
+                ColumnInfo("order_id", "bigint", "NO", 1),
+                ColumnInfo("customer_id", "bigint", "NO", 2),
+            ],
+            properties={},
+        )]
+        suggestions = _generate_table_suggestions(meta)
+        bucket_sugs = [s for s in suggestions if s.category == "bucket"]
+        assert len(bucket_sugs) == 1
+
+    def test_unbounded_varchar_id_suggests_length(self):
+        meta = [TableMetadata(
+            catalog="cat", schema="sch", table_name="products",
+            columns=[
+                ColumnInfo("product_id", "varchar", "NO", 1),
+                ColumnInfo("name", "varchar", "YES", 2),
+            ],
+            properties={},
+        )]
+        suggestions = _generate_table_suggestions(meta)
+        type_sugs = [s for s in suggestions if s.category == "data_type"]
+        assert len(type_sugs) == 1
+        assert "product_id" in type_sugs[0].suggestion
+
+    def test_double_amount_suggests_decimal(self):
+        meta = [TableMetadata(
+            catalog="cat", schema="sch", table_name="transactions",
+            columns=[
+                ColumnInfo("amount", "double", "NO", 1),
+            ],
+            properties={},
+        )]
+        suggestions = _generate_table_suggestions(meta)
+        type_sugs = [s for s in suggestions if s.category == "data_type"]
+        assert len(type_sugs) == 1
+        assert "DECIMAL" in type_sugs[0].suggestion
+
+    def test_wide_table_no_sort_suggests_sort(self):
+        cols = [ColumnInfo(f"col_{i}", "varchar", "YES", i) for i in range(15)]
+        meta = [TableMetadata(
+            catalog="cat", schema="sch", table_name="wide",
+            columns=cols,
+            properties={"sorted_by": "[]"},
+        )]
+        suggestions = _generate_table_suggestions(meta)
+        sort_sugs = [s for s in suggestions if s.category == "sort"]
+        assert len(sort_sugs) == 1
+
+    def test_no_suggestions_when_everything_configured(self):
+        meta = [TableMetadata(
+            catalog="cat", schema="sch", table_name="good_table",
+            columns=[
+                ColumnInfo("id", "bigint", "NO", 1),
+                ColumnInfo("name", "varchar(100)", "YES", 2),
+            ],
+            properties={"partitioning": "[day(created)]", "bucket_count": "16",
+                         "sorted_by": "[id]"},
+        )]
+        suggestions = _generate_table_suggestions(meta)
+        assert len(suggestions) == 0
+
+
+# ── EXPLAIN ANALYZE Parsing ─────────────────────────────────────────────────
+
+
+class TestParseExplainStages:
+    def test_parses_fragment_with_metrics(self):
+        text = (
+            "Fragment 0 [SINGLE]\n"
+            "    CPU: 123.00ms, Scheduled: 200.00ms, Blocked: 0.00ms\n"
+            "    Peak Memory: 1.5MB\n"
+            "    Input: 1000 rows (50KB), Output: 100 rows (5KB)\n"
+        )
+        stages = _parse_explain_stages(text)
+        assert len(stages) == 1
+        assert stages[0]["id"] == 0
+        assert stages[0]["cpu_ms"] == 123.0
+        assert stages[0]["wall_ms"] == 200.0
+        assert stages[0]["memory_bytes"] == int(1.5 * 1024 * 1024)
+        assert stages[0]["input_rows"] == 1000
+        assert stages[0]["output_rows"] == 100
+
+    def test_parses_multiple_fragments(self):
+        text = (
+            "Fragment 0 [SINGLE]\n"
+            "    CPU: 10.00ms, Scheduled: 20.00ms\n"
+            "    Input: 100 rows\n"
+            "Fragment 1 [HASH]\n"
+            "    CPU: 50.00ms, Scheduled: 80.00ms\n"
+            "    Input: 5000 rows\n"
+        )
+        stages = _parse_explain_stages(text)
+        assert len(stages) == 2
+        assert stages[0]["id"] == 0
+        assert stages[1]["id"] == 1
+        assert stages[1]["cpu_ms"] == 50.0
+
+    def test_handles_seconds_unit(self):
+        text = (
+            "Fragment 0 [SINGLE]\n"
+            "    CPU: 1.23s, Scheduled: 2.00s\n"
+        )
+        stages = _parse_explain_stages(text)
+        assert stages[0]["cpu_ms"] == 1230.0
+        assert stages[0]["wall_ms"] == 2000.0
+
+    def test_empty_text_returns_empty(self):
+        assert _parse_explain_stages("") == []
+
+    def test_no_fragments_returns_empty(self):
+        text = "Query plan without fragment headers\nSome random text"
+        assert _parse_explain_stages(text) == []
+
+
+class TestFetchExplainAnalyze:
+    def test_returns_unavailable_on_error(self):
+        mock_client = MagicMock(spec=McpClient)
+        mock_client.call_tool.return_value = json.dumps({"error": "not supported"})
+        result = _fetch_explain_analyze(mock_client, "SELECT 1")
+        assert result.available is False
+
+    def test_returns_unavailable_on_exception(self):
+        mock_client = MagicMock(spec=McpClient)
+        mock_client.call_tool.side_effect = RuntimeError("connection lost")
+        result = _fetch_explain_analyze(mock_client, "SELECT 1")
+        assert result.available is False
+
+    def test_parses_successful_explain(self):
+        mock_client = MagicMock(spec=McpClient)
+        explain_output = (
+            "Fragment 0 [SINGLE]\n"
+            "    CPU: 50.00ms, Scheduled: 80.00ms\n"
+            "    Peak Memory: 2.0MB\n"
+            "    Input: 500 rows, Output: 50 rows\n"
+        )
+        mock_client.call_tool.return_value = json.dumps({
+            "rows": [{"Query Plan": explain_output}],
+            "columns": ["Query Plan"],
+        })
+        result = _fetch_explain_analyze(mock_client, "SELECT 1")
+        assert result.available is True
+        assert len(result.stages) == 1
+        assert result.total_cpu_ms == 50.0
+
+
+class TestExplainInReport:
+    def _make_report_with_explain(self) -> EnhancementReport:
+        return EnhancementReport(
+            timestamp="2026-04-13 23:30:00",
+            original_sql="SELECT * FROM t",
+            original_result_sample=[],
+            original_columns=[],
+            original_row_count=0,
+            original_metrics=RunMetrics(query_time_ms=100),
+            enhanced_sql="SELECT id FROM t",
+            enhanced_result_sample=[],
+            enhanced_columns=[],
+            enhanced_row_count=0,
+            enhanced_metrics=RunMetrics(query_time_ms=60),
+            metric_key="query_time_ms",
+            baseline_value=100.0,
+            best_value=60.0,
+            improvement_abs=-40.0,
+            improvement_pct=-40.0,
+            iterations=[],
+            data_consistent=True,
+            data_consistency_reason="exact match",
+            mcp_server_url="http://localhost:8811",
+            verify_runs=3,
+            original_explain=ExplainAnalyzeResult(
+                raw_text="Fragment 0...",
+                stages=[{"id": 0, "cpu_ms": 50, "wall_ms": 80, "memory_bytes": 2097152,
+                         "input_rows": 500, "output_rows": 50}],
+                total_cpu_ms=50, total_wall_ms=80, total_memory_bytes=2097152,
+                total_input_rows=500, total_output_rows=50,
+                available=True,
+            ),
+            enhanced_explain=ExplainAnalyzeResult(
+                raw_text="Fragment 0...",
+                stages=[{"id": 0, "cpu_ms": 20, "wall_ms": 30, "memory_bytes": 1048576,
+                         "input_rows": 500, "output_rows": 50}],
+                total_cpu_ms=20, total_wall_ms=30, total_memory_bytes=1048576,
+                total_input_rows=500, total_output_rows=50,
+                available=True,
+            ),
+        )
+
+    def test_report_has_explain_section(self):
+        report = self._make_report_with_explain()
+        md = generate_report(report)
+        assert "## EXPLAIN ANALYZE" in md
+        assert "### Original Query Plan" in md
+        assert "### Enhanced Query Plan" in md
+
+    def test_report_shows_stage_table(self):
+        report = self._make_report_with_explain()
+        md = generate_report(report)
+        assert "| 0 |" in md
+        assert "500" in md
+
+    def test_report_unavailable_explain(self):
+        report = self._make_report_with_explain()
+        report.original_explain = ExplainAnalyzeResult(
+            raw_text="failed", available=False,
+        )
+        report.enhanced_explain = None
+        md = generate_report(report)
+        assert "not available" in md.lower()
+
+    def test_zh_explain_headers(self):
+        report = self._make_report_with_explain()
+        md = generate_report(report, locale="zh")
+        assert "原始查詢計畫" in md
+        assert "優化後查詢計畫" in md

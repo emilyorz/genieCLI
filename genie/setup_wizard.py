@@ -195,3 +195,128 @@ def setup_mcp() -> None:
     )
     print(f"\n  Saved: {_MCP_PATH}")
     print(f"  MCP Trino: {url} (timeout: {timeout}s)\n")
+
+
+def setup_check() -> None:
+    """Diagnostic check: validate LLM, Trino, and MCP connectivity."""
+    print("\n  === GenieCLI Setup Check ===\n")
+
+    results: list[tuple[str, bool, str]] = []
+
+    # ── LLM backend ──
+    llm_ok = False
+    llm_detail = "not configured"
+    if _TOML_PATH.exists():
+        try:
+            lines = _TOML_PATH.read_text(encoding="utf-8").splitlines()
+            cfg = {}
+            for line in lines:
+                line = line.strip()
+                if "=" in line and not line.startswith("#"):
+                    k, _, v = line.partition("=")
+                    cfg[k.strip()] = v.strip().strip('"').strip("'")
+            interface = cfg.get("interface", "")
+            model = cfg.get("defaultModel", "")
+            base_url = cfg.get("openaiBaseUrl", cfg.get("endpoint", ""))
+            if interface:
+                llm_detail = f"interface={interface}, model={model}"
+                # Try to reach the LLM endpoint
+                if base_url:
+                    import requests
+                    try:
+                        resp = requests.get(
+                            base_url.rstrip("/") + "/models",
+                            timeout=5,
+                            headers={"Authorization": f"Bearer {cfg.get('openaiApiKey', '')}"},
+                        )
+                        if resp.status_code < 500:
+                            llm_ok = True
+                            llm_detail += " — reachable"
+                        else:
+                            llm_detail += f" — HTTP {resp.status_code}"
+                    except requests.RequestException as exc:
+                        llm_detail += f" — unreachable ({type(exc).__name__})"
+                else:
+                    llm_detail += " — no URL configured"
+        except Exception as exc:
+            llm_detail = f"config error: {exc}"
+    results.append(("LLM Backend", llm_ok, llm_detail))
+
+    # ── Trino connection ──
+    trino_ok = False
+    trino_detail = "not configured"
+    if _TRINO_PATH.exists():
+        try:
+            data = json.loads(_TRINO_PATH.read_text(encoding="utf-8"))
+            active = data.get("active", "default")
+            profile = data.get("profiles", {}).get(active, {})
+            host = profile.get("host", "localhost")
+            port = profile.get("port", 8085)
+            scheme = profile.get("scheme", "http")
+            trino_detail = f"profile={active}, {scheme}://{host}:{port}"
+            import requests
+            try:
+                resp = requests.get(f"{scheme}://{host}:{port}/v1/info", timeout=5)
+                if resp.status_code == 200:
+                    trino_ok = True
+                    info = resp.json()
+                    trino_detail += f" — v{info.get('nodeVersion', '?')}, {info.get('environment', '?')}"
+                else:
+                    trino_detail += f" — HTTP {resp.status_code}"
+            except Exception as exc:
+                trino_detail += f" — unreachable ({type(exc).__name__})"
+        except Exception as exc:
+            trino_detail = f"config error: {exc}"
+    results.append(("Trino", trino_ok, trino_detail))
+
+    # ── MCP Trino ──
+    mcp_ok = False
+    mcp_detail = "not configured"
+    if _MCP_PATH.exists():
+        try:
+            data = json.loads(_MCP_PATH.read_text(encoding="utf-8"))
+            trino_cfg = data.get("trino", {})
+            url = trino_cfg.get("url", "http://localhost:8811")
+            enabled = trino_cfg.get("enabled", True)
+            mcp_detail = f"url={url}, enabled={enabled}"
+            if enabled:
+                import requests
+                try:
+                    resp = requests.post(
+                        url,
+                        json={"jsonrpc": "2.0", "id": 1, "method": "initialize",
+                              "params": {"protocolVersion": "2025-03-26",
+                                         "capabilities": {},
+                                         "clientInfo": {"name": "genieCLI-check", "version": "5.0.0"}}},
+                        headers={"Content-Type": "application/json",
+                                 "Accept": "application/json"},
+                        timeout=5,
+                    )
+                    if resp.status_code == 200:
+                        mcp_ok = True
+                        body = resp.json()
+                        server_info = body.get("result", {}).get("serverInfo", {})
+                        mcp_detail += f" — {server_info.get('name', '?')} v{server_info.get('version', '?')}"
+                    else:
+                        mcp_detail += f" — HTTP {resp.status_code}"
+                except Exception as exc:
+                    mcp_detail += f" — unreachable ({type(exc).__name__})"
+            else:
+                mcp_detail += " — disabled"
+        except Exception as exc:
+            mcp_detail = f"config error: {exc}"
+    results.append(("MCP Trino", mcp_ok, mcp_detail))
+
+    # ── Print results ──
+    for name, ok, detail in results:
+        icon = "PASS" if ok else "FAIL"
+        print(f"  [{icon}] {name}: {detail}")
+
+    print()
+    all_ok = all(ok for _, ok, _ in results)
+    if all_ok:
+        print("  All checks passed. Ready to use.\n")
+    else:
+        failed = [name for name, ok, _ in results if not ok]
+        print(f"  Issues found: {', '.join(failed)}")
+        print("  Run `genie setup` to configure missing components.\n")

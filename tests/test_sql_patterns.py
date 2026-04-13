@@ -64,10 +64,10 @@ def test_reexport_from_oracle2trino():
     assert reexported_meta is get_construct_meta
 
 
-def test_linter_imports_from_core():
-    """Verify trino_linter now imports from core, not cross-skill."""
+def test_lint_rules_import_from_core():
+    """Verify lint rules (now in genie/core/) import from core, not cross-skill."""
     import inspect
-    from genie.skills.trino_linter import rules
-    source = inspect.getsource(rules)
+    from genie.core import lint_rules
+    source = inspect.getsource(lint_rules)
     assert "genie.core.sql_patterns" in source
     assert "genie.skills.oracle2trino.patterns" not in source

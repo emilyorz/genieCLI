@@ -130,7 +130,7 @@ def _results_equivalent(rows_a: list, rows_b: list) -> tuple[bool, str]:
 def _lint_sql(sql: str) -> tuple[bool, str]:
     """Lint SQL, return (passed, message). F with parse error = fail."""
     try:
-        from genie.skills.trino_linter.analyzer import analyze
+        from genie.core.lint_analyzer import analyze
         result = analyze(sql)
         if result.score == "F" and result.parse_error:
             return False, f"parse error: {result.parse_error}"

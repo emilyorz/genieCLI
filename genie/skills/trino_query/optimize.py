@@ -63,7 +63,7 @@ def _try_execute(sql: str, catalog: str = "", schema: str = "") -> dict:
 def _lint(sql: str) -> dict:
     """Run trino_linter and return result dict."""
     try:
-        from genie.skills.trino_linter.analyzer import analyze
+        from genie.core.lint_analyzer import analyze
         result = analyze(sql)
         return result.to_dict()
     except Exception as exc:

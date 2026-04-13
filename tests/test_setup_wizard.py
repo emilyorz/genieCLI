@@ -5,7 +5,7 @@ from unittest.mock import patch
 
 import pytest
 
-from genie.setup_wizard import _write_toml, setup_llm, setup_mcp, setup_trino
+from genie.setup_wizard import _write_toml, setup_check, setup_llm, setup_mcp, setup_trino
 
 
 @pytest.fixture
@@ -58,3 +58,21 @@ def test_setup_mcp(tmp_home):
     data = json.loads(sw._MCP_PATH.read_text())
     assert data["trino"]["url"] == "http://localhost:8811"
     assert data["trino"]["enabled"] is True
+
+
+def test_setup_check_no_config(tmp_home, capsys):
+    """setup_check should not crash when no config files exist."""
+    setup_check()
+    captured = capsys.readouterr()
+    assert "Setup Check" in captured.out
+    assert "[FAIL]" in captured.out
+    assert "not configured" in captured.out
+
+
+def test_setup_check_reports_all_layers(tmp_home, capsys):
+    """setup_check should report on LLM, Trino, and MCP."""
+    setup_check()
+    captured = capsys.readouterr()
+    assert "LLM Backend" in captured.out
+    assert "Trino" in captured.out
+    assert "MCP Trino" in captured.out

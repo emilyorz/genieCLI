@@ -196,7 +196,7 @@ class McpClient:
             "capabilities": {},
             "clientInfo": {
                 "name": "genieCLI",
-                "version": "4.1.0",
+                "version": "5.0.0",
             },
         })
         # Send initialized notification
@@ -214,7 +214,7 @@ class McpClient:
         result = self._post("initialize", {
             "protocolVersion": "2025-03-26",
             "capabilities": {},
-            "clientInfo": {"name": "genieCLI", "version": "4.1.0"},
+            "clientInfo": {"name": "genieCLI", "version": "5.0.0"},
         })
         return result or {}
 

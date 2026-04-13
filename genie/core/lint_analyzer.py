@@ -4,7 +4,7 @@ from __future__ import annotations
 import logging
 from dataclasses import dataclass, field
 
-from .rules import ALL_RULES, Finding
+from .lint_rules import ALL_RULES, Finding
 
 logger = logging.getLogger(__name__)
 

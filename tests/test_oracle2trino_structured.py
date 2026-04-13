@@ -260,12 +260,11 @@ def test_get_construct_meta_returns_none_for_unknown():
     assert get_construct_meta("NONEXISTENT_FUNCTION_XYZ") is None
 
 
-def test_linter_imports_catalog():
-    """Verify trino_linter rules import from the shared catalog."""
-    from genie.skills.trino_linter.rules import check_nvl, check_rownum, check_sysdate
-    from genie.skills.oracle2trino.patterns import ORACLE_CONSTRUCTS
+def test_lint_rules_import_catalog():
+    """Verify lint rules (now in genie/core/) import from the shared catalog."""
+    from genie.core.lint_rules import check_nvl, check_rownum, check_sysdate
 
-    # Check that linter findings use catalog metadata
+    # Check that lint findings use catalog metadata
     nvl_findings = check_nvl("SELECT NVL(a, 0) FROM t", [])
     catalog_nvl = get_construct_meta("NVL")
     assert nvl_findings[0].message == catalog_nvl["message"]
@@ -277,12 +276,12 @@ def test_linter_imports_catalog():
 
 
 def test_both_linter_and_converter_use_catalog():
-    """Both skills must import from oracle2trino.patterns — not their own hardcoded strings."""
-    import genie.skills.trino_linter.rules as linter_rules
+    """Both lint engine and converter must import from the shared catalog."""
+    import genie.core.lint_rules as lint_rules
     import genie.skills.oracle2trino as converter
 
-    # The linter module must reference the catalog import
-    assert hasattr(linter_rules, "get_construct_meta")
+    # The lint module must reference the catalog import
+    assert hasattr(lint_rules, "get_construct_meta")
 
     # The converter __init__ must reference ORACLE_CONSTRUCTS
     assert hasattr(converter, "ORACLE_CONSTRUCTS") or "ORACLE_CONSTRUCTS" in dir(converter)
@@ -346,7 +345,7 @@ def test_analyze_sp_nvl_in_comment_not_flagged():
 def test_linter_and_converter_agree_on_comment_sql():
     """Both linter and converter must produce zero Oracle-residual findings for SQL
     where Oracle keywords only appear inside comments."""
-    from genie.skills.trino_linter.rules import check_nvl, check_rownum, check_sysdate
+    from genie.core.lint_rules import check_nvl, check_rownum, check_sysdate
 
     sql = "SELECT id -- ROWNUM NVL SYSDATE\nFROM t WHERE id = 1"
 

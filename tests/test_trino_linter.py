@@ -1,4 +1,7 @@
-"""Tests for genie/skills/trino_linter/"""
+"""Tests for Trino SQL linter (now in genie/core/lint_analyzer.py + genie/core/lint_rules.py).
+
+The linter skill surface is oracle2trino.LintTrinoSQL. The engine lives in genie/core/.
+"""
 from __future__ import annotations
 
 import json
@@ -13,9 +16,9 @@ except ImportError:
 
 _needs_sqlglot = pytest.mark.skipif(not _has_sqlglot, reason="sqlglot not installed")
 
-from genie.skills.trino_linter import TrinoLinter, register
-from genie.skills.trino_linter.analyzer import LintResult, analyze, _compute_score, _make_summary
-from genie.skills.trino_linter.rules import (
+from genie.skills.oracle2trino import LintTrinoSQL
+from genie.core.lint_analyzer import LintResult, analyze, _compute_score, _make_summary
+from genie.core.lint_rules import (
     Finding,
     check_nvl,
     check_decode,
@@ -375,7 +378,7 @@ def test_to_dict_has_required_fields():
 
 
 def test_skill_run_returns_json():
-    skill = TrinoLinter()
+    skill = LintTrinoSQL()
     output = skill.run(sql="SELECT NVL(col, 0) FROM t")
     parsed = json.loads(output)
     assert "findings" in parsed
@@ -384,17 +387,18 @@ def test_skill_run_returns_json():
 
 # ── register ───────────────────────────────────────────────────────────────────
 
-def test_register_adds_trino_linter():
+def test_register_adds_lint_trino_sql():
     from genie.core.registry import SkillRegistry
+    from genie.skills.oracle2trino import register
 
     register(SkillRegistry)
-    skill = SkillRegistry.get("trino_linter")
+    skill = SkillRegistry.get("lint_trino_sql")
     assert skill is not None
-    assert skill.name == "trino_linter"
+    assert skill.name == "lint_trino_sql"
 
 
 def test_skill_spec_has_sql_arg():
-    skill = TrinoLinter()
+    skill = LintTrinoSQL()
     spec = skill.spec()
     arg_names = [a["name"] for a in spec["args"]]
     assert "sql" in arg_names
@@ -471,13 +475,8 @@ WHERE t.id = other.id(+)
 # ── catalog integrity: missing pattern raises, not silently returns [] ─────────
 
 def test_oracle_residual_raises_on_missing_catalog_entry():
-    """_check_oracle_residual must raise LookupError when pattern not in catalog.
-
-    This pins the Bug-2 fix: before the fix, a missing catalog entry would
-    silently return [], masking detection failures.  Now it must raise so that
-    catalog drift is caught at development time rather than in production.
-    """
-    from genie.skills.trino_linter.rules import _check_oracle_residual
+    """_check_oracle_residual must raise LookupError when pattern not in catalog."""
+    from genie.core.lint_rules import _check_oracle_residual
     with pytest.raises(LookupError, match="no pattern in the shared catalog"):
         _check_oracle_residual("SELECT 1", "NON_EXISTENT_CONSTRUCT_XYZ", "test-rule-id")
 

@@ -1,8 +1,8 @@
-"""Shared Oracle construct catalog — used by both oracle2trino converter and trino_linter.
+"""Shared Oracle construct catalog — used by oracle2trino converter and lint engine.
 
 Each entry describes one Oracle SQL or PL/SQL construct that Trino does not support
 or requires rewriting. The `pattern` field is a case-insensitive regex applied against
-the SQL text. The `linter_rule` field links to the corresponding trino_linter rule ID
+the SQL text. The `linter_rule` field links to the corresponding lint rule ID
 where one exists.
 """
 from __future__ import annotations

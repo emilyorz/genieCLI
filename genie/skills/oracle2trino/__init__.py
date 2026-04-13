@@ -259,9 +259,35 @@ class AnalyzeOracleSP(BaseSkill):
         return json.dumps(result.to_dict(), ensure_ascii=False, indent=2)
 
 
+class LintTrinoSQL(BaseSkill):
+    name = "lint_trino_sql"
+    description = (
+        "Static SQL linter for Trino queries. "
+        "Detects Oracle residuals (NVL, DECODE, ROWNUM, SYSDATE, (+) joins), "
+        "SELECT *, implicit cross joins, leading wildcards, COUNT(DISTINCT), "
+        "correlated subqueries, and missing partition filters. "
+        "Returns structured findings with severity, rule, score, and fix suggestions."
+    )
+    group = "oracle2trino"
+    args = [
+        Arg(
+            name="sql",
+            type="str",
+            description="Trino SQL statement(s) to lint (multiple statements separated by ;)",
+            required=True,
+        )
+    ]
+
+    def run(self, sql: str = "") -> str:
+        from genie.core.lint_analyzer import analyze
+        result = analyze(sql)
+        return json.dumps(result.to_dict(), ensure_ascii=False, indent=2)
+
+
 def register(registry) -> None:
     registry.register(TranspileSQL())
     registry.register(LookupOracleFunction())
     registry.register(LookupOracleType())
     registry.register(ListTrinoLimitations())
     registry.register(AnalyzeOracleSP())
+    registry.register(LintTrinoSQL())

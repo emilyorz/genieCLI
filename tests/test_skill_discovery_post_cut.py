@@ -19,15 +19,16 @@ def test_discover_finds_remaining_skills():
     SkillRegistry.discover([bundled])
     names = {s.name for s in SkillRegistry.all()}
 
-    # Core skills that must exist
-    assert "trino_linter" in names
+    # Core skills that must exist (lint_trino_sql merged into oracle2trino)
+    assert "lint_trino_sql" in names
     # oracle2trino tools
-    assert "oracle2trino_transpile" in names or any("oracle" in n for n in names)
+    assert "transpile_sql" in names
 
     # Removed skills must NOT appear
     for name in names:
         assert not name.startswith("browser_"), f"browser skill leaked: {name}"
         assert "deepwiki" not in name, f"deepwiki skill leaked: {name}"
+        assert name != "trino_linter", f"trino_linter should be merged into oracle2trino"
 
 
 def test_no_browser_directory():

@@ -303,9 +303,9 @@ def setup(
     target: str = typer.Argument("llm", help="What to set up: llm, trino, mcp"),
 ) -> None:
     """Interactive setup wizard for LLM backend, Trino, or MCP."""
-    from genie.setup_wizard import setup_llm, setup_mcp, setup_trino
+    from genie.setup_wizard import setup_check, setup_llm, setup_mcp, setup_trino
 
-    wizards = {"llm": setup_llm, "trino": setup_trino, "mcp": setup_mcp}
+    wizards = {"llm": setup_llm, "trino": setup_trino, "mcp": setup_mcp, "check": setup_check}
     wizard = wizards.get(target)
     if wizard is None:
         print(f"Unknown target: {target}. Choose from: {', '.join(wizards)}")
