@@ -13,11 +13,11 @@
   - TASK-LEDGER-v7.md (read for retro context)
   - TASK-LEDGER-v8.md (skill-architecture migration — SKILL.md)
   - TASK-LEDGER-v9.md (browser skill tuning for Gemini Flash 2.5)
-- Active: none
+- Active: TASK-LEDGER-v10.md (MCP Trino client integration)
 - v9 summary:
   - Root cause: browser_snapshot (core) produced numbered IDs but click_element/type_element were extended — Flash couldn't use them
   - Fix: swapped tier assignments — click_element/type_element now core; raw click/type now extended
   - Rewrote browser SKILL.md with mandatory 4-step workflow (LOOK→PICK→ACT→VERIFY)
   - Added 3 regression tests for browser core tier coherence
   - 20 pre-existing trino linter/integration test failures remain
-- Next action: pick next scope, or do a live E2E test of Flash 2.5 + browser workflow
+- Next action: v10 Round 1 — live test MCP client against localhost:8811, commit, report
