@@ -1,14 +1,13 @@
 #!/usr/bin/env python3
 """
-GenieCLI — plugin-based AI agent CLI.
+GenieCLI — AI-powered Trino query tuning CLI.
 
 Usage:
     python -m genie                         # interactive chat (default)
-    python -m genie chat                    # same as above
+    python -m genie setup                   # interactive setup wizard
+    python -m genie setup trino             # configure Trino connection
     python -m genie query.sql               # file, non-interactive
     cat query.sql | python -m genie        # stdin pipe
-    python -m genie --json tools           # machine-readable tool list
-    python -m genie --skills --debug       # tools + debug output
     python -m genie sessions               # list saved conversations
     python -m genie config                 # show config
     python -m genie tools                  # list available tools
@@ -160,7 +159,7 @@ def callback(
     reasoning: str = typer.Option("disable", "-r", "--reasoning", help="Reasoning level"),
     target: Optional[str] = typer.Argument(None),
 ) -> None:
-    """GenieCLI — plugin-based AI agent."""
+    """GenieCLI — AI-powered Trino query tuning."""
     if ctx.invoked_subcommand is not None:
         return
 

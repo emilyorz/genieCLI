@@ -26,6 +26,9 @@ dev = [
 toml = [
     "tomli>=2.0;python_version<'3.11'",
 ]
+tgenie-auth = [
+    "websocket-client>=1.6.0",
+]
 
 [project.scripts]
 genie = "genie.cli:main"
