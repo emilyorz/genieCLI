@@ -28,11 +28,11 @@ from genie.output.human import HumanSink
 from genie.output.machine import MachineSink
 from genie.session.manager import list_sessions, new_msg, new_session
 
-__version__ = "4.1.0"
+__version__ = "5.0.0"
 
 app = typer.Typer(
     name="genie",
-    help="GenieCLI — plugin-based AI agent",
+    help="GenieCLI — AI-powered Trino query tuning",
     add_completion=False,
     invoke_without_command=True,
 )
@@ -295,6 +295,23 @@ def _cmd_tools(output: HumanSink | MachineSink, use_skills: bool = True) -> None
                         detail += f" (default: {arg.default})"
                     output.print(f"    {'':28} [dim]· {arg.name}: {detail}[/dim]")
     output.print("")
+
+
+# ── Setup wizard ─────────────────────────────────────────────────────────────
+
+@app.command()
+def setup(
+    target: str = typer.Argument("llm", help="What to set up: llm, trino, mcp"),
+) -> None:
+    """Interactive setup wizard for LLM backend, Trino, or MCP."""
+    from genie.setup_wizard import setup_llm, setup_mcp, setup_trino
+
+    wizards = {"llm": setup_llm, "trino": setup_trino, "mcp": setup_mcp}
+    wizard = wizards.get(target)
+    if wizard is None:
+        print(f"Unknown target: {target}. Choose from: {', '.join(wizards)}")
+        raise typer.Exit(1)
+    wizard()
 
 
 # ── Entry point ───────────────────────────────────────────────────────────────
