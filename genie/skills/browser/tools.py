@@ -420,9 +420,9 @@ _CLICK_ARGS = [
 
 class BrowserClick(BaseSkill):
     name        = "browser_click"
-    description = "Single click on an element (CSS selector) or at x,y coordinates"
+    description = "Single click on an element (CSS selector) or at x,y coordinates. Advanced — prefer browser_click_element with snapshot IDs."
     group       = "interaction"
-    tier        = "core"
+    tier        = "extended"
     args        = list(_CLICK_ARGS)
 
     def run(self, selector="", x=None, y=None):
@@ -539,9 +539,9 @@ class BrowserDrag(BaseSkill):
 
 class BrowserType(BaseSkill):
     name        = "browser_type"
-    description = "Type text into an input, textarea, or contenteditable element"
+    description = "Type text into an input, textarea, or contenteditable element. Advanced — prefer browser_type_element with snapshot IDs."
     group       = "interaction"
-    tier        = "core"
+    tier        = "extended"
     args        = [
         Arg(name="selector", type="str",
             description="CSS selector of the field",
@@ -1020,10 +1020,10 @@ class BrowserClickElement(BaseSkill):
     name        = "browser_click_element"
     description = (
         "Click an element by its ID from browser_snapshot. "
-        "More reliable than CSS selectors — use after browser_snapshot."
+        "More reliable than CSS selectors — always use after browser_snapshot."
     )
     group = "context"
-    tier  = "extended"
+    tier  = "core"
     args  = [
         Arg(name="element_id", type="int",
             description="The number shown in brackets from browser_snapshot e.g. 3",
@@ -1038,10 +1038,10 @@ class BrowserTypeElement(BaseSkill):
     name        = "browser_type_element"
     description = (
         "Type text into an input by its ID from browser_snapshot. "
-        "Use after browser_snapshot to find the input ID."
+        "Always use after browser_snapshot to find the input ID."
     )
     group = "context"
-    tier  = "extended"
+    tier  = "core"
     args  = [
         Arg(name="element_id", type="int",
             description="The number shown in brackets from browser_snapshot",

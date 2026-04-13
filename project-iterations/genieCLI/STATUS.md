@@ -1,7 +1,7 @@
 # Sprint Status
 
-- Last iteration: v8 (complete — Anthropic-style SKILL.md migration shipped, 557 tests green)
-- Carryover: none — skill architecture migration is complete
+- Last iteration: v9 (complete — browser skill tuned for Gemini Flash 2.5, 560 tests green)
+- Carryover: none — browser tier fix and workflow guidance are shipped
 - Archived:
   - TASK-LEDGER-v1-archived.md
   - TASK-LEDGER-v2-archived.md
@@ -12,12 +12,12 @@
   - TASK-LEDGER-v6.md (read for retro context)
   - TASK-LEDGER-v7.md (read for retro context)
   - TASK-LEDGER-v8.md (skill-architecture migration — SKILL.md)
+  - TASK-LEDGER-v9.md (browser skill tuning for Gemini Flash 2.5)
 - Active: none
-- v8 summary:
-  - Migrated genieCLI skill system from skill.toml + __init__.py to Anthropic-style SKILL.md + __init__.py
-  - 8 bundled skills converted, 53 tools load correctly
-  - registry.py discover() supports SKILL.md as primary marker (skill.toml fallback for external dirs)
-  - parse_skill_md() utility added for YAML frontmatter extraction
-  - MIGRATION-MAP.md documents the full architecture and design decisions
-  - 20 pre-existing trino linter/integration test failures remain (not related to this migration)
-- Next action: pick next scope or address the 20 pre-existing trino test failures
+- v9 summary:
+  - Root cause: browser_snapshot (core) produced numbered IDs but click_element/type_element were extended — Flash couldn't use them
+  - Fix: swapped tier assignments — click_element/type_element now core; raw click/type now extended
+  - Rewrote browser SKILL.md with mandatory 4-step workflow (LOOK→PICK→ACT→VERIFY)
+  - Added 3 regression tests for browser core tier coherence
+  - 20 pre-existing trino linter/integration test failures remain
+- Next action: pick next scope, or do a live E2E test of Flash 2.5 + browser workflow
