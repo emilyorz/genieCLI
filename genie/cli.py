@@ -313,6 +313,64 @@ def setup(
     wizard()
 
 
+# ── Config verify ────────────────────────────────────────────────────────────
+
+@app.command()
+def verify() -> None:
+    """Verify config: check LLM provider, Trino connection, and MCP server."""
+    from genie.core.config import load as load_config
+    from rich.console import Console
+
+    console = Console()
+    cfg = load_config()
+    ok_count = 0
+
+    # 1. LLM provider
+    interface = cfg.get("interface", "tgenie")
+    console.print(f"\n  [bold]LLM Provider:[/bold] {interface}")
+    try:
+        provider = _make_provider(cfg)
+        console.print(f"  [green]OK[/green] — {provider.name}")
+        ok_count += 1
+    except Exception as exc:
+        console.print(f"  [red]FAIL[/red] — {exc}")
+
+    # 2. Trino connection
+    console.print(f"\n  [bold]Trino Connection:[/bold]")
+    try:
+        from genie.skills.trino_query.connection import get_active_profile, status_line
+        profile = get_active_profile()
+        console.print(f"  Profile: {status_line()}")
+        conn = profile.connect()
+        cur = conn.cursor()
+        cur.execute("SELECT 1")
+        cur.fetchall()
+        conn.close()
+        console.print(f"  [green]OK[/green] — connected")
+        ok_count += 1
+    except ImportError:
+        console.print(f"  [yellow]SKIP[/yellow] — trino driver not installed (pip install trino)")
+    except Exception as exc:
+        console.print(f"  [red]FAIL[/red] — {exc}")
+
+    # 3. MCP Trino
+    console.print(f"\n  [bold]MCP Trino:[/bold]")
+    try:
+        from genie.skills.mcp_trino.client import load_mcp_config
+        mcp_cfg = load_mcp_config()
+        if mcp_cfg and mcp_cfg.url:
+            import urllib.request
+            urllib.request.urlopen(mcp_cfg.url, timeout=3)
+            console.print(f"  [green]OK[/green] — {mcp_cfg.url}")
+            ok_count += 1
+        else:
+            console.print(f"  [yellow]SKIP[/yellow] — not configured (genie setup mcp)")
+    except Exception as exc:
+        console.print(f"  [red]FAIL[/red] — {exc}")
+
+    console.print(f"\n  {ok_count}/3 checks passed\n")
+
+
 # ── Entry point ───────────────────────────────────────────────────────────────
 
 def main() -> None:

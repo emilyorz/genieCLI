@@ -12,8 +12,6 @@ from __future__ import annotations
 import json
 import re
 import time
-from decimal import Decimal
-from datetime import date, datetime, timedelta
 
 from genie.core.arg import Arg
 from genie.core.registry import BaseSkill
@@ -25,7 +23,13 @@ from .connection import get_active_profile
 def _try_execute(sql: str, catalog: str = "", schema: str = "") -> dict:
     """Execute SQL, return {rows, columns, metrics, error, query_id}. Never raises."""
     try:
-        import trino.dbapi
+        try:
+            import trino.dbapi
+        except ImportError:
+            return {
+                "rows": [], "columns": [], "metrics": None,
+                "query_id": "", "error": "Trino driver not installed. Run: pip install trino",
+            }
         cfg = get_active_profile()
         conn = cfg.connect(catalog=catalog or None, schema=schema or None)
         cur = conn.cursor()

@@ -26,6 +26,19 @@ def _prompt(label: str, default: str = "") -> str:
     return val or default
 
 
+def _prompt_int(label: str, default: int, low: int = 1, high: int = 65535) -> int:
+    """Read an integer with validation and retry."""
+    while True:
+        raw = _prompt(label, str(default))
+        try:
+            val = int(raw)
+            if low <= val <= high:
+                return val
+            print(f"  Must be between {low} and {high}.")
+        except ValueError:
+            print(f"  Not a number: {raw}")
+
+
 def _write_toml(data: dict[str, str]) -> None:
     """Write flat key=value pairs to config.toml."""
     _TOML_PATH.parent.mkdir(parents=True, exist_ok=True)
@@ -134,7 +147,7 @@ def setup_trino() -> None:
 
     name = _prompt("Profile name", "default")
     host = _prompt("Host", "localhost")
-    port = _prompt("Port", "8085")
+    port = _prompt_int("Port", 8085, low=1, high=65535)
     user = _prompt("User", "trino")
     scheme = _prompt("Scheme (http/https)", "http")
     catalog = _prompt("Catalog", "iceberg")
@@ -143,7 +156,7 @@ def setup_trino() -> None:
 
     profiles[name] = {
         "host": host,
-        "port": int(port),
+        "port": port,
         "user": user,
         "scheme": scheme,
         "catalog": catalog,
@@ -166,13 +179,13 @@ def setup_mcp() -> None:
     print("\n  === GenieCLI Setup: MCP Trino Server ===\n")
 
     url = _prompt("MCP Trino server URL", "http://localhost:8811")
-    timeout = _prompt("Timeout (seconds)", "30")
+    timeout = _prompt_int("Timeout (seconds)", 30, low=1, high=300)
 
     config = {
         "trino": {
             "url": url,
             "enabled": True,
-            "timeout": int(timeout),
+            "timeout": timeout,
         }
     }
 

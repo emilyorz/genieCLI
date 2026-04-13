@@ -197,7 +197,7 @@ def test_cmd_tools_machine_sink(capsys):
 def test_cli_version():
     result = runner.invoke(app, ["--version"])
     assert result.exit_code == 0
-    assert "4.1.0" in result.output
+    assert "5.0.0" in result.output
 
 
 def test_cli_config_subcommand(monkeypatch, tmp_path):

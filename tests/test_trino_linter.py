@@ -5,6 +5,14 @@ import json
 
 import pytest
 
+try:
+    import sqlglot
+    _has_sqlglot = True
+except ImportError:
+    _has_sqlglot = False
+
+_needs_sqlglot = pytest.mark.skipif(not _has_sqlglot, reason="sqlglot not installed")
+
 from genie.skills.trino_linter import TrinoLinter, register
 from genie.skills.trino_linter.analyzer import LintResult, analyze, _compute_score, _make_summary
 from genie.skills.trino_linter.rules import (
@@ -126,6 +134,7 @@ def test_sysdate_case_insensitive():
 
 # ── select-star ────────────────────────────────────────────────────────────────
 
+@_needs_sqlglot
 def test_select_star_detected():
     result = analyze("SELECT * FROM users")
     assert "select-star" in _rules(result)
@@ -142,6 +151,7 @@ def test_count_star_with_other_columns_not_flagged():
     assert "select-star" not in _rules(result)
 
 
+@_needs_sqlglot
 def test_select_star_and_count_star_together():
     """SELECT *, COUNT(*) — should flag select-star (bare *) but only once."""
     result = analyze("SELECT *, COUNT(*) FROM t")
@@ -211,6 +221,7 @@ def test_plain_count_not_flagged():
 
 # ── correlated-subquery ────────────────────────────────────────────────────────
 
+@_needs_sqlglot
 def test_correlated_subquery_detected():
     sql = "SELECT * FROM orders WHERE amount > (SELECT AVG(amount) FROM orders WHERE customer_id = orders.customer_id)"
     findings = check_correlated_subquery(sql, [])
@@ -228,6 +239,7 @@ def test_subquery_in_select_not_flagged_as_correlated():
 
 # ── missing-partition-filter ───────────────────────────────────────────────────
 
+@_needs_sqlglot
 def test_missing_partition_filter_detected():
     result = analyze("SELECT id, name FROM fact_orders")
     assert "missing-partition-filter" in _rules(result)
@@ -321,6 +333,7 @@ def test_analyze_returns_lint_result():
 
 # ── multi-statement ────────────────────────────────────────────────────────────
 
+@_needs_sqlglot
 def test_multi_statement_both_analyzed():
     sql = "SELECT * FROM a;\nSELECT NVL(x, 0) FROM b;"
     result = analyze(sql)
@@ -335,6 +348,7 @@ def test_multi_statement_count_star_not_flagged():
     assert "select-star" not in _rules(result)
 
 
+@_needs_sqlglot
 def test_multi_statement_line_numbers_distinct():
     sql = "SELECT NVL(a, 0) FROM t1;\nSELECT NVL(b, '') FROM t2;"
     result = analyze(sql)
@@ -346,6 +360,7 @@ def test_multi_statement_line_numbers_distinct():
 
 # ── to_dict output shape ───────────────────────────────────────────────────────
 
+@_needs_sqlglot
 def test_to_dict_has_required_fields():
     result = analyze("SELECT NVL(x, 0) FROM t")
     d = result.to_dict()
@@ -418,6 +433,7 @@ def test_uncorrelated_subquery_not_flagged():
     assert "correlated-subquery" not in _rules(result)
 
 
+@_needs_sqlglot
 def test_multi_statement_select_star_line_numbers_differ():
     """M2: each statement's select-star finding should reference its own line."""
     sql = "SELECT * FROM a;\nSELECT * FROM b;"
@@ -430,6 +446,7 @@ def test_multi_statement_select_star_line_numbers_differ():
 
 # ── combined oracle-residual scenario ─────────────────────────────────────────
 
+@_needs_sqlglot
 def test_all_oracle_residuals_detected():
     sql = """
 SELECT
