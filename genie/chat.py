@@ -307,15 +307,7 @@ def _chat_loop(
 
             output.print("  [yellow]Goodbye![/yellow]")
 
-            try:
-
-                from genie.skills.browser.cdp import close_shared_cdp
-
-                close_shared_cdp()
-
-            except Exception:
-
-                pass
+            # Browser skill removed — no CDP cleanup needed
 
             break
 
