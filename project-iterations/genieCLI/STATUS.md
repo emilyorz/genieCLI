@@ -1,6 +1,6 @@
 # Sprint Status
 
-- Last iteration: v14 (complete — pyproject build-backend fix, `pip install .` verified)
+- Last iteration: v15 (active — make `/trino-research` always use the configured MCP)
 - Carryover: v10 T9 — live verify MCP client against Sam's localhost:8811 remains blocked on Sam
 - Archived:
   - TASK-LEDGER-v1-archived.md
@@ -19,9 +19,10 @@
   - TASK-LEDGER-v13.md (subtraction & deduplication)
   - TASK-LEDGER-v14.md (pyproject build-backend fix for pip install)
 - Active:
-  - (none)
+  - TASK-LEDGER-v15.md (make `/trino-research` always use configured MCP, not optional)
 - v14 summary:
   - Root cause: `pyproject.toml` used invalid backend path `setuptools.backends.legacy:build`, which made pip silently fall back and build an `UNKNOWN-0.0.0` wheel with no project metadata
   - Fix: switch to `setuptools.build_meta`
   - Verify: clean Python 3.13 venv — `pip install .` builds `genie_cli-5.0.0-py3-none-any.whl`, `pip show genie-cli` reports correct metadata, `genie --help` works
-- Next action: resume v10 T9 (live MCP verify) when Sam is available; consider adding a CI smoke-install step (see v14 Retro)
+- v15 plan: 3 rounds — (R1) diagnose why `/trino-research` bypasses MCP, (R2) rewire to MCP as the only backend, (R3) tests/docs/cleanup
+- Next action: write Round 1 evidence into v15 ledger, then make the minimal rewiring in `chat.py`

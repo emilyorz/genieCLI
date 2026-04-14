@@ -1,50 +1,38 @@
-# genieCLI E2E Report — 2026-04-12 04:00 AM (Asia/Taipei)
+# E2E Report — 2026-04-15 04:00 (Asia/Taipei)
 
-- **Time:** 2026-04-12 04:00 AM CST
-- **Repo:** github.com/emilyorz/genieCLI
-- **Branch:** e2e/geniecli-0412-0400
-- **Status:** PASS
+## Run Info
+- **Branch:** `e2e/geniecli-0415-0402`
+- **Runner:** cron (OpenClaw)
+- **Timestamp:** 2026-04-15 04:00 AM
 
----
+## Results
 
-## Test Results
+| Suite | Result | Details |
+|---|---|---|
+| Unit tests (597) | ✅ PASS | 597 passed in 1.38s |
+| Trino unit tests (25) | ✅ PASS | 25 passed in 0.10s |
+| Trino integration tests (10) | ✅ PASS | 10 passed in 0.76s |
+| Trino autoresearch E2E | ❌ FAIL | `ModuleNotFoundError: No module named 'trino'` |
 
-| Suite                                | Result                  | Details                                                  |
-| ------------------------------------ | ----------------------- | -------------------------------------------------------- |
-| `tests/test_trino_integration.py`    | ✅ 10 passed (0.95s)    | Live Trino connectivity, catalogs/schemas/tables/queries |
-| `tests/test_trino_query_skill.py`    | ✅ 25 passed (0.12s)    | Skill-level unit tests                                   |
-| `pytest -q` (full)                   | ✅ 575 passed (1.95s)   | Full regression suite                                    |
-| Autoresearch E2E (PBB query, 3 iter) | ✅ PASS                 | `cpu=80ms, wall=136ms, splits=236, rows=25646`         |
+## Failure Detail
 
----
+**Trino autoresearch E2E** failed at the `setup_test_data.py` step:
 
-## Live Trino Discovery
+```
+[WARN] setup_test_data.py: Traceback (most recent call last):
+  File "/Users/leeabc/work/emilyorz/trino-optimize-pbb/setup_test_data.py", line 22, in <module>
+    import trino.dbapi
+ModuleNotFoundError: No module named 'trino'
+```
 
-- **Trino cluster:** `d718f35412de` v480, uptime=8.21d, coordinator ACTIVE
-- **Catalogs:** `iceberg`, `memory`, `system`
-- **Schemas (iceberg):** `information_schema`, `system`, `warehouse`
-- **Tables (iceberg.warehouse):** `departments`, `employees`, `employees_full`, `oracle_legacy`, `orders`
-- **Sample query (employees):** Grace Tsai 130K, Jack Liu 125K, Alice Chen 120K, Bob Wang 115K, David Lin 110K
-- **Sample query (orders):** 5 rows sampled across pending/cancelled/completed
+- Root cause: `pip install trino` was not run in the test environment
+- Impact: Low — the full test suite (597 + 25 + 10) all passed; only the optional Trino PB-rebuild smoke test failed
+- Fix: `pip install trino` in the E2E runner environment before this step
 
----
+## Changes
 
-## Autoresearch E2E Notes
+- `project-iterations/genieCLI/STATUS.md` — updated to reflect v15 active iteration
+- `project-iterations/genieCLI/TASK-LEDGER-v15.md` — new ledger for v15
 
-- `baseline=77.0ms, best=77.0ms, kept=0/2, imp=0.0%`
-- 2 iterations: iteration 1 had semantic drift (236ms, delta +159ms); iteration 2 exec failed
-- Best SQL identical to original — query may not be further optimizable given dataset characteristics
-- No regression introduced
-
----
-
-## Artifacts
-
-- Log dir: `/Users/leeabc/.openclaw/workspace-emily/logs/geniecli-e2e/2026-04-12-040036/`
-- PR: https://github.com/emilyorz/genieCLI/pull/22 (squash-merged to main)
-
----
-
-## Summary
-
-All test suites passed with zero failures. Live Trino queries returned correct data against production catalogs. Autoresearch E2E ran 2 optimization iterations without regression. Clean run.
+## Previous Run
+- 2026-04-14 04:00 — 597 passed, 0 failed
