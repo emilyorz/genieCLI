@@ -1,6 +1,6 @@
 # Sprint Status
 
-- Last iteration: v11 (complete — DX + subtraction + report depth, 576 tests green)
+- Last iteration: v14 (complete — pyproject build-backend fix, `pip install .` verified)
 - Carryover: v10 T9 — live verify MCP client against Sam's localhost:8811 remains blocked on Sam
 - Archived:
   - TASK-LEDGER-v1-archived.md
@@ -15,12 +15,13 @@
   - TASK-LEDGER-v9.md (browser skill tuning for Gemini Flash 2.5)
   - TASK-LEDGER-v10.md (MCP Trino client integration — code-complete, live verify blocked on Sam)
   - TASK-LEDGER-v11.md (DX + subtraction + report depth)
-- Complete:
   - TASK-LEDGER-v12.md (oracle2trino/trino_linter convergence + EXPLAIN ANALYZE)
-- Active: none
-- v12 summary:
-  - Round 1: merged trino_linter into oracle2trino (lint engine → genie/core/, LintTrinoSQL tool added)
-  - Round 2: EXPLAIN ANALYZE auto-collection with stage parsing, wired into loop + report
-  - 588 tests pass, 10 skipped, 0 failed
-- Next action: none — awaiting next direction from Sam
-
+  - TASK-LEDGER-v13.md (subtraction & deduplication)
+  - TASK-LEDGER-v14.md (pyproject build-backend fix for pip install)
+- Active:
+  - (none)
+- v14 summary:
+  - Root cause: `pyproject.toml` used invalid backend path `setuptools.backends.legacy:build`, which made pip silently fall back and build an `UNKNOWN-0.0.0` wheel with no project metadata
+  - Fix: switch to `setuptools.build_meta`
+  - Verify: clean Python 3.13 venv — `pip install .` builds `genie_cli-5.0.0-py3-none-any.whl`, `pip show genie-cli` reports correct metadata, `genie --help` works
+- Next action: resume v10 T9 (live MCP verify) when Sam is available; consider adding a CI smoke-install step (see v14 Retro)
