@@ -274,6 +274,16 @@ enabled = true
 timeout = 30
 ```
 
+### /trino-research 自動路由
+
+當 `[mcp.trino].enabled = true` 時，`/trino-research` 會**自動**走 MCP 路徑（baseline 測量、EXPLAIN ANALYZE、metadata 建議都由 MCP server 提供）。當 MCP 無法連線或未啟用時，退回 local `trino` Python driver。
+
+強制跑直連模式：
+
+```bash
+> /trino-research --direct --file query.sql
+```
+
 ---
 
 ## Oracle → Trino 遷移

@@ -739,10 +739,9 @@ def _chat_loop(
 
 
         elif cmd == "/trino-research":
-            from genie.skills.trino_query.research import run_trino_research
-
-            # Parse optional flags: --file, --metric, --iterations, --runs
+            # Parse optional flags: --file, --metric, --iterations, --runs, --direct
             kwargs = {}
+            force_direct = False
             i = 0
             while i < len(args):
                 if args[i] == "--file" and i + 1 < len(args):
@@ -757,10 +756,33 @@ def _chat_loop(
                 elif args[i] == "--runs" and i + 1 < len(args):
                     kwargs["runs"] = int(args[i + 1])
                     i += 2
+                elif args[i] == "--direct":
+                    force_direct = True
+                    i += 1
                 else:
                     i += 1
 
-            run_trino_research(provider, cfg, model, current_reasoning, output, build_prompt, **kwargs)
+            # Auto-route: if MCP Trino is enabled, prefer MCP; else direct driver.
+            # `--direct` forces the direct driver path regardless.
+            use_mcp = False
+            if not force_direct:
+                try:
+                    from genie.skills.mcp_trino.client import load_mcp_config
+                    use_mcp = bool(load_mcp_config().enabled)
+                except Exception:
+                    use_mcp = False
+
+            if use_mcp:
+                from genie.skills.mcp_trino.research import run_trino_research_via_mcp
+                output.print("  [dim](routing via MCP — use --direct to force the trino driver)[/dim]")
+                run_trino_research_via_mcp(
+                    provider, cfg, model, current_reasoning, output, build_prompt, **kwargs
+                )
+            else:
+                from genie.skills.trino_query.research import run_trino_research
+                run_trino_research(
+                    provider, cfg, model, current_reasoning, output, build_prompt, **kwargs
+                )
 
 
         elif cmd == "/autoresearch":

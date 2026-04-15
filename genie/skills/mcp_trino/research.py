@@ -1182,3 +1182,129 @@ def run_mcp_enhancement(
         output.print(f"  Data check:  {'PASS' if final_equiv else 'FAIL'} ({final_reason})")
 
     return report
+
+
+# ---------------------------------------------------------------------------
+# Adapter for /trino-research auto-routing
+# ---------------------------------------------------------------------------
+
+# Metrics supported on the MCP path. `query_time_ms` is MCP-native; the rest
+# map onto what the MCP server returns via cursor/REST stats.
+MCP_METRICS = [
+    "query_time_ms", "cpu_time_ms", "wall_time_ms",
+    "physical_input_bytes", "processed_rows", "total_splits",
+]
+
+
+def run_trino_research_via_mcp(
+    provider,
+    cfg: dict,
+    model: str,
+    reasoning: str,
+    output,
+    build_prompt: Callable[..., str],
+    *,
+    sql_file: Optional[str] = None,
+    sql_text: Optional[str] = None,
+    metric: Optional[str] = None,
+    iterations: Optional[int] = None,
+    runs: Optional[int] = None,
+) -> None:
+    """MCP-routed entry point for /trino-research.
+
+    Mirrors `trino_query.research.run_trino_research` so chat.py can dispatch
+    to either path via a single call signature.
+    """
+    mcp_cfg = load_mcp_config()
+    if not mcp_cfg.enabled:
+        output.error("  MCP Trino not enabled. Configure [mcp.trino] in ~/.genie/config.toml.")
+        return
+
+    client = McpClient(mcp_cfg)
+
+    # Reachability preflight — fall through to caller's direct fallback is
+    # handled at chat.py; if we got here, caller already decided on MCP.
+    try:
+        client.list_tools()
+    except Exception as exc:
+        output.error(f"  MCP server unreachable at {mcp_cfg.url}: {exc}")
+        return
+
+    output.print("\n  [yellow]== Trino Query Optimization (MCP) ==[/yellow]")
+    output.progress(f"  Server: {mcp_cfg.url}")
+
+    # ── Get SQL ──
+    if sql_file:
+        sql = Path(sql_file).read_text().strip()
+        output.progress(f"  SQL from file: {sql_file}")
+    elif sql_text:
+        sql = sql_text.strip()
+    else:
+        from genie.input import _read_paste_mode
+        output.print("  [cyan]Paste SQL (Ctrl-D to finish):[/cyan]")
+        sql = _read_paste_mode()
+
+    if not sql:
+        output.error("Empty SQL.")
+        return
+
+    output.print(f"  [dim]SQL: {sql[:80]}...[/dim]\n")
+
+    # ── Get metric ──
+    if not metric:
+        from genie.input import _read_input
+        output.print("  [yellow]Metric to minimize:[/yellow]")
+        for i, m in enumerate(MCP_METRICS, 1):
+            output.print(f"    [cyan]{i}[/cyan]. {m}")
+        try:
+            choice = _read_input("  Choose [1]: ").strip() or "1"
+            idx = int(choice) - 1
+            metric = MCP_METRICS[idx] if 0 <= idx < len(MCP_METRICS) else "query_time_ms"
+        except (ValueError, EOFError, KeyboardInterrupt):
+            metric = "query_time_ms"
+
+    if metric not in MCP_METRICS:
+        output.error(f"Unknown metric: {metric}. Use one of: {MCP_METRICS}")
+        return
+
+    # ── Get iterations ──
+    if iterations is None:
+        from genie.input import _read_input
+        try:
+            iter_str = _read_input("  Max iterations [5]: ").strip() or "5"
+            iterations = max(1, int(iter_str))
+        except (ValueError, EOFError, KeyboardInterrupt):
+            iterations = 5
+
+    # ── Get verify runs ──
+    if runs is None:
+        from genie.input import _read_input
+        try:
+            runs_str = _read_input("  Verify runs per candidate [3]: ").strip() or "3"
+            runs = max(1, int(runs_str))
+        except (ValueError, EOFError, KeyboardInterrupt):
+            runs = 3
+
+    # ── Run MCP enhancement loop ──
+    report = run_mcp_enhancement(
+        client=client,
+        sql=sql,
+        metric_key=metric,
+        max_iterations=iterations,
+        verify_runs=runs,
+        provider=provider,
+        model=model,
+        reasoning=reasoning,
+        output=output,
+        build_prompt=build_prompt,
+    )
+
+    # Save report markdown (same pattern as direct path)
+    try:
+        report_md = generate_report(report)
+        report_name = f"trino-research-mcp-{datetime.now().strftime('%Y%m%d-%H%M%S')}.md"
+        report_path = Path.cwd() / report_name
+        report_path.write_text(report_md)
+        output.progress(f"\n  Report saved: {report_path}")
+    except Exception as exc:
+        output.error(f"  Failed to save report: {exc}")
