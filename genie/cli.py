@@ -3,14 +3,15 @@
 GenieCLI — AI-powered Trino query tuning CLI.
 
 Usage:
-    python -m genie                         # interactive chat (default)
-    python -m genie setup                   # interactive setup wizard
-    python -m genie setup trino             # configure Trino connection
-    python -m genie query.sql               # file, non-interactive
-    cat query.sql | python -m genie        # stdin pipe
-    python -m genie sessions               # list saved conversations
-    python -m genie config                 # show config
-    python -m genie tools                  # list available tools
+    genie                         # interactive chat (default)
+    genie setup                   # interactive setup wizard
+    genie setup trino             # configure Trino connection
+    genie doctor                  # preflight: PATH / deps / LLM / Trino / MCP
+    genie query.sql               # file, non-interactive
+    cat query.sql | genie         # stdin pipe
+    genie sessions                # list saved conversations
+    genie config                  # show config
+    genie tools                   # list available tools
 """
 from __future__ import annotations
 
@@ -382,14 +383,14 @@ def doctor() -> None:
     except Exception as exc:
         checks.append(("Trino connection", "FAIL", str(exc)))
 
-    # 7. MCP Trino reachable
+    # 7. MCP Trino reachable (JSON-RPC list_tools — verifies protocol, not just TCP)
     try:
-        from genie.skills.mcp_trino.client import load_mcp_config
+        from genie.skills.mcp_trino.client import McpClient, load_mcp_config
         mcp_cfg = load_mcp_config()
         if mcp_cfg and mcp_cfg.enabled and mcp_cfg.url:
-            import urllib.request
-            urllib.request.urlopen(mcp_cfg.url, timeout=3)
-            checks.append(("MCP Trino", "OK", mcp_cfg.url))
+            mcp_cfg.timeout = min(mcp_cfg.timeout, 3)  # preflight: don't hang 30s
+            tools = McpClient(mcp_cfg).list_tools()
+            checks.append(("MCP Trino", "OK", f"{mcp_cfg.url} ({len(tools)} tool(s))"))
         else:
             checks.append(("MCP Trino", "SKIP", "not enabled (genie setup mcp)"))
     except Exception as exc:
