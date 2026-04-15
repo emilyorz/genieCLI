@@ -252,6 +252,29 @@ def _do_send(
 
 # ── Interactive REPL ──────────────────────────────────────────────────────────
 
+_BANNER_LINES = [
+    "██╗      █████╗ ██╗  ██╗███████╗██╗  ██╗ ██████╗ ██╗   ██╗███████╗███████╗",
+    "██║     ██╔══██╗██║ ██╔╝██╔════╝██║  ██║██╔═══██╗██║   ██║██╔════╝██╔════╝",
+    "██║     ███████║█████╔╝ █████╗  ███████║██║   ██║██║   ██║███████╗█████╗  ",
+    "██║     ██╔══██║██╔═██╗ ██╔══╝  ██╔══██║██║   ██║██║   ██║╚════██║██╔══╝  ",
+    "███████╗██║  ██║██║  ██╗███████╗██║  ██║╚██████╔╝╚██████╔╝███████║███████╗",
+    "╚══════╝╚═╝  ╚═╝╚═╝  ╚═╝╚══════╝╚═╝  ╚═╝ ╚═════╝  ╚═════╝ ╚══════╝╚══════╝",
+]
+
+
+def _render_banner(output: "HumanSink", version: str) -> None:
+    """Startup banner for the interactive chat loop.
+
+    Intentionally only rendered on the HumanSink (TTY) path — JSON / piped
+    runs keep their compact, machine-readable prelude.
+    """
+    output.print("")
+    for line in _BANNER_LINES:
+        output.print(f"  [bold cyan]{line}[/bold cyan]")
+    output.print(f"  [dim]genie v{version} · AI-powered Trino query tuning[/dim]")
+    output.print("")
+
+
 def _chat_loop(
     provider,
     cfg: dict,
@@ -275,9 +298,8 @@ def _chat_loop(
     current_reasoning = reasoning
     session = new_session(build_prompt(use_skills))
 
-    output.print("")
-    output.print("  [bold cyan]genie[/bold cyan] [dim]— plugin-based AI agent[/dim]")
-    output.print("")
+    from genie.cli import __version__ as _version
+    _render_banner(output, _version)
     output.kv("model", model)
     output.kv("skills", "enabled" if use_skills else "disabled")
     try:

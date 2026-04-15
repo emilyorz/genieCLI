@@ -2,10 +2,12 @@
 
 Design principles:
   * One accent colour (cyan). Warnings use yellow, errors red. Nothing else.
-  * Whitespace over boxes. Two-space left gutter, no ASCII art.
+  * Whitespace over boxes. Two-space left gutter in normal output.
   * Hierarchy from bold + dim, not from boxes and colour vomit.
   * Lower-case labels. No emojis, no decorative bullets.
   * Messages are terse; the content carries the weight.
+  * One exception: the interactive startup banner (see chat._render_banner)
+    uses ASCII-art branding — it's the single "ritual" moment of the CLI.
 """
 from __future__ import annotations
 
