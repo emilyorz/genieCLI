@@ -185,6 +185,13 @@ def callback(
     if target == "tools":
         _cmd_tools(output, skills)
         return
+    # Shim: Typer binds subcommand names to this callback's `target` positional
+    # when `invoke_without_command=True`. Route known subcommands explicitly so
+    # `genie doctor` / `genie verify` work without landing in the file-path
+    # branch below.
+    if target in ("doctor", "verify"):
+        doctor()
+        return
 
     if cfg.get("interface", "tgenie") == "tgenie" and not cfg.get("authToken"):
         output.error("No auth token. Run: python grab_auth.py")
@@ -313,62 +320,101 @@ def setup(
     wizard()
 
 
-# ── Config verify ────────────────────────────────────────────────────────────
+# ── Doctor / verify ──────────────────────────────────────────────────────────
 
 @app.command()
-def verify() -> None:
-    """Verify config: check LLM provider, Trino connection, and MCP server."""
+def doctor() -> None:
+    """Preflight check: Python version, genie on PATH, deps, LLM, Trino, MCP."""
+    import platform
+    import shutil
     from genie.core.config import load as load_config
     from rich.console import Console
 
     console = Console()
     cfg = load_config()
-    ok_count = 0
+    checks: list[tuple[str, str, str]] = []  # (name, status, detail)
 
-    # 1. LLM provider
+    # 1. Python version (≥ 3.9)
+    py_ver = platform.python_version()
+    py_ok = sys.version_info >= (3, 9)
+    checks.append(("Python version", "OK" if py_ok else "FAIL",
+                   f"{py_ver}" + ("" if py_ok else " (need ≥ 3.9)")))
+
+    # 2. `genie` on PATH
+    genie_path = shutil.which("genie")
+    checks.append(("genie on PATH", "OK" if genie_path else "WARN",
+                   genie_path or "not found — try `source .venv/bin/activate` or reinstall"))
+
+    # 3. trino Python driver
+    try:
+        import trino  # noqa: F401
+        checks.append(("trino driver", "OK", f"imported (v{getattr(trino, '__version__', 'unknown')})"))
+    except ImportError:
+        checks.append(("trino driver", "SKIP", "not installed — `pip install trino` (only needed for direct queries)"))
+
+    # 4. sqlglot (used by linter + MCP research)
+    try:
+        import sqlglot  # noqa: F401
+        checks.append(("sqlglot", "OK", "imported"))
+    except ImportError:
+        checks.append(("sqlglot", "SKIP", "not installed — linter + MCP research degrade"))
+
+    # 5. LLM provider
     interface = cfg.get("interface", "tgenie")
-    console.print(f"\n  [bold]LLM Provider:[/bold] {interface}")
     try:
         provider = _make_provider(cfg)
-        console.print(f"  [green]OK[/green] — {provider.name}")
-        ok_count += 1
+        checks.append(("LLM provider", "OK", f"{interface} ({provider.name})"))
     except Exception as exc:
-        console.print(f"  [red]FAIL[/red] — {exc}")
+        checks.append(("LLM provider", "FAIL", f"{interface}: {exc}"))
 
-    # 2. Trino connection
-    console.print(f"\n  [bold]Trino Connection:[/bold]")
+    # 6. Trino connection
     try:
         from genie.skills.trino_query.connection import get_active_profile, status_line
         profile = get_active_profile()
-        console.print(f"  Profile: {status_line()}")
         conn = profile.connect()
         cur = conn.cursor()
         cur.execute("SELECT 1")
         cur.fetchall()
         conn.close()
-        console.print(f"  [green]OK[/green] — connected")
-        ok_count += 1
+        checks.append(("Trino connection", "OK", status_line()))
     except ImportError:
-        console.print(f"  [yellow]SKIP[/yellow] — trino driver not installed (pip install trino)")
+        checks.append(("Trino connection", "SKIP", "driver missing (see above)"))
     except Exception as exc:
-        console.print(f"  [red]FAIL[/red] — {exc}")
+        checks.append(("Trino connection", "FAIL", str(exc)))
 
-    # 3. MCP Trino
-    console.print(f"\n  [bold]MCP Trino:[/bold]")
+    # 7. MCP Trino reachable
     try:
         from genie.skills.mcp_trino.client import load_mcp_config
         mcp_cfg = load_mcp_config()
-        if mcp_cfg and mcp_cfg.url:
+        if mcp_cfg and mcp_cfg.enabled and mcp_cfg.url:
             import urllib.request
             urllib.request.urlopen(mcp_cfg.url, timeout=3)
-            console.print(f"  [green]OK[/green] — {mcp_cfg.url}")
-            ok_count += 1
+            checks.append(("MCP Trino", "OK", mcp_cfg.url))
         else:
-            console.print(f"  [yellow]SKIP[/yellow] — not configured (genie setup mcp)")
+            checks.append(("MCP Trino", "SKIP", "not enabled (genie setup mcp)"))
     except Exception as exc:
-        console.print(f"  [red]FAIL[/red] — {exc}")
+        checks.append(("MCP Trino", "FAIL", str(exc)))
 
-    console.print(f"\n  {ok_count}/3 checks passed\n")
+    # Render
+    color_map = {"OK": "green", "WARN": "yellow", "SKIP": "yellow", "FAIL": "red"}
+    console.print("")
+    for name, status, detail in checks:
+        color = color_map.get(status, "white")
+        console.print(f"  [{color}]{status:<4}[/{color}]  [bold]{name:<20}[/bold]  [dim]{detail}[/dim]")
+
+    ok_count = sum(1 for _, s, _ in checks if s == "OK")
+    fail_count = sum(1 for _, s, _ in checks if s == "FAIL")
+    console.print(f"\n  [bold]{ok_count}/{len(checks)}[/bold] OK"
+                  + (f", [red]{fail_count} FAIL[/red]" if fail_count else "") + "\n")
+
+    if fail_count:
+        raise typer.Exit(1)
+
+
+@app.command()
+def verify() -> None:
+    """Alias for `genie doctor` (kept for backwards compatibility)."""
+    doctor()
 
 
 # ── Entry point ───────────────────────────────────────────────────────────────

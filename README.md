@@ -120,6 +120,7 @@ genie --help
 
 ```bash
 genie setup          # 互動式設定 wizard
+genie doctor         # 檢查環境（PATH / Python / deps / LLM / Trino / MCP）
 ```
 
 或手動編輯 `~/.genie/config.toml`：
