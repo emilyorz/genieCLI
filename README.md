@@ -93,39 +93,41 @@ AI-powered Trino query tuning CLI. 用 LLM 自動優化 Trino SQL，結合靜態
 
 ## 快速開始
 
+**你要的流程**：裝 → 設定 LLM + Trino → 驗證 → 跑優化 → 拿報告。以下 5 步走完就能用。
+
 ### 前置需求
 
 - Python 3.9+
-- Trino cluster（或 Docker container）
+- Trino cluster（或 Docker container，本機 `localhost:8085` 也可）
+- 一個 LLM backend（Ollama / OpenAI / Anthropic / TGenie，擇一）
 
-### 安裝
+### Step 1 — 安裝
 
 ```bash
 cd genieCLI
-python3 -m venv .venv && source .venv/bin/activate   # 建議用 venv，避免污染系統 Python
+python3 -m venv .venv && source .venv/bin/activate   # 建議 venv，避免污染系統 Python
 pip install -e .
-pip install trino    # Trino Python client（optional — 只跑 LLM chat 可略）
+pip install trino                                    # Trino driver（跑優化需要）
 ```
 
-安裝後會多出一個 `genie` 指令。驗證：
+**驗證：** `which genie` 應該指到 venv 裡的 `bin/genie`；`genie --help` 不報錯。
+
+> `genie: command not found` 多半是 venv 沒 activate，或裝到 user site 但 PATH 沒含 `~/.local/bin`。進 venv 再跑最穩。
+
+### Step 2 — 設定 LLM + Trino
+
+互動 wizard（推薦）：
 
 ```bash
-which genie          # → .../bin/genie
-genie --help
+genie setup          # 選 LLM backend（Ollama / OpenAI / Anthropic / TGenie）
+genie setup trino    # 設 Trino 連線 profile
+genie setup mcp      # （選配）MCP Trino server，enable 後 /trino-research 會自動走 MCP
 ```
 
-> 若 `genie: command not found`：通常是 venv 沒 activate，或 `pip install -e .` 裝到 user site 但 PATH 沒含 `~/.local/bin`。最穩的方式是進 venv 後再跑。
+或手動編輯 `~/.genie/config.toml`（wizard 寫的也是這個檔）：
 
-### 設定
-
-```bash
-genie setup          # 互動式設定 wizard
-genie doctor         # 檢查環境（PATH / Python / deps / LLM / Trino / MCP）
-```
-
-或手動編輯 `~/.genie/config.toml`：
-
-#### Ollama（本機 LLM，免費）
+<details>
+<summary>Ollama（本機 LLM，免費）</summary>
 
 ```toml
 interface = "openai"
@@ -134,7 +136,12 @@ openaiBaseUrl = "http://localhost:11434/v1"
 defaultModel = "qwen3.5:4b"
 ```
 
-#### OpenAI
+Ollama 會自動切 native `/api/chat` endpoint（非 `/v1`），以支援 `think=false`。
+
+</details>
+
+<details>
+<summary>OpenAI</summary>
 
 ```toml
 interface = "openai"
@@ -143,7 +150,10 @@ openaiBaseUrl = "https://api.openai.com/v1"
 defaultModel = "gpt-4o"
 ```
 
-#### TGenie（公司內部）
+</details>
+
+<details>
+<summary>TGenie（公司內部）</summary>
 
 ```toml
 interface = "tgenie"
@@ -152,54 +162,38 @@ authToken = "your-token"
 defaultModel = "gemini-2.5-flash"
 ```
 
-> **Ollama 注意：** 自動使用 native `/api/chat` endpoint（非 `/v1`），以正確支援 `think=false`。
+</details>
 
-### 啟動
-
-```bash
-genie --skills       # 互動模式（含 skills）
-genie query.sql      # 送檔案
-```
-
-> `genie` 和 `python -m genie` 等價；前者是 `pyproject.toml` 宣告的 entry point，只要安裝完成就能用。
-
----
-
-## 5 分鐘上手：連 Trino → 測 Query → 拿 Report
-
-### Step 1：設定 LLM + Trino
+### Step 3 — 驗證環境
 
 ```bash
-genie setup       # 設定 LLM backend
-genie setup trino # 設定 Trino 連線
+genie doctor
 ```
 
-或用互動指令：
+會逐項檢查：Python ≥ 3.9、`genie` 在 PATH、`trino` / `sqlglot` 依賴、LLM provider、Trino 連線、MCP 可達性。看到全 `OK`/`SKIP` 就能往下；`FAIL` 依訊息修（卡住也可直接跑，`/trino-research` 會回報更具體的錯）。
+
+### Step 4 — 跑第一個優化
 
 ```bash
 genie --skills
-> /trino add mytrino
-> /trino test
 ```
 
-### Step 2：跑優化
+進 chat loop 後：
 
-```bash
-genie --skills
-> /trino-research
-# 1. 貼上 SQL
-# 2. 選 metric（預設 cpu_time_ms）
-# 3. 設 iterations（預設 5）
-# 4. 等它跑完 → 自動產出 report
+```
+> /trino test                 # 確認 Trino profile 能連
+> /trino-research             # 互動模式：貼 SQL → 選 metric → 選 iterations → 跑
 ```
 
-一行搞定：
+一行版（非互動）：
 
 ```bash
 > /trino-research --file query.sql --metric cpu_time_ms --iterations 5 --runs 3
 ```
 
-### 跑完後你會得到
+**MCP 路徑（選配）：** 如果 Step 2 有開 `[mcp.trino] enabled=true`，`/trino-research` 自動走 MCP 優化路徑（EXPLAIN ANALYZE + table metadata）。想強制走直連 driver：`/trino-research --direct`。
+
+### Step 5 — 拿報告
 
 1. **終端即時輸出** — 每輪迭代的 metric / keep / revert 狀態
 2. **Markdown Report**（`trino-research-YYYYMMDD-HHMMSS.md`）
