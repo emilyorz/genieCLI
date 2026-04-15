@@ -762,13 +762,22 @@ def _chat_loop(
                 else:
                     i += 1
 
-            # Auto-route: if MCP Trino is enabled, prefer MCP; else direct driver.
-            # `--direct` forces the direct driver path regardless.
+            # Auto-route: if MCP Trino is enabled AND reachable, prefer MCP;
+            # otherwise (disabled, unreachable, or --direct) use the driver.
             use_mcp = False
             if not force_direct:
                 try:
-                    from genie.skills.mcp_trino.client import load_mcp_config
-                    use_mcp = bool(load_mcp_config().enabled)
+                    from genie.skills.mcp_trino.client import McpClient, load_mcp_config
+                    mcp_cfg = load_mcp_config()
+                    if mcp_cfg.enabled and mcp_cfg.url:
+                        probe_cfg = type(mcp_cfg)(url=mcp_cfg.url, enabled=True,
+                                                  timeout=min(mcp_cfg.timeout, 3))
+                        try:
+                            McpClient(probe_cfg).list_tools()
+                            use_mcp = True
+                        except Exception as exc:
+                            output.print(f"  [yellow]MCP configured but unreachable "
+                                         f"({exc}); falling back to trino driver.[/yellow]")
                 except Exception:
                     use_mcp = False
 
