@@ -286,7 +286,7 @@ def _chat_loop(
     except Exception:
         pass
     output.print("")
-    output.print("  [dim]/help for commands · /exit to quit[/dim]")
+    output.print("  [dim]/trino-research  optimize a SQL    ·  /help  all commands  ·  /exit[/dim]")
     output.print("")
 
     while True:
@@ -882,59 +882,46 @@ def _chat_loop(
 
 
         elif cmd == "/help":
-            cmds = [
-
-                ("/new",          "Start a new conversation"),
-
-                ("/sessions",     "List saved conversations"),
-
-                ("/load [n]",     "Load conversation (direct: /load 2)"),
-
-                ("/history",      "Show current conversation"),
-
-                ("/skills",       "List available skills/tools"),
-
-                ("/clear",        "Clear current conversation"),
-
-                ("/undo",         "Remove last exchange from history"),
-
-                ("/redo",         "Restore last undone exchange"),
-
-                ("/branch <n>",   "Fork history at exchange N (see /history for numbers)"),
-
-                ("/compact [n]",  "Prune middle history, keep last n turns (default 6)"),
-
-                ("/stats",        "Show session stats (turns, ~tokens, model)"),
-
-                ("/export",       "Export conversation to markdown file"),
-
-                ("/paste",        "Multiline paste mode (Ctrl-D to send)"),
-
-                ("/editor",       "Open editor for input"),
-
-                ("/autoresearch", "Start autonomous iteration loop"),
-
-                ("/trino",        "Trino profiles: /trino [use|add|remove|test]"),
-
-                ("/trino-research","Optimize SQL: --file F --metric M --iterations N --runs N"),
-
-                ("/model",        "Show current model"),
-
-                ("/model <name>", "Switch to a different model"),
-
-                ("/model list",   "List available models"),
-
-                ("/reasoning",    "Toggle reasoning: disable/low/medium/high"),
-
-                ("/renew",        "Refresh auth token"),
-
-                ("/exit",         "Quit"),
-
+            # Grouped by what a user reaches for, primary actions first.
+            groups = [
+                ("Primary", [
+                    ("/trino-research", "Optimize SQL: --file F --metric M --iterations N --runs N [--direct]"),
+                    ("/trino",          "Trino profiles: /trino [use|add|remove|test]"),
+                    ("/autoresearch",   "Generic autonomous iteration loop"),
+                    ("/skills",         "List available skills/tools"),
+                ]),
+                ("Session", [
+                    ("/new",            "Start a new conversation"),
+                    ("/sessions",       "List saved conversations"),
+                    ("/load [n]",       "Load conversation (direct: /load 2)"),
+                    ("/history",        "Show current conversation"),
+                    ("/stats",          "Show session stats (turns, ~tokens, model)"),
+                    ("/export",         "Export conversation to markdown file"),
+                ]),
+                ("History edit", [
+                    ("/clear",          "Clear current conversation"),
+                    ("/undo",           "Remove last exchange from history"),
+                    ("/redo",           "Restore last undone exchange"),
+                    ("/branch <n>",     "Fork history at exchange N"),
+                    ("/compact [n]",    "Prune middle history, keep last n turns (default 6)"),
+                ]),
+                ("Input", [
+                    ("/paste",          "Multiline paste mode (Ctrl-D to send)"),
+                    ("/editor",         "Open editor for input"),
+                ]),
+                ("Model & auth", [
+                    ("/model [name|list]", "Show / switch / list models"),
+                    ("/reasoning",      "Toggle reasoning: disable/low/medium/high"),
+                    ("/renew",          "Refresh auth token"),
+                ]),
+                ("Exit", [
+                    ("/exit",           "Quit"),
+                ]),
             ]
-
-            for c, d in cmds:
-
-                output.print(f"  [cyan]{c:<22}[/cyan] {d}")
+            for group_name, cmds in groups:
+                output.print(f"\n  [bold]{group_name}[/bold]")
+                for c, d in cmds:
+                    output.print(f"    [cyan]{c:<22}[/cyan] {d}")
 
 
         elif cmd.startswith("/"):
