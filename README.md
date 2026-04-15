@@ -102,14 +102,25 @@ AI-powered Trino query tuning CLI. 用 LLM 自動優化 Trino SQL，結合靜態
 
 ```bash
 cd genieCLI
+python3 -m venv .venv && source .venv/bin/activate   # 建議用 venv，避免污染系統 Python
 pip install -e .
-pip install trino    # Trino Python client
+pip install trino    # Trino Python client（optional — 只跑 LLM chat 可略）
 ```
+
+安裝後會多出一個 `genie` 指令。驗證：
+
+```bash
+which genie          # → .../bin/genie
+genie --help
+```
+
+> 若 `genie: command not found`：通常是 venv 沒 activate，或 `pip install -e .` 裝到 user site 但 PATH 沒含 `~/.local/bin`。最穩的方式是進 venv 後再跑。
 
 ### 設定
 
 ```bash
 genie setup          # 互動式設定 wizard
+genie doctor         # 檢查環境（PATH / Python / deps / LLM / Trino / MCP）
 ```
 
 或手動編輯 `~/.genie/config.toml`：
@@ -146,9 +157,11 @@ defaultModel = "gemini-2.5-flash"
 ### 啟動
 
 ```bash
-python -m genie --skills     # 互動模式（含 skills）
-python -m genie query.sql    # 送檔案
+genie --skills       # 互動模式（含 skills）
+genie query.sql      # 送檔案
 ```
+
+> `genie` 和 `python -m genie` 等價；前者是 `pyproject.toml` 宣告的 entry point，只要安裝完成就能用。
 
 ---
 
@@ -164,7 +177,7 @@ genie setup trino # 設定 Trino 連線
 或用互動指令：
 
 ```bash
-python -m genie --skills
+genie --skills
 > /trino add mytrino
 > /trino test
 ```
@@ -172,7 +185,7 @@ python -m genie --skills
 ### Step 2：跑優化
 
 ```bash
-python -m genie --skills
+genie --skills
 > /trino-research
 # 1. 貼上 SQL
 # 2. 選 metric（預設 cpu_time_ms）
@@ -260,6 +273,16 @@ genie setup mcp    # 互動式設定
 url = "http://localhost:8811"
 enabled = true
 timeout = 30
+```
+
+### /trino-research 自動路由
+
+當 `[mcp.trino].enabled = true` 時，`/trino-research` 會**自動**走 MCP 路徑（baseline 測量、EXPLAIN ANALYZE、metadata 建議都由 MCP server 提供）。當 MCP 無法連線或未啟用時，退回 local `trino` Python driver。
+
+強制跑直連模式：
+
+```bash
+> /trino-research --direct --file query.sql
 ```
 
 ---
