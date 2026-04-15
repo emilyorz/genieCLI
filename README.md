@@ -102,9 +102,19 @@ AI-powered Trino query tuning CLI. 用 LLM 自動優化 Trino SQL，結合靜態
 
 ```bash
 cd genieCLI
+python3 -m venv .venv && source .venv/bin/activate   # 建議用 venv，避免污染系統 Python
 pip install -e .
-pip install trino    # Trino Python client
+pip install trino    # Trino Python client（optional — 只跑 LLM chat 可略）
 ```
+
+安裝後會多出一個 `genie` 指令。驗證：
+
+```bash
+which genie          # → .../bin/genie
+genie --help
+```
+
+> 若 `genie: command not found`：通常是 venv 沒 activate，或 `pip install -e .` 裝到 user site 但 PATH 沒含 `~/.local/bin`。最穩的方式是進 venv 後再跑。
 
 ### 設定
 
@@ -146,9 +156,11 @@ defaultModel = "gemini-2.5-flash"
 ### 啟動
 
 ```bash
-python -m genie --skills     # 互動模式（含 skills）
-python -m genie query.sql    # 送檔案
+genie --skills       # 互動模式（含 skills）
+genie query.sql      # 送檔案
 ```
+
+> `genie` 和 `python -m genie` 等價；前者是 `pyproject.toml` 宣告的 entry point，只要安裝完成就能用。
 
 ---
 
@@ -164,7 +176,7 @@ genie setup trino # 設定 Trino 連線
 或用互動指令：
 
 ```bash
-python -m genie --skills
+genie --skills
 > /trino add mytrino
 > /trino test
 ```
@@ -172,7 +184,7 @@ python -m genie --skills
 ### Step 2：跑優化
 
 ```bash
-python -m genie --skills
+genie --skills
 > /trino-research
 # 1. 貼上 SQL
 # 2. 選 metric（預設 cpu_time_ms）
