@@ -1090,9 +1090,10 @@ def run_mcp_enhancement(
 
     # ── Iteration loop ──
     for iteration in range(1, max_iterations + 1):
+        iter_start = time.monotonic()
         if output:
             output.print("")
-            output.progress(f"  ── Iteration {iteration}/{max_iterations} ──")
+            output.progress(f"── iteration {iteration}/{max_iterations}")
 
         last_str = "N/A (first iteration)"
         if iterations:
@@ -1132,8 +1133,12 @@ def run_mcp_enhancement(
         # Extract SQL
         candidate_sql = extract_sql_from_reply(reply)
         if not candidate_sql:
-            if output:
-                output.progress("  [SKIP] No SQL found in AI response.")
+            _render_iteration_result(
+                output, iteration=iteration, total=max_iterations,
+                status="no_sql", hypothesis="no SQL extracted",
+                metric_key=metric_key, metric_value=best_metric, delta=0.0,
+                elapsed_s=time.monotonic() - iter_start,
+            )
             iterations.append(IterationRecord(
                 iteration=iteration, status="no_sql",
                 metric_value=best_metric, delta=0.0,
@@ -1149,15 +1154,20 @@ def run_mcp_enhancement(
                 hypothesis = line[:80]
                 break
 
-        if output:
-            output.progress(f"  [Hypothesis] {hypothesis}")
+        # Show what the AI proposed (visible diff, not just "hypothesis")
+        _render_sql_diff(output, best_sql, candidate_sql)
 
         # Execute and measure candidate
         try:
             candidate = _measure_mcp(client, candidate_sql, metric_key, verify_runs, capture_rows=True)
         except Exception as exc:
-            if output:
-                output.progress(f"  [REVERT] Execution failed: {exc}")
+            elapsed = time.monotonic() - iter_start
+            _render_iteration_result(
+                output, iteration=iteration, total=max_iterations,
+                status="exec_failed", hypothesis=f"execution failed: {exc}",
+                metric_key=metric_key, metric_value=best_metric, delta=0.0,
+                elapsed_s=elapsed,
+            )
             iterations.append(IterationRecord(
                 iteration=iteration, status="exec_failed",
                 metric_value=best_metric, delta=0.0,
@@ -1176,8 +1186,13 @@ def run_mcp_enhancement(
         else:
             equiv, equiv_reason = _results_equivalent(baseline.rows, candidate.rows)
         if not equiv:
-            if output:
-                output.progress(f"  [REVERT] Result mismatch: {equiv_reason}")
+            elapsed = time.monotonic() - iter_start
+            _render_iteration_result(
+                output, iteration=iteration, total=max_iterations,
+                status="semantic_drift", hypothesis=f"drift: {equiv_reason}",
+                metric_key=metric_key, metric_value=candidate_metric, delta=delta,
+                elapsed_s=elapsed,
+            )
             session["history"].append(new_msg(
                 "user",
                 f"Query results differ from baseline: {equiv_reason}. "
@@ -1200,13 +1215,13 @@ def run_mcp_enhancement(
         else:
             status = "worse"
 
-        if output:
-            icon = "+" if improved else "-"
-            output.progress(
-                f"  [{icon}] {'KEPT' if improved else 'REVERTED'} | "
-                f"{metric_key}={candidate_metric:.1f} (delta={delta:+.1f})"
-            )
-            output.print(f"    [dim]{candidate.metrics.summary()}[/dim]")
+        elapsed = time.monotonic() - iter_start
+        _render_iteration_result(
+            output, iteration=iteration, total=max_iterations,
+            status=status, hypothesis=hypothesis,
+            metric_key=metric_key, metric_value=candidate_metric, delta=delta,
+            elapsed_s=elapsed,
+        )
 
         session["history"].append(new_msg(
             "user",
@@ -1287,14 +1302,18 @@ def run_mcp_enhancement(
         enhanced_explain=enhanced_explain,
     )
 
-    # Print summary
-    if output:
-        output.print("")
-        output.print("  [yellow]══ Enhancement Summary ══[/yellow]")
-        output.print(f"  Baseline:    {baseline.median_metric:.1f}")
-        output.print(f"  Best:        {best_metric:.1f}")
-        output.print(f"  Improvement: {improvement_abs:+.1f} ({improvement_pct:+.1f}%)")
-        output.print(f"  Data check:  {'PASS' if final_equiv else 'FAIL'} ({final_reason})")
+    # Final visual summary
+    _render_summary_card(
+        output,
+        baseline_value=baseline.median_metric,
+        best_value=best_metric,
+        metric_key=metric_key,
+        improvement_abs=improvement_abs,
+        improvement_pct=improvement_pct,
+        data_consistent=final_equiv,
+        data_consistency_reason=final_reason,
+        iterations_ran=len(iterations),
+    )
 
     return report
 
@@ -1312,6 +1331,145 @@ MCP_METRICS = [
 
 
 RESEARCH_QUERY_TIMEOUT = 300  # seconds — bumped from default 30s for long-running queries
+
+
+# ---------------------------------------------------------------------------
+# UX helpers (v22 sprint)
+# ---------------------------------------------------------------------------
+
+def _fmt_metric_value(val: float) -> str:
+    """Adaptive formatter for metric values (used in live output)."""
+    if val is None:
+        return "0"
+    if val == 0:
+        return "0"
+    absv = abs(val)
+    if absv < 0.001:
+        return f"{val:.4f}"
+    if absv < 1:
+        return f"{val:.3f}"
+    if absv < 100:
+        return f"{val:.2f}"
+    return f"{val:.0f}"
+
+
+def _render_plan_card(
+    output, *, sql: str, sql_source: str, metric: str, iterations: int,
+    runs: int, server: str, safe_limit: Optional[int], query_timeout: int,
+) -> None:
+    """Pre-launch summary — tells the user exactly what is about to happen."""
+    if output is None:
+        return
+    sql_lines = sql.count("\n") + 1
+    sql_bytes = len(sql.encode("utf-8"))
+    output.print("")
+    output.print("  [bold cyan]── Research Plan ──[/bold cyan]")
+    output.print(f"  [dim]sql         [/dim] {sql_source} ({sql_lines} lines, {sql_bytes:,}B)")
+    output.print(f"  [dim]metric      [/dim] {metric} (lower is better)")
+    output.print(f"  [dim]iterations  [/dim] {iterations}")
+    output.print(f"  [dim]verify      [/dim] {runs} runs per candidate (median)")
+    output.print(f"  [dim]server      [/dim] {server}")
+    if safe_limit and safe_limit > 0:
+        output.print(f"  [dim]safe-limit  [/dim] LIMIT {safe_limit} wrapper active")
+    output.print(f"  [dim]timeout     [/dim] {query_timeout}s per query")
+    output.print("")
+
+
+def _render_sql_diff(output, old_sql: str, new_sql: str, max_lines: int = 20) -> None:
+    """Render a colored unified diff of the AI's proposed SQL vs current best."""
+    if output is None:
+        return
+    import difflib
+    if old_sql.strip() == new_sql.strip():
+        output.print(f"  [dim](no SQL change)[/dim]")
+        return
+    diff = list(difflib.unified_diff(
+        old_sql.splitlines(),
+        new_sql.splitlines(),
+        lineterm="",
+        n=1,  # small context
+    ))
+    # Skip the file header lines ("---" / "+++")
+    body = [ln for ln in diff if not ln.startswith("---") and not ln.startswith("+++")]
+    if not body:
+        return
+    shown = body[:max_lines]
+    output.print("  [dim]sql diff:[/dim]")
+    for ln in shown:
+        if ln.startswith("+"):
+            output.print(f"    [green]{ln}[/green]")
+        elif ln.startswith("-"):
+            output.print(f"    [red]{ln}[/red]")
+        elif ln.startswith("@@"):
+            output.print(f"    [dim]{ln}[/dim]")
+        else:
+            output.print(f"    {ln}")
+    if len(body) > max_lines:
+        output.print(f"    [dim]... +{len(body) - max_lines} more lines[/dim]")
+
+
+def _render_iteration_result(
+    output, *, iteration: int, total: int, status: str, hypothesis: str,
+    metric_key: str, metric_value: float, delta: float, elapsed_s: float,
+) -> None:
+    """One structured line per iteration outcome. Uses the HumanSink palette."""
+    if output is None:
+        return
+    color_by_status = {
+        "improved": "green",
+        "worse": "yellow",
+        "semantic_drift": "red",
+        "exec_failed": "red",
+        "no_sql": "dim",
+    }
+    label_by_status = {
+        "improved": "KEPT",
+        "worse": "WORSE",
+        "semantic_drift": "REVERT",
+        "exec_failed": "FAIL",
+        "no_sql": "SKIP",
+    }
+    color = color_by_status.get(status, "white")
+    label = label_by_status.get(status, status.upper())
+    output.print(
+        f"  [{color}]{label:<6}[/{color}] "
+        f"[dim]{iteration}/{total}[/dim]  "
+        f"{metric_key}={_fmt_metric_value(metric_value)}  "
+        f"Δ={_fmt_metric_value(delta)}  "
+        f"[dim]({elapsed_s:.1f}s)[/dim]"
+    )
+    if hypothesis and hypothesis != "?":
+        output.print(f"         [dim]{hypothesis[:100]}[/dim]")
+
+
+def _render_summary_card(
+    output, *, baseline_value: float, best_value: float, metric_key: str,
+    improvement_abs: float, improvement_pct: float, data_consistent: bool,
+    data_consistency_reason: str, iterations_ran: int,
+) -> None:
+    """Final visual summary — bars scale to the larger of baseline/best."""
+    if output is None:
+        return
+    bar_width = 30
+    peak = max(abs(baseline_value), abs(best_value), 1e-9)
+    def _bar(v: float) -> str:
+        n = int(round(abs(v) / peak * bar_width))
+        return "█" * max(n, 0)
+    output.print("")
+    output.print("  [bold cyan]── Final Result ──[/bold cyan]")
+    output.print(f"  [dim]baseline   [/dim] {_fmt_metric_value(baseline_value):>10}  [cyan]{_bar(baseline_value)}[/cyan]")
+    output.print(f"  [dim]best       [/dim] {_fmt_metric_value(best_value):>10}  [green]{_bar(best_value)}[/green]")
+    arrow = "↓" if improvement_abs < 0 else ("↑" if improvement_abs > 0 else "·")
+    improved = improvement_abs < 0
+    change_color = "green" if improved else ("yellow" if improvement_abs == 0 else "red")
+    output.print(
+        f"  [dim]change     [/dim] "
+        f"[{change_color}]{_fmt_metric_value(improvement_abs)} ({improvement_pct:+.1f}%) {arrow}[/{change_color}]"
+    )
+    dc_label = "[green]PASS[/green]" if data_consistent else f"[red]FAIL[/red] ({data_consistency_reason})"
+    output.print(f"  [dim]data check [/dim] {dc_label}")
+    output.print(f"  [dim]iterations [/dim] {iterations_ran} rounds")
+    output.print("")
 
 
 def run_trino_research_via_mcp(
@@ -1448,6 +1606,19 @@ def run_trino_research_via_mcp(
             runs = max(1, int(runs_str))
         except (ValueError, EOFError, KeyboardInterrupt):
             runs = 3
+
+    # ── Pre-launch plan card ──
+    _render_plan_card(
+        output,
+        sql=sql,
+        sql_source=sql_file or "stdin",
+        metric=metric,
+        iterations=iterations,
+        runs=runs,
+        server=mcp_cfg.url,
+        safe_limit=safe_limit,
+        query_timeout=mcp_cfg.timeout,
+    )
 
     # ── Run MCP enhancement loop ──
     report = run_mcp_enhancement(

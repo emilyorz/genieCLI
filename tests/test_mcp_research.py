@@ -20,8 +20,13 @@ from genie.skills.mcp_trino.research import (
     _execute_via_mcp,
     _extract_table_names,
     _fetch_explain_analyze,
+    _fmt_metric_value,
     _generate_table_suggestions,
     _parse_explain_stages,
+    _render_iteration_result,
+    _render_plan_card,
+    _render_sql_diff,
+    _render_summary_card,
     _results_equivalent,
     generate_report,
 )
@@ -131,6 +136,99 @@ class TestExecuteViaMcp:
 
 
 # ── Report Generation ────────────────────────────────────────────────────────
+
+
+class TestUxHelpers:
+    """Render helpers added in v22 UX sprint."""
+
+    def _mock_output(self):
+        mock = MagicMock()
+        mock._lines = []
+        def _print(msg):
+            mock._lines.append(str(msg))
+        mock.print = _print
+        return mock
+
+    def test_fmt_metric_value_adaptive_precision(self):
+        assert _fmt_metric_value(0) == "0"
+        assert _fmt_metric_value(0.0005) == "0.0005"
+        assert _fmt_metric_value(0.053) == "0.053"
+        assert _fmt_metric_value(12.3) == "12.30"
+        assert _fmt_metric_value(1234) == "1234"
+
+    def test_render_sql_diff_shows_added_and_removed_lines(self):
+        out = self._mock_output()
+        _render_sql_diff(out, "SELECT * FROM t", "SELECT id FROM t WHERE id > 0")
+        rendered = "\n".join(out._lines)
+        assert "green" in rendered  # +added line colored
+        assert "red" in rendered    # -removed line colored
+
+    def test_render_sql_diff_noop_when_unchanged(self):
+        out = self._mock_output()
+        _render_sql_diff(out, "SELECT 1", "SELECT 1")
+        assert any("no SQL change" in ln for ln in out._lines)
+
+    def test_render_iteration_result_kept_status(self):
+        out = self._mock_output()
+        _render_iteration_result(
+            out, iteration=1, total=5, status="improved",
+            hypothesis="add partition filter", metric_key="query_time_ms",
+            metric_value=0.053, delta=-0.012, elapsed_s=1.24,
+        )
+        rendered = "\n".join(out._lines)
+        assert "KEPT" in rendered
+        assert "green" in rendered
+        assert "1/5" in rendered
+        assert "0.053" in rendered
+
+    def test_render_iteration_result_revert_status(self):
+        out = self._mock_output()
+        _render_iteration_result(
+            out, iteration=2, total=5, status="semantic_drift",
+            hypothesis="drop WHERE clause", metric_key="query_time_ms",
+            metric_value=0.020, delta=-0.030, elapsed_s=1.5,
+        )
+        rendered = "\n".join(out._lines)
+        assert "REVERT" in rendered
+        assert "red" in rendered
+
+    def test_render_plan_card_shows_sql_stats(self):
+        out = self._mock_output()
+        _render_plan_card(
+            out, sql="SELECT 1\nFROM t", sql_source="q.sql",
+            metric="query_time_ms", iterations=5, runs=3,
+            server="http://localhost:8811/mcp", safe_limit=None,
+            query_timeout=300,
+        )
+        rendered = "\n".join(out._lines)
+        assert "Research Plan" in rendered
+        assert "q.sql" in rendered
+        assert "2 lines" in rendered
+        assert "http://localhost:8811/mcp" in rendered
+
+    def test_render_plan_card_shows_safe_limit_when_set(self):
+        out = self._mock_output()
+        _render_plan_card(
+            out, sql="SELECT 1", sql_source="stdin",
+            metric="query_time_ms", iterations=3, runs=3,
+            server="url", safe_limit=1000, query_timeout=300,
+        )
+        rendered = "\n".join(out._lines)
+        assert "LIMIT 1000" in rendered
+
+    def test_render_summary_card_shows_improvement(self):
+        out = self._mock_output()
+        _render_summary_card(
+            out, baseline_value=1.0, best_value=0.4, metric_key="query_time_ms",
+            improvement_abs=-0.6, improvement_pct=-60.0,
+            data_consistent=True, data_consistency_reason="exact match",
+            iterations_ran=5,
+        )
+        rendered = "\n".join(out._lines)
+        assert "Final Result" in rendered
+        assert "↓" in rendered  # improvement arrow
+        assert "PASS" in rendered
+        assert "█" in rendered  # visual bar
 
 
 class TestGenerateReport:
