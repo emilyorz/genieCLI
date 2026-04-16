@@ -6,7 +6,7 @@
 - Repo Folder: project-iterations/genieCLI/
 - Iteration: 15
 - Owner: Emily (Claude Code)
-- Status: active (Round 1 complete)
+- Status: active (Round 1-2 complete, R3 pending)
 - Updated: 2026-04-14T19:10+0800
 - Focus: Make the `/trino-research` command load a real, configured MCP
   server every time — no optional path, no silent fallback, no guessing.
@@ -144,7 +144,7 @@ runtime toggle; it is "MCP is orphaned" at the import level.
   references the old direct-Trino semantics, those will need updates
   in Round 3.
 
-## Round 2 — Rewire (pending)
+## Round 2 — Rewire (done — shipped in v17 PRs #35/#36/#37/#38)
 
 ### Planned change
 

@@ -1,7 +1,7 @@
 # Sprint Status
 
-- Last iteration: v15 (active — make `/trino-research` always use the configured MCP)
-- Carryover: v10 T9 — live verify MCP client against Sam's localhost:8811 remains blocked on Sam
+- Last iteration: v17 (done — MCP full integration sprint)
+- Carryover: v10 T9 — live verify MCP client against Sam's localhost:8811 (pending Sam's E2E test)
 - Archived:
   - TASK-LEDGER-v1-archived.md
   - TASK-LEDGER-v2-archived.md
@@ -18,22 +18,20 @@
   - TASK-LEDGER-v12.md (oracle2trino/trino_linter convergence + EXPLAIN ANALYZE)
   - TASK-LEDGER-v13.md (subtraction & deduplication)
   - TASK-LEDGER-v14.md (pyproject build-backend fix for pip install)
-- Active:
-  - TASK-LEDGER-v15.md (make `/trino-research` always use configured MCP, not optional) — paused
-- Complete (recent):
-  - TASK-LEDGER-v17.md (MCP endpoint path fix + registration warning)
   - TASK-LEDGER-v16.md (CLI subcommand routing audit & fix — callback variadic arg)
-- v17 summary:
-  - Root cause: McpConfig default URL had no path — all probes hit "/" instead of "/mcp"
-  - Fix: default URL → http://localhost:8811/mcp; MCP registration logs warning on failure
-  - Verify: all probes hit /mcp; 587 tests pass
+  - TASK-LEDGER-v17.md (MCP full integration sprint — 5 rounds, 6 PRs)
+- Active:
+  - TASK-LEDGER-v15.md (R1-R2 done, R3 tests+docs pending after Sam's E2E confirm)
+- v17 summary (2026-04-16, 5 rounds):
+  - R1/PR #33: CLI subcommand routing — variadic args fix for `genie setup [target]`
+  - R2/PR #35: MCP endpoint path → default URL `/mcp` + registration warning
+  - R3/PR #36: /trino-research hard-requires MCP, no silent fallback; --direct opt-in
+  - R4/PR #37: Dynamic tool name discovery (match execute_query from Sam's server)
+  - R5/PR #38: Dynamic SQL parameter name discovery (sql/query/statement)
+  - All rounds: 587 tests pass, 0 failures
 - v16 summary:
-  - Root cause: callback positional `target: Optional[str]` ate subcommand names; `setup` missing from shim; `setup trino` orphaned "trino" token
-  - Fix: changed to variadic `args: Optional[list[str]]` so all positionals captured; shim reads args[0] as target, args[1] as sub-target
-  - Verify: all 12 invocation patterns pass; 587 tests, 0 failures
-- v14 summary:
-  - Root cause: `pyproject.toml` used invalid backend path `setuptools.backends.legacy:build`, which made pip silently fall back and build an `UNKNOWN-0.0.0` wheel with no project metadata
-  - Fix: switch to `setuptools.build_meta`
-  - Verify: clean Python 3.13 venv — `pip install .` builds `genie_cli-5.0.0-py3-none-any.whl`, `pip show genie-cli` reports correct metadata, `genie --help` works
-- v15 plan: 3 rounds — (R1) diagnose why `/trino-research` bypasses MCP, (R2) rewire to MCP as the only backend, (R3) tests/docs/cleanup
-- Next action: write Round 1 evidence into v15 ledger, then make the minimal rewiring in `chat.py`
+  - Root cause: callback positional ate subcommand names; setup missing from shim
+  - Fix: variadic `args: Optional[list[str]]`; shim reads args[0]/args[1]
+- v15 status:
+  - R1 done (diagnosis), R2 done (shipped via v17 R3-R5), R3 pending (tests + docs)
+- Next action: Sam E2E test with MCP server → then v15 R3 (tests + docs cleanup)
