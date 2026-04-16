@@ -761,7 +761,7 @@ def _chat_loop(
 
 
         elif cmd == "/trino-research":
-            # Parse optional flags: --file, --metric, --iterations, --runs, --direct
+            # Parse optional flags: --file, --metric, --iterations, --runs, --direct, --safe-limit, --query-timeout
             kwargs = {}
             force_direct = False
             i = 0
@@ -777,6 +777,12 @@ def _chat_loop(
                     i += 2
                 elif args[i] == "--runs" and i + 1 < len(args):
                     kwargs["runs"] = int(args[i + 1])
+                    i += 2
+                elif args[i] == "--safe-limit" and i + 1 < len(args):
+                    kwargs["safe_limit"] = int(args[i + 1])
+                    i += 2
+                elif args[i] == "--query-timeout" and i + 1 < len(args):
+                    kwargs["query_timeout"] = int(args[i + 1])
                     i += 2
                 elif args[i] == "--direct":
                     force_direct = True
@@ -902,7 +908,7 @@ def _chat_loop(
             # Grouped by what a user reaches for, primary actions first.
             groups = [
                 ("Primary", [
-                    ("/trino-research", "Optimize SQL via MCP: --file F --metric M --iterations N --runs N [--direct]"),
+                    ("/trino-research", "Optimize SQL via MCP: --file F --metric M --iterations N --runs N [--safe-limit N] [--query-timeout S] [--direct]"),
                     ("/trino",          "Trino profiles: /trino [use|add|remove|test]"),
                     ("/autoresearch",   "Generic autonomous iteration loop"),
                     ("/skills",         "List available skills/tools"),
