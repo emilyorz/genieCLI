@@ -280,6 +280,31 @@ def _render_banner(output: "HumanSink", version: str) -> None:
     output.print("")
 
 
+def _print_trino_research_help(output) -> None:
+    output.print("")
+    output.print("  [bold cyan]/trino-research[/bold cyan]  —  iterative Trino SQL optimizer (via MCP)")
+    output.print("")
+    output.print("  [dim]Usage[/dim]")
+    output.print("    /trino-research [--file <path>] [--metric <m>] [--iterations <n>] [--runs <n>]")
+    output.print("                    [--safe-limit <n>] [--query-timeout <sec>] [--direct]")
+    output.print("")
+    output.print("  [dim]Flags[/dim]")
+    output.print("    --file <path>        SQL file; prompts interactively if omitted")
+    output.print("    --metric <m>         query_time_ms | cpu_time_ms | wall_time_ms |")
+    output.print("                         physical_input_bytes | processed_rows | total_splits")
+    output.print("    --iterations <n>     max optimization rounds (default 5)")
+    output.print("    --runs <n>           runs per candidate for median (default 3)")
+    output.print("    --safe-limit <n>     wrap SQL with outer LIMIT n (changes semantics!)")
+    output.print("    --query-timeout <s>  per-query timeout (default 300s)")
+    output.print("    --direct             bypass MCP, use trino driver directly")
+    output.print("")
+    output.print("  [dim]Examples[/dim]")
+    output.print("    /trino-research --file query.sql --metric query_time_ms --iterations 5")
+    output.print("    /trino-research --file q.sql --safe-limit 10000")
+    output.print("    /trino-research --direct   [dim](skip MCP)[/dim]")
+    output.print("")
+
+
 def _chat_loop(
     provider,
     cfg: dict,
@@ -310,6 +335,21 @@ def _chat_loop(
     try:
         from genie.skills.trino_query.connection import status_line
         output.kv("trino", status_line())
+    except Exception:
+        pass
+    try:
+        from genie.skills.mcp_trino.client import McpClient, load_mcp_config
+        mcp_cfg = load_mcp_config()
+        if mcp_cfg.enabled and mcp_cfg.url:
+            probe_cfg = type(mcp_cfg)(url=mcp_cfg.url, enabled=True,
+                                      timeout=min(mcp_cfg.timeout, 3))
+            try:
+                tools = McpClient(probe_cfg).list_tools()
+                output.kv("mcp", f"[green]ok[/green] {mcp_cfg.url} ({len(tools)} tools)")
+            except Exception:
+                output.kv("mcp", f"[red]offline[/red] {mcp_cfg.url}")
+        else:
+            output.kv("mcp", "[dim]not configured[/dim]")
     except Exception:
         pass
     output.print("")
@@ -767,28 +807,7 @@ def _chat_loop(
 
         elif cmd == "/trino-research":
             if "--help" in args or "-h" in args:
-                output.print("")
-                output.print("  [bold cyan]/trino-research[/bold cyan]  —  iterative Trino SQL optimizer (via MCP)")
-                output.print("")
-                output.print("  [dim]Usage[/dim]")
-                output.print("    /trino-research [--file <path>] [--metric <m>] [--iterations <n>] [--runs <n>]")
-                output.print("                    [--safe-limit <n>] [--query-timeout <sec>] [--direct]")
-                output.print("")
-                output.print("  [dim]Flags[/dim]")
-                output.print("    --file <path>        SQL file; prompts interactively if omitted")
-                output.print("    --metric <m>         query_time_ms | cpu_time_ms | wall_time_ms |")
-                output.print("                         physical_input_bytes | processed_rows | total_splits")
-                output.print("    --iterations <n>     max optimization rounds (default 5)")
-                output.print("    --runs <n>           runs per candidate for median (default 3)")
-                output.print("    --safe-limit <n>     wrap SQL with outer LIMIT n (changes semantics!)")
-                output.print("    --query-timeout <s>  per-query timeout (default 300s)")
-                output.print("    --direct             bypass MCP, use trino driver directly")
-                output.print("")
-                output.print("  [dim]Examples[/dim]")
-                output.print("    /trino-research --file query.sql --metric query_time_ms --iterations 5")
-                output.print("    /trino-research --file q.sql --safe-limit 10000")
-                output.print("    /trino-research --direct   [dim](skip MCP)[/dim]")
-                output.print("")
+                _print_trino_research_help(output)
                 continue
             # Parse optional flags: --file, --metric, --iterations, --runs, --direct, --safe-limit, --query-timeout
             kwargs = {}
@@ -934,6 +953,12 @@ def _chat_loop(
 
 
         elif cmd == "/help":
+            # Sub-command help: /help trino-research
+            if args and args[0].lstrip("/") in ("trino-research",):
+                _print_trino_research_help(output)
+                continue
+            elif args:
+                output.print(f"  [dim]No detailed help for '{args[0]}'. Showing all commands:[/dim]")
             # Grouped by what a user reaches for, primary actions first.
             groups = [
                 ("Primary", [
