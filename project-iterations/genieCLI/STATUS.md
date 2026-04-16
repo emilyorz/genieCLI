@@ -1,6 +1,6 @@
 # Sprint Status
 
-- Last iteration: v20 (done — report polish based on Sam's first real-run feedback)
+- Last iteration: v21 (done — post-release bug fixes from first-run testing)
 - Carryover: v10 T9 — live verify MCP client against Sam's localhost:8811 (pending Sam's E2E test)
 - Archived:
   - TASK-LEDGER-v1-archived.md
@@ -23,8 +23,15 @@
   - TASK-LEDGER-v18.md (Anthropic-style SKILL.md body injection — tune via markdown)
   - TASK-LEDGER-v19.md (safety guardrails — preflight evaluate-level: read-only + size estimate + row cap + safe-limit)
   - TASK-LEDGER-v20.md (report polish — compact explain summary, sample-note, table-suggestions messaging, Lakehouse Team footer)
+  - TASK-LEDGER-v21.md (post-release bug fixes — paste-mode leak, null-tool guard, explain us/ns parser, 4 PRs)
 - Active:
   - TASK-LEDGER-v15.md (R1-R2 done, R3 tests+docs pending after Sam's E2E confirm)
+- v21 summary (2026-04-16, 4 rounds):
+  - R1/PR #42: paste-mode PromptSession isolation — Ctrl-D-only stuck state after /trino-research
+  - R2/PR #43: transient debug traceback dump (for diagnosing R3)
+  - R3/PR #44: handle {"tool": null} as task-done signal (our own system prompt's footgun); revert R2
+  - R4/PR #45: EXPLAIN parser now recognizes us/ns/µs/min/h time units + first-match-wins per stage (fixes CPU/Memory/Input/Output = 0 on Trino 467)
+  - Verify: 620 tests pass (+3 new regression tests using Sam's real Trino 467 EXPLAIN fixture)
 - v20 summary (2026-04-16):
   - Based on Sam's real-run feedback
   - EXPLAIN sections now render compact totals table when plan text isn't parseable (no more raw JSON dump)
@@ -54,4 +61,4 @@
   - Fix: variadic `args: Optional[list[str]]`; shim reads args[0]/args[1]
 - v15 status:
   - R1 done (diagnosis), R2 done (shipped via v17 R3-R5), R3 pending (tests + docs)
-- Next action: Sam E2E test with MCP server → then v15 R3 (tests + docs cleanup)
+- Next action: Sam re-runs /trino-research on Trino 467 → verify CPU/Memory/Input/Output metrics non-zero; if OK, close v15 R3 (tests + docs cleanup).
