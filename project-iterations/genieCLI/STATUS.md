@@ -1,6 +1,6 @@
 # Sprint Status
 
-- Last iteration: v21 (done — post-release bug fixes from first-run testing)
+- Last iteration: v22 (done — /trino-research UX sprint)
 - Carryover: v10 T9 — live verify MCP client against Sam's localhost:8811 (pending Sam's E2E test)
 - Archived:
   - TASK-LEDGER-v1-archived.md
@@ -24,8 +24,16 @@
   - TASK-LEDGER-v19.md (safety guardrails — preflight evaluate-level: read-only + size estimate + row cap + safe-limit)
   - TASK-LEDGER-v20.md (report polish — compact explain summary, sample-note, table-suggestions messaging, Lakehouse Team footer)
   - TASK-LEDGER-v21.md (post-release bug fixes — paste-mode leak, null-tool guard, explain us/ns parser, 4 PRs)
+  - TASK-LEDGER-v22.md (UX sprint — SQL diff, iteration status block, plan card, final summary card)
 - Active:
   - TASK-LEDGER-v15.md (R1-R2 done, R3 tests+docs pending after Sam's E2E confirm)
+- v22 summary (2026-04-16, 4 rounds, 1 PR):
+  - R1: SQL diff between iterations — `_render_sql_diff()` shows colored +/- of AI proposal vs current best
+  - R2: Structured iteration status block — color-coded KEPT/WORSE/REVERT/FAIL/SKIP + per-iteration elapsed time
+  - R3: Pre-launch plan card — one-shot visual of sql/metric/iterations/server/safety before baseline runs
+  - R4: Final summary card — visual bars baseline vs best + improvement arrow + data check
+  - Helper: `_fmt_metric_value()` adaptive precision for live output (sibling to `_fmt_ms` in report)
+  - Verify: 628 tests pass (+8 new); zero regression
 - v21 summary (2026-04-16, 4 rounds):
   - R1/PR #42: paste-mode PromptSession isolation — Ctrl-D-only stuck state after /trino-research
   - R2/PR #43: transient debug traceback dump (for diagnosing R3)
