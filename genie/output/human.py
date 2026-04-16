@@ -121,3 +121,15 @@ class HumanSink:
         preview = result[:100] + ("..." if len(result) > 100 else "")
         # Single-line, dimmed — tool output is a side-effect, not the story.
         _console.print(f"{GUTTER}[{MUTED}]  {escape(preview)}[/{MUTED}]")
+
+    def status(self, message: str):
+        """Context manager for a live spinner while a long task runs.
+
+        Usage:
+            with output.status("AI thinking..."):
+                reply = provider.complete_text(req)
+
+        On exit, the spinner is cleared automatically. The message uses
+        the muted style so it doesn't compete with iteration output.
+        """
+        return _console.status(f"{GUTTER}[{MUTED}]{escape(message)}[/{MUTED}]", spinner="dots")

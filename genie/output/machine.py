@@ -50,3 +50,8 @@ class MachineSink:
     def tool_result(self, result: str) -> None:
         # Swallowed in machine mode — result is part of the tool loop, not user output
         pass
+
+    def status(self, message: str):
+        """No-op context manager for machine mode — matches HumanSink.status()."""
+        from contextlib import nullcontext
+        return nullcontext()
