@@ -238,6 +238,9 @@ def _do_send(
         reply = _send_with_tools(provider, session, model, reasoning, output, ctx)
     except Exception as exc:
         output.error(str(exc))
+        import traceback
+        tb = traceback.format_exc()
+        output.print(f"[dim]{tb}[/dim]")
         session["history"].pop()
         return
 
