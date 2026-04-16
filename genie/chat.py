@@ -766,6 +766,30 @@ def _chat_loop(
 
 
         elif cmd == "/trino-research":
+            if "--help" in args or "-h" in args:
+                output.print("")
+                output.print("  [bold cyan]/trino-research[/bold cyan]  —  iterative Trino SQL optimizer (via MCP)")
+                output.print("")
+                output.print("  [dim]Usage[/dim]")
+                output.print("    /trino-research [--file <path>] [--metric <m>] [--iterations <n>] [--runs <n>]")
+                output.print("                    [--safe-limit <n>] [--query-timeout <sec>] [--direct]")
+                output.print("")
+                output.print("  [dim]Flags[/dim]")
+                output.print("    --file <path>        SQL file; prompts interactively if omitted")
+                output.print("    --metric <m>         query_time_ms | cpu_time_ms | wall_time_ms |")
+                output.print("                         physical_input_bytes | processed_rows | total_splits")
+                output.print("    --iterations <n>     max optimization rounds (default 5)")
+                output.print("    --runs <n>           runs per candidate for median (default 3)")
+                output.print("    --safe-limit <n>     wrap SQL with outer LIMIT n (changes semantics!)")
+                output.print("    --query-timeout <s>  per-query timeout (default 300s)")
+                output.print("    --direct             bypass MCP, use trino driver directly")
+                output.print("")
+                output.print("  [dim]Examples[/dim]")
+                output.print("    /trino-research --file query.sql --metric query_time_ms --iterations 5")
+                output.print("    /trino-research --file q.sql --safe-limit 10000")
+                output.print("    /trino-research --direct   [dim](skip MCP)[/dim]")
+                output.print("")
+                continue
             # Parse optional flags: --file, --metric, --iterations, --runs, --direct, --safe-limit, --query-timeout
             kwargs = {}
             force_direct = False

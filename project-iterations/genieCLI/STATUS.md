@@ -1,6 +1,6 @@
 # Sprint Status
 
-- Last iteration: v22 (done — /trino-research UX sprint)
+- Last iteration: v23 (done — UX sprint pt.2: spinners, progress, inline help)
 - Carryover: v10 T9 — live verify MCP client against Sam's localhost:8811 (pending Sam's E2E test)
 - Archived:
   - TASK-LEDGER-v1-archived.md
@@ -25,8 +25,14 @@
   - TASK-LEDGER-v20.md (report polish — compact explain summary, sample-note, table-suggestions messaging, Lakehouse Team footer)
   - TASK-LEDGER-v21.md (post-release bug fixes — paste-mode leak, null-tool guard, explain us/ns parser, 4 PRs)
   - TASK-LEDGER-v22.md (UX sprint — SQL diff, iteration status block, plan card, final summary card)
+  - TASK-LEDGER-v23.md (UX sprint pt.2 — live spinner, verify-run progress, /trino-research --help)
 - Active:
   - TASK-LEDGER-v15.md (R1-R2 done, R3 tests+docs pending after Sam's E2E confirm)
+- v23 summary (2026-04-16, 3 rounds, 1 PR):
+  - R5: Live spinner during AI thinking — HumanSink.status() via rich.Console.status (dots)
+  - R6: Per-run progress for verify loops — _measure_mcp wraps each run in output.status(label)
+  - R7: Inline help for /trino-research — --help/-h prints usage + flags + examples
+  - Verify: 629 tests pass (+1 new); no regression
 - v22 summary (2026-04-16, 4 rounds, 1 PR):
   - R1: SQL diff between iterations — `_render_sql_diff()` shows colored +/- of AI proposal vs current best
   - R2: Structured iteration status block — color-coded KEPT/WORSE/REVERT/FAIL/SKIP + per-iteration elapsed time

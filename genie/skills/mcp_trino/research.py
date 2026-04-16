@@ -582,12 +582,16 @@ def _execute_via_mcp(client: McpClient, sql: str) -> dict:
 
 def _measure_mcp(client: McpClient, sql: str, metric_key: str,
                   runs: int, capture_rows: bool = False,
-                  max_capture_rows: int = 100_000) -> MeasureResult:
+                  max_capture_rows: int = 100_000,
+                  output=None, label: str = "query") -> MeasureResult:
     """Run SQL `runs` times via MCP, return median metric + all data.
 
     If captured row count exceeds max_capture_rows, rows are truncated to
     max_capture_rows to protect against OOM. Caller should treat the truncation
     as best-effort: equivalence comparison becomes partial.
+
+    When `output` is passed and the sink supports `status()`, each run shows
+    a live spinner so the user sees progress during long verify loops.
     """
     samples = []
     all_metrics = []
@@ -596,7 +600,12 @@ def _measure_mcp(client: McpClient, sql: str, metric_key: str,
     row_count = 0
 
     for i in range(runs):
-        result = _execute_via_mcp(client, sql)
+        run_label = f"{label}: run {i + 1}/{runs}"
+        if output and hasattr(output, "status"):
+            with output.status(run_label):
+                result = _execute_via_mcp(client, sql)
+        else:
+            result = _execute_via_mcp(client, sql)
         if result["error"]:
             raise RuntimeError(f"MCP query failed: {result['error']}")
 
@@ -1046,7 +1055,8 @@ def run_mcp_enhancement(
     if output:
         output.progress("  Measuring baseline...")
 
-    baseline = _measure_mcp(client, sql, metric_key, verify_runs, capture_rows=True)
+    baseline = _measure_mcp(client, sql, metric_key, verify_runs, capture_rows=True,
+                            output=output, label="baseline")
 
     if output:
         output.progress(f"  Baseline {metric_key}: {baseline.median_metric:.1f} (median of {verify_runs} runs)")
@@ -1118,10 +1128,12 @@ def run_mcp_enhancement(
         session["history"].append(new_msg("user", context))
 
         # Get AI response
-        if output:
-            output.progress("  AI thinking...")
         req = CompletionRequest(messages=session["history"], model=model, reasoning=reasoning)
-        reply = provider.complete_text(req)
+        if output and hasattr(output, "status"):
+            with output.status("AI thinking..."):
+                reply = provider.complete_text(req)
+        else:
+            reply = provider.complete_text(req)
 
         if not reply:
             if output:
@@ -1159,7 +1171,8 @@ def run_mcp_enhancement(
 
         # Execute and measure candidate
         try:
-            candidate = _measure_mcp(client, candidate_sql, metric_key, verify_runs, capture_rows=True)
+            candidate = _measure_mcp(client, candidate_sql, metric_key, verify_runs, capture_rows=True,
+                                     output=output, label=f"iter {iteration} candidate")
         except Exception as exc:
             elapsed = time.monotonic() - iter_start
             _render_iteration_result(

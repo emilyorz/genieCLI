@@ -216,6 +216,32 @@ class TestUxHelpers:
         rendered = "\n".join(out._lines)
         assert "LIMIT 1000" in rendered
 
+    def test_measure_mcp_shows_progress_via_status(self):
+        """_measure_mcp should wrap each run in output.status when available."""
+        from genie.skills.mcp_trino.research import _measure_mcp
+        from contextlib import nullcontext
+
+        calls = []
+        class FakeOutput:
+            def status(self, msg):
+                calls.append(msg)
+                return nullcontext()
+
+        mock_client = MagicMock(spec=McpClient)
+        mock_client.list_tools.return_value = [
+            {"name": "query", "inputSchema": {"properties": {"sql": {"type": "string"}}}},
+        ]
+        mock_client.call_tool.return_value = json.dumps({"rows": [], "columns": [], "duration_ms": 1})
+        import genie.skills.mcp_trino.research as _mod
+        _mod._resolved_tool = None
+
+        out = FakeOutput()
+        _measure_mcp(mock_client, "SELECT 1", "query_time_ms", runs=3,
+                     output=out, label="baseline")
+        assert len(calls) == 3
+        assert "baseline: run 1/3" in calls[0]
+        assert "baseline: run 3/3" in calls[2]
+
     def test_render_summary_card_shows_improvement(self):
         out = self._mock_output()
         _render_summary_card(
