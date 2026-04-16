@@ -94,9 +94,20 @@ class TestExtractSql:
 
 
 class TestExecuteViaMcp:
-    def test_parses_json_response(self):
+    def setup_method(self):
+        import genie.skills.mcp_trino.research as _mod
+        _mod._query_tool_name = None
+
+    def _mock_client(self, call_return):
         mock_client = MagicMock(spec=McpClient)
-        mock_client.call_tool.return_value = json.dumps({
+        mock_client.list_tools.return_value = [
+            {"name": "query", "inputSchema": {"properties": {"sql": {"type": "string"}}}},
+        ]
+        mock_client.call_tool.return_value = call_return
+        return mock_client
+
+    def test_parses_json_response(self):
+        mock_client = self._mock_client(json.dumps({
             "rows": [{"id": 1}, {"id": 2}],
             "columns": ["id"],
             "duration_ms": 42,
@@ -105,7 +116,7 @@ class TestExecuteViaMcp:
                 "wall_time_ms": 15,
                 "processed_rows": 2,
             }
-        })
+        }))
         result = _execute_via_mcp(mock_client, "SELECT id FROM t")
         assert result["row_count"] == 2
         assert result["columns"] == ["id"]
@@ -113,8 +124,7 @@ class TestExecuteViaMcp:
         assert result["error"] is None
 
     def test_handles_text_response(self):
-        mock_client = MagicMock(spec=McpClient)
-        mock_client.call_tool.return_value = "plain text result"
+        mock_client = self._mock_client("plain text result")
         result = _execute_via_mcp(mock_client, "SELECT 1")
         assert result["rows"] == []
         assert result["metrics"].query_time_ms > 0
