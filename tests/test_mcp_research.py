@@ -500,6 +500,47 @@ class TestParseExplainStages:
         text = "Query plan without fragment headers\nSome random text"
         assert _parse_explain_stages(text) == []
 
+    def test_handles_microseconds_unit(self):
+        """Trino 467 uses `us` (microseconds) in EXPLAIN ANALYZE output."""
+        text = (
+            "Fragment 1 [SINGLE]\n"
+            "    CPU: 52.94us, Scheduled: 54.05us\n"
+            "    Peak Memory: 132B\n"
+            "    Input: 1 row (5B), Output: 1 row (5B)\n"
+        )
+        stages = _parse_explain_stages(text)
+        assert stages[0]["cpu_ms"] == pytest.approx(0.05294)
+        assert stages[0]["wall_ms"] == pytest.approx(0.05405)
+        assert stages[0]["memory_bytes"] == 132
+        assert stages[0]["input_rows"] == 1
+        assert stages[0]["output_rows"] == 1
+
+    def test_handles_nanoseconds_unit(self):
+        text = (
+            "Fragment 0 [SINGLE]\n"
+            "    CPU: 500.00ns\n"
+        )
+        stages = _parse_explain_stages(text)
+        assert stages[0]["cpu_ms"] == pytest.approx(0.0005)
+
+    def test_first_match_wins_within_stage(self):
+        """Nested operator metrics must not overwrite fragment-level aggregates."""
+        text = (
+            "Fragment 1 [SINGLE]\n"
+            "    CPU: 52.94us, Scheduled: 54.05us, Input: 10 rows, Output: 10 rows\n"
+            "    Peak Memory: 132B\n"
+            "    Values[]\n"
+            "        CPU: 0.00ns, Scheduled: 0.00ns, Output: 1 row (5B)\n"
+            "        Input avg.: 1.00 rows\n"
+        )
+        stages = _parse_explain_stages(text)
+        # Fragment-level 52.94us must survive the operator-level 0.00ns
+        assert stages[0]["cpu_ms"] == pytest.approx(0.05294)
+        assert stages[0]["wall_ms"] == pytest.approx(0.05405)
+        assert stages[0]["memory_bytes"] == 132
+        assert stages[0]["input_rows"] == 10
+        assert stages[0]["output_rows"] == 10
+
 
 class TestFetchExplainAnalyze:
     def test_returns_unavailable_on_error(self):

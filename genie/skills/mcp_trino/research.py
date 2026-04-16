@@ -445,37 +445,55 @@ def _parse_explain_stages(text: str) -> list[dict]:
         if current_stage is None:
             continue
 
-        # Parse CPU/wall time: "CPU: 1.23s" or "CPU: 123.00ms"
-        cpu_match = re.search(r"CPU:\s*([\d.]+)(ms|s)", stripped, re.IGNORECASE)
-        if cpu_match:
-            val = float(cpu_match.group(1))
-            if cpu_match.group(2).lower() == "s":
-                val *= 1000
-            current_stage["cpu_ms"] = val
+        # First-match-wins per stage: fragment-level metrics appear before
+        # nested operator metrics; we don't want operator-level zeros to
+        # overwrite the aggregated fragment values.
+        time_units_to_ms = {
+            "ns": 1 / 1_000_000,
+            "us": 1 / 1000,
+            "µs": 1 / 1000,
+            "ms": 1.0,
+            "s": 1000.0,
+            "min": 60_000.0,
+            "h": 3_600_000.0,
+        }
+        time_unit_re = r"(ns|us|µs|ms|s|min|h)"
 
-        wall_match = re.search(r"(?:Scheduled|Wall):\s*([\d.]+)(ms|s)", stripped, re.IGNORECASE)
-        if wall_match:
-            val = float(wall_match.group(1))
-            if wall_match.group(2).lower() == "s":
-                val *= 1000
-            current_stage["wall_ms"] = val
+        # CPU: "CPU: 52.94us" / "CPU: 1.23s" / "CPU: 123ms"
+        if "cpu_ms" not in current_stage:
+            cpu_match = re.search(rf"CPU:\s*([\d.]+)\s*{time_unit_re}\b", stripped, re.IGNORECASE)
+            if cpu_match:
+                val = float(cpu_match.group(1))
+                unit = cpu_match.group(2).lower()
+                current_stage["cpu_ms"] = val * time_units_to_ms.get(unit, 1.0)
 
-        # Parse memory: "Peak Memory: 1.5MB" or "Memory: 1234B"
-        mem_match = re.search(r"(?:Peak\s+)?Memory:\s*([\d.]+)\s*(B|KB|MB|GB)", stripped, re.IGNORECASE)
-        if mem_match:
-            val = float(mem_match.group(1))
-            unit = mem_match.group(2).upper()
-            multiplier = {"B": 1, "KB": 1024, "MB": 1024**2, "GB": 1024**3}
-            current_stage["memory_bytes"] = int(val * multiplier.get(unit, 1))
+        # Wall / Scheduled
+        if "wall_ms" not in current_stage:
+            wall_match = re.search(rf"(?:Scheduled|Wall):\s*([\d.]+)\s*{time_unit_re}\b", stripped, re.IGNORECASE)
+            if wall_match:
+                val = float(wall_match.group(1))
+                unit = wall_match.group(2).lower()
+                current_stage["wall_ms"] = val * time_units_to_ms.get(unit, 1.0)
 
-        # Parse rows: "Input: 1000 rows" / "Output: 100 rows"
-        input_match = re.search(r"Input:\s*([\d,]+)\s*rows?", stripped, re.IGNORECASE)
-        if input_match:
-            current_stage["input_rows"] = int(input_match.group(1).replace(",", ""))
+        # Memory: "Peak Memory: 1.5MB" / "Memory: 132B"
+        if "memory_bytes" not in current_stage:
+            mem_match = re.search(r"(?:Peak\s+)?Memory:\s*([\d.]+)\s*(B|KB|MB|GB|TB)", stripped, re.IGNORECASE)
+            if mem_match:
+                val = float(mem_match.group(1))
+                unit = mem_match.group(2).upper()
+                multiplier = {"B": 1, "KB": 1024, "MB": 1024**2, "GB": 1024**3, "TB": 1024**4}
+                current_stage["memory_bytes"] = int(val * multiplier.get(unit, 1))
 
-        output_match = re.search(r"Output:\s*([\d,]+)\s*rows?", stripped, re.IGNORECASE)
-        if output_match:
-            current_stage["output_rows"] = int(output_match.group(1).replace(",", ""))
+        # Rows: "Input: 1000 rows" / "Output: 100 rows"
+        if "input_rows" not in current_stage:
+            input_match = re.search(r"Input:\s*([\d,]+)\s*rows?", stripped, re.IGNORECASE)
+            if input_match:
+                current_stage["input_rows"] = int(input_match.group(1).replace(",", ""))
+
+        if "output_rows" not in current_stage:
+            output_match = re.search(r"Output:\s*([\d,]+)\s*rows?", stripped, re.IGNORECASE)
+            if output_match:
+                current_stage["output_rows"] = int(output_match.group(1).replace(",", ""))
 
     if current_stage:
         stages.append(current_stage)
