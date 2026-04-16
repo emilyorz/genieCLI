@@ -150,7 +150,7 @@ class TestGenerateReport:
             ],
             data_consistent=True,
             data_consistency_reason="exact match",
-            mcp_server_url="http://localhost:8811",
+            mcp_server_url="http://localhost:8811/mcp",
             verify_runs=3,
         )
 
@@ -172,7 +172,7 @@ class TestGenerateReport:
         md = generate_report(report)
         assert "SELECT * FROM t" in md
         assert "SELECT id, name FROM t" in md
-        assert "http://localhost:8811" in md
+        assert "http://localhost:8811/mcp" in md
         assert "query_time_ms" in md
         assert "exact match" in md
         assert "YES" in md  # data_consistent
@@ -254,7 +254,7 @@ class TestChineseLocale:
             iterations=[],
             data_consistent=True,
             data_consistency_reason="exact match",
-            mcp_server_url="http://localhost:8811",
+            mcp_server_url="http://localhost:8811/mcp",
             verify_runs=3,
         )
 
@@ -536,7 +536,7 @@ class TestExplainInReport:
             iterations=[],
             data_consistent=True,
             data_consistency_reason="exact match",
-            mcp_server_url="http://localhost:8811",
+            mcp_server_url="http://localhost:8811/mcp",
             verify_runs=3,
             original_explain=ExplainAnalyzeResult(
                 raw_text="Fragment 0...",

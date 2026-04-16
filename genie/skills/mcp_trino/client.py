@@ -27,7 +27,7 @@ _TOML_PATH = Path.home() / ".genie" / "config.toml"
 @dataclass
 class McpConfig:
     """MCP server connection config."""
-    url: str = "http://localhost:8811"
+    url: str = "http://localhost:8811/mcp"
     enabled: bool = True
     timeout: int = 30
 

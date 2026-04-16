@@ -52,11 +52,11 @@ def test_setup_trino(tmp_home):
 def test_setup_mcp(tmp_home):
     """Test MCP server setup."""
     import genie.setup_wizard as sw
-    inputs = iter(["http://localhost:8811", "30"])
+    inputs = iter(["http://localhost:8811/mcp", "30"])
     with patch("builtins.input", side_effect=lambda _: next(inputs)):
         setup_mcp()
     data = json.loads(sw._MCP_PATH.read_text())
-    assert data["trino"]["url"] == "http://localhost:8811"
+    assert data["trino"]["url"] == "http://localhost:8811/mcp"
     assert data["trino"]["enabled"] is True
 
 
