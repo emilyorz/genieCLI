@@ -186,6 +186,10 @@ def _read_input(prompt_str: str = "  You > ") -> str:
 
 
 def _read_paste_mode() -> str:
+    """Multi-line paste entry. Uses an isolated PromptSession so the chat
+    loop's shared session (`_ps`) can never end up with multiline/key-binding
+    state leaking from paste mode into regular input."""
+    from prompt_toolkit import PromptSession
     from prompt_toolkit.key_binding import KeyBindings
     from rich.console import Console
 
@@ -198,10 +202,8 @@ def _read_paste_mode() -> str:
 
     _con.print("  [dim](paste mode — Ctrl-D to send, Ctrl-C to cancel)[/dim]")
     try:
-        global _ps
-        if _ps is None:
-            _ps = _get_prompt_session()
-        return _ps.prompt("  ... ", multiline=True, key_bindings=kb)
+        paste_session = PromptSession()
+        return paste_session.prompt("  ... ", multiline=True, key_bindings=kb)
     except (KeyboardInterrupt, EOFError):
         return ""
 
