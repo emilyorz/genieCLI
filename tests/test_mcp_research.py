@@ -96,7 +96,7 @@ class TestExtractSql:
 class TestExecuteViaMcp:
     def setup_method(self):
         import genie.skills.mcp_trino.research as _mod
-        _mod._query_tool_name = None
+        _mod._resolved_tool = None
 
     def _mock_client(self, call_return):
         mock_client = MagicMock(spec=McpClient)

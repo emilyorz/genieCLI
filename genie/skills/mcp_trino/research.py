@@ -486,34 +486,44 @@ def _parse_explain_stages(text: str) -> list[dict]:
 # MCP execution helpers
 # ---------------------------------------------------------------------------
 
-_query_tool_name: str | None = None
+_resolved_tool: tuple[str, str] | None = None
 
 
-def _resolve_query_tool(client: McpClient) -> str:
-    """Find the MCP tool that executes SQL queries."""
-    global _query_tool_name
-    if _query_tool_name:
-        return _query_tool_name
+def _resolve_query_tool(client: McpClient) -> tuple[str, str]:
+    """Find the MCP tool that executes SQL queries. Returns (tool_name, sql_param_name)."""
+    global _resolved_tool
+    if _resolved_tool:
+        return _resolved_tool
     tools = client.list_tools()
-    for name in ("query", "trino_query", "execute", "execute_query", "run_query"):
-        if any(t["name"] == name for t in tools):
-            _query_tool_name = name
-            return name
+    candidates = ("query", "trino_query", "execute", "execute_query", "run_query")
     for t in tools:
-        schema = t.get("inputSchema", {})
-        props = schema.get("properties", {})
-        if "sql" in props or "query" in props:
-            _query_tool_name = t["name"]
-            return t["name"]
+        if t["name"] in candidates:
+            param = _find_sql_param(t)
+            _resolved_tool = (t["name"], param)
+            return _resolved_tool
+    for t in tools:
+        param = _find_sql_param(t)
+        if param:
+            _resolved_tool = (t["name"], param)
+            return _resolved_tool
     available = [t["name"] for t in tools]
     raise McpError(-1, f"No SQL query tool found on MCP server. Available tools: {available}")
 
 
+def _find_sql_param(tool_def: dict) -> str:
+    """Detect the SQL parameter name from a tool's input schema."""
+    props = tool_def.get("inputSchema", {}).get("properties", {})
+    for name in ("sql", "query", "statement"):
+        if name in props:
+            return name
+    return "sql"
+
+
 def _execute_via_mcp(client: McpClient, sql: str) -> dict:
     """Execute SQL via MCP server, return parsed result with timing."""
-    tool_name = _resolve_query_tool(client)
+    tool_name, sql_param = _resolve_query_tool(client)
     t0 = time.monotonic()
-    raw = client.call_tool(tool_name, {"sql": sql})
+    raw = client.call_tool(tool_name, {sql_param: sql})
     elapsed_ms = (time.monotonic() - t0) * 1000
 
     # Parse the response — MCP tools return text content
