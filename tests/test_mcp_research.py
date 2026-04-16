@@ -235,8 +235,16 @@ class TestGenerateReport:
     def test_report_no_suggestions_message(self):
         report = self._make_report()
         report.table_suggestions = []
+        report.had_qualified_tables = True
         md = generate_report(report)
         assert "No table structure issues detected" in md
+
+    def test_report_unqualified_tables_hint(self):
+        report = self._make_report()
+        report.table_suggestions = []
+        report.had_qualified_tables = False
+        md = generate_report(report)
+        assert "No fully-qualified tables" in md
 
 
 # ── Chinese Locale ──────────────────────────────────────────────────────────
