@@ -1,6 +1,6 @@
 # Sprint Status
 
-- Last iteration: v23 (done — UX sprint pt.2: spinners, progress, inline help)
+- Last iteration: v24 (done — UX sprint pt.3 + SKILL.md expert review)
 - Carryover: v10 T9 — live verify MCP client against Sam's localhost:8811 (pending Sam's E2E test)
 - Archived:
   - TASK-LEDGER-v1-archived.md
@@ -26,8 +26,15 @@
   - TASK-LEDGER-v21.md (post-release bug fixes — paste-mode leak, null-tool guard, explain us/ns parser, 4 PRs)
   - TASK-LEDGER-v22.md (UX sprint — SQL diff, iteration status block, plan card, final summary card)
   - TASK-LEDGER-v23.md (UX sprint pt.2 — live spinner, verify-run progress, /trino-research --help)
+  - TASK-LEDGER-v24.md (UX sprint pt.3 + SKILL.md expert review — SQL preview, /help routing, MCP banner, Trino guide expansion)
 - Active:
   - TASK-LEDGER-v15.md (R1-R2 done, R3 tests+docs pending after Sam's E2E confirm)
+- v24 summary (2026-04-17, 4 rounds, 1 PR):
+  - R1: Plan card SQL syntax highlight preview (first 5 lines with Rich Syntax)
+  - R2: /help trino-research routes to sub-help; extracted reusable help function
+  - R3: MCP status in startup banner (green ok / red offline / dim not-configured)
+  - R4: SKILL.md expert expansion (3.5KB→6KB): connector-specific (Hive/Iceberg/Delta), join strategy table, window function tips, 5 new anti-patterns
+  - Verify: 629 tests pass; no regression
 - v23 summary (2026-04-16, 3 rounds, 1 PR):
   - R5: Live spinner during AI thinking — HumanSink.status() via rich.Console.status (dots)
   - R6: Per-run progress for verify loops — _measure_mcp wraps each run in output.status(label)

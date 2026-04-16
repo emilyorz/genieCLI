@@ -1385,6 +1385,19 @@ def _render_plan_card(
     if safe_limit and safe_limit > 0:
         output.print(f"  [dim]safe-limit  [/dim] LIMIT {safe_limit} wrapper active")
     output.print(f"  [dim]timeout     [/dim] {query_timeout}s per query")
+    # SQL preview (first 5 lines with syntax highlighting)
+    preview_lines = sql.strip().splitlines()[:5]
+    preview_text = "\n".join(preview_lines)
+    if len(sql.strip().splitlines()) > 5:
+        preview_text += "\n..."
+    try:
+        from rich.syntax import Syntax
+        from rich.console import Console as _C
+        _c = _C(force_terminal=True, highlight=False)
+        syn = Syntax(preview_text, "sql", theme="monokai", line_numbers=False, padding=(0, 2))
+        _c.print(syn)
+    except Exception:
+        output.print(f"  [dim]{preview_text}[/dim]")
     output.print("")
 
 
