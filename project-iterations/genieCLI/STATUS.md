@@ -21,7 +21,12 @@
 - Active:
   - TASK-LEDGER-v15.md (make `/trino-research` always use configured MCP, not optional) — paused
 - Complete (recent):
+  - TASK-LEDGER-v17.md (MCP endpoint path fix + registration warning)
   - TASK-LEDGER-v16.md (CLI subcommand routing audit & fix — callback variadic arg)
+- v17 summary:
+  - Root cause: McpConfig default URL had no path — all probes hit "/" instead of "/mcp"
+  - Fix: default URL → http://localhost:8811/mcp; MCP registration logs warning on failure
+  - Verify: all probes hit /mcp; 587 tests pass
 - v16 summary:
   - Root cause: callback positional `target: Optional[str]` ate subcommand names; `setup` missing from shim; `setup trino` orphaned "trino" token
   - Fix: changed to variadic `args: Optional[list[str]]` so all positionals captured; shim reads args[0] as target, args[1] as sub-target

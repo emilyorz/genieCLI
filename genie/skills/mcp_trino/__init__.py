@@ -100,6 +100,9 @@ def _build_args(schema: dict) -> list[Arg]:
 
 def register(registry) -> None:
     """Discover MCP Trino server and register its tools."""
+    import logging
+    log = logging.getLogger(__name__)
+
     config = load_mcp_config()
     if not config.enabled:
         return
@@ -108,8 +111,8 @@ def register(registry) -> None:
 
     try:
         tools = client.list_tools()
-    except Exception:
-        # Server not reachable — skip silently during startup
+    except Exception as exc:
+        log.warning("MCP Trino at %s not reachable (%s); MCP skills not loaded", config.url, exc)
         return
 
     # Register each MCP tool as a genieCLI skill

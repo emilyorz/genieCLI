@@ -16,13 +16,13 @@ from genie.skills.mcp_trino.client import McpClient, McpConfig, McpError
 class TestMcpConfig:
     def test_defaults(self):
         cfg = McpConfig()
-        assert cfg.url == "http://localhost:8811"
+        assert cfg.url == "http://localhost:8811/mcp"
         assert cfg.enabled is True
         assert cfg.timeout == 30
 
     def test_endpoint_strips_trailing_slash(self):
-        cfg = McpConfig(url="http://localhost:8811/")
-        assert cfg.endpoint() == "http://localhost:8811"
+        cfg = McpConfig(url="http://localhost:8811/mcp/")
+        assert cfg.endpoint() == "http://localhost:8811/mcp"
 
     def test_custom_values(self):
         cfg = McpConfig(url="http://trino-mcp:9999", enabled=False, timeout=60)
@@ -36,7 +36,7 @@ class TestMcpConfig:
 
 class TestMcpClient:
     def setup_method(self):
-        self.config = McpConfig(url="http://localhost:8811")
+        self.config = McpConfig(url="http://localhost:8811/mcp")
         self.client = McpClient(self.config)
 
     def test_next_id_increments(self):
