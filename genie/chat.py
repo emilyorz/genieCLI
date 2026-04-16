@@ -123,7 +123,12 @@ def _send_with_tools(
         if not tool_call:
             return reply
 
-        tool_name = tool_call.get("tool", "?")
+        tool_name = tool_call.get("tool")
+        # AI signals task completion with `"tool": null` per system prompt.
+        # Parse-failures leave the key missing; treat both as "no more tools".
+        if not tool_name:
+            return reply
+
         tool_args = tool_call.get("args") or {}
         if not isinstance(tool_args, dict):
             tool_args = {}
@@ -238,9 +243,6 @@ def _do_send(
         reply = _send_with_tools(provider, session, model, reasoning, output, ctx)
     except Exception as exc:
         output.error(str(exc))
-        import traceback
-        tb = traceback.format_exc()
-        output.print(f"[dim]{tb}[/dim]")
         session["history"].pop()
         return
 
