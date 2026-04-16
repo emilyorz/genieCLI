@@ -178,7 +178,7 @@ def setup_mcp() -> None:
     """Interactive MCP Trino server setup."""
     print("\n  === GenieCLI Setup: MCP Trino Server ===\n")
 
-    url = _prompt("MCP Trino server URL", "http://localhost:8811")
+    url = _prompt("MCP Trino server URL", "http://localhost:8811/mcp")
     timeout = _prompt_int("Timeout (seconds)", 30, low=1, high=300)
 
     config = {
@@ -276,7 +276,7 @@ def setup_check() -> None:
         try:
             data = json.loads(_MCP_PATH.read_text(encoding="utf-8"))
             trino_cfg = data.get("trino", {})
-            url = trino_cfg.get("url", "http://localhost:8811")
+            url = trino_cfg.get("url", "http://localhost:8811/mcp")
             enabled = trino_cfg.get("enabled", True)
             mcp_detail = f"url={url}, enabled={enabled}"
             if enabled:
