@@ -158,11 +158,13 @@ def callback(
     debug: bool = typer.Option(False, "-d", "--debug", help="Debug HTTP output"),
     skills: bool = typer.Option(True, "-s", "--skills/--no-skills", help="Enable skill tools (default: on)"),
     reasoning: str = typer.Option("disable", "-r", "--reasoning", help="Reasoning level"),
-    target: Optional[str] = typer.Argument(None),
+    args: Optional[list[str]] = typer.Argument(None),
 ) -> None:
     """GenieCLI — AI-powered Trino query tuning."""
     if ctx.invoked_subcommand is not None:
         return
+
+    target = args[0] if args else None
 
     is_tty = sys.stdout.isatty()
     output: HumanSink | MachineSink = MachineSink() if (json_output or not is_tty) else HumanSink()
@@ -186,12 +188,12 @@ def callback(
     if target == "tools":
         _cmd_tools(output, skills)
         return
-    # Shim: Typer binds subcommand names to this callback's `target` positional
-    # when `invoke_without_command=True`. Route known subcommands explicitly so
-    # `genie doctor` / `genie verify` work without landing in the file-path
-    # branch below.
     if target in ("doctor", "verify"):
         doctor()
+        return
+    if target == "setup":
+        sub = args[1] if len(args) > 1 else "llm"
+        setup(sub)
         return
 
     if cfg.get("interface", "tgenie") == "tgenie" and not cfg.get("authToken"):

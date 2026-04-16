@@ -19,7 +19,13 @@
   - TASK-LEDGER-v13.md (subtraction & deduplication)
   - TASK-LEDGER-v14.md (pyproject build-backend fix for pip install)
 - Active:
-  - TASK-LEDGER-v15.md (make `/trino-research` always use configured MCP, not optional)
+  - TASK-LEDGER-v15.md (make `/trino-research` always use configured MCP, not optional) — paused
+- Complete (recent):
+  - TASK-LEDGER-v16.md (CLI subcommand routing audit & fix — callback variadic arg)
+- v16 summary:
+  - Root cause: callback positional `target: Optional[str]` ate subcommand names; `setup` missing from shim; `setup trino` orphaned "trino" token
+  - Fix: changed to variadic `args: Optional[list[str]]` so all positionals captured; shim reads args[0] as target, args[1] as sub-target
+  - Verify: all 12 invocation patterns pass; 587 tests, 0 failures
 - v14 summary:
   - Root cause: `pyproject.toml` used invalid backend path `setuptools.backends.legacy:build`, which made pip silently fall back and build an `UNKNOWN-0.0.0` wheel with no project metadata
   - Fix: switch to `setuptools.build_meta`
