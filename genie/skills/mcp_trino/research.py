@@ -790,6 +790,26 @@ def generate_report(report: EnhancementReport, locale: str = "en") -> str:
     L = _LABELS_ZH if locale == "zh" else _LABELS_EN
     lines = []
 
+    def _fmt_ms(val: float) -> str:
+        """Adaptive millisecond formatter.
+
+        `:.0f` rounds sub-millisecond values to 0, which hides real data for
+        fast queries (Trino 467 emits microseconds / nanoseconds for short
+        queries). We scale decimal precision to magnitude.
+        """
+        if val is None:
+            return "0"
+        if val == 0:
+            return "0"
+        absv = abs(val)
+        if absv < 0.001:
+            return f"{val:.4f}"
+        if absv < 1:
+            return f"{val:.3f}"
+        if absv < 100:
+            return f"{val:.2f}"
+        return f"{val:.0f}"
+
     # ── Header ──
     lines.append(f"# {L['title']}")
     lines.append("")
@@ -815,7 +835,9 @@ def generate_report(report: EnhancementReport, locale: str = "en") -> str:
         enh = getattr(report.enhanced_metrics, attr, 0)
         delta = enh - orig
         pct = (delta / orig * 100) if orig else 0
-        lines.append(f"| {attr} | {orig:.1f} | {enh:.1f} | {delta:+.1f} | {pct:+.1f}% |")
+        lines.append(
+            f"| {attr} | {_fmt_ms(orig)} | {_fmt_ms(enh)} | {_fmt_ms(delta)} | {pct:+.1f}% |"
+        )
 
     for attr in ["processed_rows", "total_splits", "peak_memory_bytes", "physical_input_bytes"]:
         orig = getattr(report.original_metrics, attr, 0)
@@ -943,8 +965,8 @@ def generate_report(report: EnhancementReport, locale: str = "en") -> str:
                 mem_str = f"{mem / 1024 / 1024:.1f}MB" if mem > 1024 * 1024 else f"{mem / 1024:.1f}KB" if mem > 1024 else f"{mem}B"
                 lines.append(
                     f"| {s.get('id', '?')} "
-                    f"| {s.get('cpu_ms', 0):.0f} "
-                    f"| {s.get('wall_ms', 0):.0f} "
+                    f"| {_fmt_ms(s.get('cpu_ms', 0))} "
+                    f"| {_fmt_ms(s.get('wall_ms', 0))} "
                     f"| {mem_str} "
                     f"| {s.get('input_rows', 0):,} "
                     f"| {s.get('output_rows', 0):,} |"
@@ -958,8 +980,8 @@ def generate_report(report: EnhancementReport, locale: str = "en") -> str:
         mem_str = f"{mem / 1024 / 1024:.1f}MB" if mem > 1024 * 1024 else f"{mem / 1024:.1f}KB" if mem > 1024 else f"{mem}B"
         lines.append(f"| {L['field']} | {L['value']} |")
         lines.append("|-------|-------|")
-        lines.append(f"| {L['cpu_ms']} | {explain.total_cpu_ms:.0f} |")
-        lines.append(f"| {L['wall_ms']} | {explain.total_wall_ms:.0f} |")
+        lines.append(f"| {L['cpu_ms']} | {_fmt_ms(explain.total_cpu_ms)} |")
+        lines.append(f"| {L['wall_ms']} | {_fmt_ms(explain.total_wall_ms)} |")
         lines.append(f"| {L['memory']} | {mem_str} |")
         lines.append(f"| {L['input_rows']} | {explain.total_input_rows:,} |")
         lines.append(f"| {L['output_rows']} | {explain.total_output_rows:,} |")
