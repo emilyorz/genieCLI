@@ -784,34 +784,29 @@ def _chat_loop(
                 else:
                     i += 1
 
-            # Auto-route: if MCP Trino is enabled AND reachable, prefer MCP;
-            # otherwise (disabled, unreachable, or --direct) use the driver.
-            use_mcp = False
-            if not force_direct:
-                try:
-                    from genie.skills.mcp_trino.client import McpClient, load_mcp_config
-                    mcp_cfg = load_mcp_config()
-                    if mcp_cfg.enabled and mcp_cfg.url:
-                        probe_cfg = type(mcp_cfg)(url=mcp_cfg.url, enabled=True,
-                                                  timeout=min(mcp_cfg.timeout, 3))
-                        try:
-                            McpClient(probe_cfg).list_tools()
-                            use_mcp = True
-                        except Exception as exc:
-                            output.print(f"  [yellow]MCP configured but unreachable "
-                                         f"({exc}); falling back to trino driver.[/yellow]")
-                except Exception:
-                    use_mcp = False
-
-            if use_mcp:
-                from genie.skills.mcp_trino.research import run_trino_research_via_mcp
-                output.print("  [dim](routing via MCP — use --direct to force the trino driver)[/dim]")
-                run_trino_research_via_mcp(
+            if force_direct:
+                from genie.skills.trino_query.research import run_trino_research
+                output.print("  [dim](--direct: using trino driver)[/dim]")
+                run_trino_research(
                     provider, cfg, model, current_reasoning, output, build_prompt, **kwargs
                 )
             else:
-                from genie.skills.trino_query.research import run_trino_research
-                run_trino_research(
+                from genie.skills.mcp_trino.client import McpClient, load_mcp_config
+                mcp_cfg = load_mcp_config()
+                if not mcp_cfg.enabled or not mcp_cfg.url:
+                    output.error("MCP not configured. Run: genie setup mcp")
+                    continue
+                probe_cfg = type(mcp_cfg)(url=mcp_cfg.url, enabled=True,
+                                          timeout=min(mcp_cfg.timeout, 3))
+                try:
+                    McpClient(probe_cfg).list_tools()
+                except Exception as exc:
+                    output.error(f"MCP at {mcp_cfg.url} not reachable: {exc}")
+                    output.print("  [dim]Run 'genie setup mcp' to reconfigure, "
+                                 "or use --direct to bypass MCP.[/dim]")
+                    continue
+                from genie.skills.mcp_trino.research import run_trino_research_via_mcp
+                run_trino_research_via_mcp(
                     provider, cfg, model, current_reasoning, output, build_prompt, **kwargs
                 )
 
@@ -907,7 +902,7 @@ def _chat_loop(
             # Grouped by what a user reaches for, primary actions first.
             groups = [
                 ("Primary", [
-                    ("/trino-research", "Optimize SQL: --file F --metric M --iterations N --runs N [--direct]"),
+                    ("/trino-research", "Optimize SQL via MCP: --file F --metric M --iterations N --runs N [--direct]"),
                     ("/trino",          "Trino profiles: /trino [use|add|remove|test]"),
                     ("/autoresearch",   "Generic autonomous iteration loop"),
                     ("/skills",         "List available skills/tools"),
