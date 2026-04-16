@@ -562,8 +562,14 @@ def _execute_via_mcp(client: McpClient, sql: str) -> dict:
 
 
 def _measure_mcp(client: McpClient, sql: str, metric_key: str,
-                  runs: int, capture_rows: bool = False) -> MeasureResult:
-    """Run SQL `runs` times via MCP, return median metric + all data."""
+                  runs: int, capture_rows: bool = False,
+                  max_capture_rows: int = 100_000) -> MeasureResult:
+    """Run SQL `runs` times via MCP, return median metric + all data.
+
+    If captured row count exceeds max_capture_rows, rows are truncated to
+    max_capture_rows to protect against OOM. Caller should treat the truncation
+    as best-effort: equivalence comparison becomes partial.
+    """
     samples = []
     all_metrics = []
     last_rows = []
@@ -582,7 +588,11 @@ def _measure_mcp(client: McpClient, sql: str, metric_key: str,
         row_count = result["row_count"]
 
         if capture_rows and i == runs - 1:
-            last_rows = result["rows"]
+            raw_rows = result["rows"] or []
+            if len(raw_rows) > max_capture_rows:
+                last_rows = raw_rows[:max_capture_rows]
+            else:
+                last_rows = raw_rows
             last_columns = result["columns"]
 
     median_val = statistics.median(samples)
@@ -1099,8 +1109,13 @@ def run_mcp_enhancement(
         candidate_metric = candidate.median_metric
         delta = candidate_metric - best_metric
 
-        # Check result equivalence
-        equiv, equiv_reason = _results_equivalent(baseline.rows, candidate.rows)
+        # Check result equivalence — full row count first (truncation-safe),
+        # then normalized content comparison on captured subset.
+        if baseline.row_count != candidate.row_count:
+            equiv = False
+            equiv_reason = f"row count differs: {baseline.row_count} vs {candidate.row_count}"
+        else:
+            equiv, equiv_reason = _results_equivalent(baseline.rows, candidate.rows)
         if not equiv:
             if output:
                 output.progress(f"  [REVERT] Result mismatch: {equiv_reason}")
@@ -1232,6 +1247,9 @@ MCP_METRICS = [
 ]
 
 
+RESEARCH_QUERY_TIMEOUT = 300  # seconds — bumped from default 30s for long-running queries
+
+
 def run_trino_research_via_mcp(
     provider,
     cfg: dict,
@@ -1245,6 +1263,8 @@ def run_trino_research_via_mcp(
     metric: Optional[str] = None,
     iterations: Optional[int] = None,
     runs: Optional[int] = None,
+    safe_limit: Optional[int] = None,
+    query_timeout: Optional[int] = None,
 ) -> None:
     """MCP-routed entry point for /trino-research.
 
@@ -1256,6 +1276,8 @@ def run_trino_research_via_mcp(
         output.error("  MCP Trino not enabled. Configure [mcp.trino] in ~/.genie/config.toml.")
         return
 
+    # Bump timeout for research workloads; individual queries can be long.
+    mcp_cfg.timeout = max(mcp_cfg.timeout, query_timeout or RESEARCH_QUERY_TIMEOUT)
     client = McpClient(mcp_cfg)
 
     # Reachability preflight — fall through to caller's direct fallback is
@@ -1283,6 +1305,48 @@ def run_trino_research_via_mcp(
     if not sql:
         output.error("Empty SQL.")
         return
+
+    # ── Pre-flight: read-only + size estimation ──
+    from .preflight import run_preflight, apply_safe_limit, PreflightBudget
+
+    def _explain_runner(s: str) -> Optional[str]:
+        tool_name, _ = _resolve_query_tool(client)
+        # Only run EXPLAIN if the server exposes an explain tool; otherwise skip
+        tools = {t["name"] for t in client.list_tools()}
+        explain_tool = next((n for n in ("explain", "explain_query", "trino_explain") if n in tools), None)
+        if not explain_tool:
+            return None
+        try:
+            return client.call_tool(explain_tool, {"sql": f"EXPLAIN (FORMAT JSON) {s}"})
+        except Exception:
+            return None
+
+    report = run_preflight(sql, _explain_runner, PreflightBudget())
+    if not report.ok:
+        output.error(f"  Pre-flight rejected: {report.reason}")
+        if report.estimated_rows or report.estimated_bytes:
+            est = []
+            if report.estimated_rows:
+                est.append(f"rows~{report.estimated_rows:,}")
+            if report.estimated_bytes:
+                est.append(f"bytes~{report.estimated_bytes:,}")
+            output.print(f"  [dim]Estimate: {', '.join(est)}[/dim]")
+        return
+    if report.estimated_rows or report.estimated_bytes:
+        est = []
+        if report.estimated_rows is not None:
+            est.append(f"~{report.estimated_rows:,} rows")
+        if report.estimated_bytes is not None:
+            est.append(f"~{report.estimated_bytes:,} bytes")
+        output.progress(f"  Pre-flight OK: {', '.join(est)}")
+    else:
+        output.progress(f"  Pre-flight OK: read-only verified (size estimate unavailable)")
+
+    # ── Opt-in safe-limit wrap ──
+    if safe_limit and safe_limit > 0:
+        wrapped = apply_safe_limit(sql, safe_limit)
+        output.progress(f"  --safe-limit {safe_limit}: wrapped SQL with LIMIT {safe_limit}")
+        sql = wrapped
 
     output.print(f"  [dim]SQL: {sql[:80]}...[/dim]\n")
 

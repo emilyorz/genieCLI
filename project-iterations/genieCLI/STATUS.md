@@ -1,6 +1,6 @@
 # Sprint Status
 
-- Last iteration: v18 (done — Anthropic-style SKILL.md body injection)
+- Last iteration: v19 (done — /trino-research safety guardrails / evaluate level)
 - Carryover: v10 T9 — live verify MCP client against Sam's localhost:8811 (pending Sam's E2E test)
 - Archived:
   - TASK-LEDGER-v1-archived.md
@@ -21,8 +21,14 @@
   - TASK-LEDGER-v16.md (CLI subcommand routing audit & fix — callback variadic arg)
   - TASK-LEDGER-v17.md (MCP full integration sprint — 5 rounds, 6 PRs)
   - TASK-LEDGER-v18.md (Anthropic-style SKILL.md body injection — tune via markdown)
+  - TASK-LEDGER-v19.md (safety guardrails — preflight evaluate-level: read-only + size estimate + row cap + safe-limit)
 - Active:
   - TASK-LEDGER-v15.md (R1-R2 done, R3 tests+docs pending after Sam's E2E confirm)
+- v19 summary (2026-04-16):
+  - Root cause: no pre-flight gate — CLI could OOM on huge result sets; AI could (in principle) emit DML; default 30s timeout too short for real queries
+  - Fix: new preflight module (read-only whitelist + EXPLAIN size estimation + budget); _measure_mcp row cap; truncation-safe row count check; opt-in `--safe-limit`; query timeout → 300s default with `--query-timeout` flag
+  - Content: 25 new tests covering all preflight surfaces
+  - Verify: 616 tests pass (+25); manual smoke verified
 - v18 summary (2026-04-16):
   - Root cause: v8 migration to Anthropic-style SKILL.md was half-done — only frontmatter parsed, body discarded. Tuning required Python changes.
   - Fix: `parse_skill_md_body()` + `SkillRegistry.get_instructions(group)`; injected into chat sys prompt AND /trino-research sys prompt
