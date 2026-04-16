@@ -998,6 +998,8 @@ def run_mcp_enhancement(
 
     # ── Session setup ──
     skill_prompt = build_prompt(True, model) if build_prompt else ""
+    from genie.core.registry import SkillRegistry
+    skill_instructions = SkillRegistry.get_instructions("mcp_trino")
     sys_prompt = (
         f"You are optimizing a Trino SQL query for performance.\n"
         f"Target metric: {metric_key} (lower is better).\n\n"
@@ -1005,11 +1007,11 @@ def run_mcp_enhancement(
         f"- Return the COMPLETE optimized SQL in a ```sql code block\n"
         f"- Do NOT use file_patch or any tool calls\n"
         f"- Keep the EXACT same result set — same columns, same rows, same values\n"
-        f"- Make ONE focused change per iteration\n"
-        f"- Trino best practices: partition filters, named columns, CTEs over subqueries, "
-        f"APPROX_DISTINCT over COUNT(DISTINCT), COALESCE instead of NVL\n\n"
-        f"{skill_prompt}"
+        f"- Make ONE focused change per iteration\n\n"
     )
+    if skill_instructions:
+        sys_prompt += f"## Trino Optimization Guide\n\n{skill_instructions}\n\n"
+    sys_prompt += skill_prompt
     session = new_session(sys_prompt)
 
     best_sql = sql
