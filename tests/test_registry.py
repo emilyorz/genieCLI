@@ -136,6 +136,44 @@ def test_parse_skill_md_no_frontmatter(tmp_path):
     assert parse_skill_md(md) == {}
 
 
+def test_parse_skill_md_body_extracts_markdown_after_frontmatter(tmp_path):
+    from genie.core.registry import parse_skill_md_body
+    md = tmp_path / "SKILL.md"
+    md.write_text(
+        "---\nname: x\n---\n\n# Title\n\nSome guidance for the AI.\n"
+    )
+    body = parse_skill_md_body(md)
+    assert "# Title" in body
+    assert "Some guidance for the AI." in body
+    assert "name: x" not in body
+
+
+def test_parse_skill_md_body_no_frontmatter_returns_full_text(tmp_path):
+    from genie.core.registry import parse_skill_md_body
+    md = tmp_path / "SKILL.md"
+    md.write_text("# Just content\n\nBody here.\n")
+    body = parse_skill_md_body(md)
+    assert body == "# Just content\n\nBody here."
+
+
+def test_registry_group_instructions_register_and_get():
+    from genie.core.registry import SkillRegistry
+    SkillRegistry.clear()
+    SkillRegistry.register_instructions("test_group", "Some instructions.")
+    assert SkillRegistry.get_instructions("test_group") == "Some instructions."
+    assert SkillRegistry.get_instructions("absent") == ""
+    SkillRegistry.clear()
+    assert SkillRegistry.get_instructions("test_group") == ""
+
+
+def test_registry_register_instructions_skips_empty_body():
+    from genie.core.registry import SkillRegistry
+    SkillRegistry.clear()
+    SkillRegistry.register_instructions("g", "")
+    SkillRegistry.register_instructions("g", "   \n  \n")
+    assert SkillRegistry.get_instructions("g") == ""
+
+
 def test_discover_accepts_skill_md(tmp_path, monkeypatch):
     """discover() should accept a dir with SKILL.md + __init__.py (no skill.toml)."""
     skill_dir = tmp_path / "fake_skill"

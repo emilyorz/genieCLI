@@ -1,6 +1,6 @@
 # Sprint Status
 
-- Last iteration: v17 (done — MCP full integration sprint)
+- Last iteration: v18 (done — Anthropic-style SKILL.md body injection)
 - Carryover: v10 T9 — live verify MCP client against Sam's localhost:8811 (pending Sam's E2E test)
 - Archived:
   - TASK-LEDGER-v1-archived.md
@@ -20,8 +20,14 @@
   - TASK-LEDGER-v14.md (pyproject build-backend fix for pip install)
   - TASK-LEDGER-v16.md (CLI subcommand routing audit & fix — callback variadic arg)
   - TASK-LEDGER-v17.md (MCP full integration sprint — 5 rounds, 6 PRs)
+  - TASK-LEDGER-v18.md (Anthropic-style SKILL.md body injection — tune via markdown)
 - Active:
   - TASK-LEDGER-v15.md (R1-R2 done, R3 tests+docs pending after Sam's E2E confirm)
+- v18 summary (2026-04-16):
+  - Root cause: v8 migration to Anthropic-style SKILL.md was half-done — only frontmatter parsed, body discarded. Tuning required Python changes.
+  - Fix: `parse_skill_md_body()` + `SkillRegistry.get_instructions(group)`; injected into chat sys prompt AND /trino-research sys prompt
+  - Content: moved Trino best practices from hardcoded Python to mcp_trino/SKILL.md body (3.5KB guide: priorities, anti-patterns, metric wins)
+  - Verify: 591 tests pass (+4 new); smoke test confirms body reaches registry
 - v17 summary (2026-04-16, 5 rounds):
   - R1/PR #33: CLI subcommand routing — variadic args fix for `genie setup [target]`
   - R2/PR #35: MCP endpoint path → default URL `/mcp` + registration warning

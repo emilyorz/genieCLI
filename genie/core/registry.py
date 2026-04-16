@@ -87,10 +87,25 @@ class SkillRegistry:
 
     _skills: dict[str, BaseSkill] = {}
     _clear_hooks: list = []  # callbacks invoked by clear() for external state reset
+    _group_instructions: dict[str, str] = {}  # group name → SKILL.md body (Anthropic-style instructions)
 
     @classmethod
     def register(cls, skill: BaseSkill) -> None:
         cls._skills[skill.name] = skill
+
+    @classmethod
+    def register_instructions(cls, group: str, body: str) -> None:
+        """Attach SKILL.md body as AI-visible instructions for a skill group."""
+        if body and body.strip():
+            cls._group_instructions[group] = body.strip()
+
+    @classmethod
+    def get_instructions(cls, group: str) -> str:
+        return cls._group_instructions.get(group, "")
+
+    @classmethod
+    def all_instructions(cls) -> dict[str, str]:
+        return dict(cls._group_instructions)
 
     @classmethod
     def register_clear_hook(cls, hook) -> None:
@@ -112,6 +127,7 @@ class SkillRegistry:
         register_clear_hook() so clear() resets that state too.
         """
         cls._skills.clear()
+        cls._group_instructions.clear()
         for hook in cls._clear_hooks:
             hook()
 
@@ -205,7 +221,11 @@ class SkillRegistry:
 
 
 def _load_skill_package(skill_dir: Path) -> None:
-    """Import a skill package and call its register() function if present."""
+    """Import a skill package and call its register() function if present.
+
+    Also loads the SKILL.md body (Anthropic-style narrative instructions) and
+    attaches it to the registry under the skill's dir name (= group name).
+    """
     pkg_name = f"genie.skills.{skill_dir.name}"
 
     # Do NOT add genie/ to sys.path — it would shadow the legacy `skills` package.
@@ -214,6 +234,11 @@ def _load_skill_package(skill_dir: Path) -> None:
         mod = importlib.import_module(pkg_name)
         if hasattr(mod, "register"):
             mod.register(SkillRegistry)
+        skill_md = skill_dir / "SKILL.md"
+        if skill_md.exists():
+            body = parse_skill_md_body(skill_md)
+            if body:
+                SkillRegistry.register_instructions(skill_dir.name, body)
     except Exception as exc:
         import warnings
         warnings.warn(f"Failed to load skill '{skill_dir.name}': {exc}", stacklevel=2)
@@ -238,3 +263,19 @@ def parse_skill_md(path: Path) -> dict:
         return data if isinstance(data, dict) else {}
     except yaml.YAMLError:
         return {}
+
+
+def parse_skill_md_body(path: Path) -> str:
+    """Return the markdown body of a SKILL.md file (content after frontmatter).
+
+    Returns the full text if no frontmatter fence is present. Returns empty
+    string if the file is empty.
+    """
+    text = path.read_text(encoding="utf-8")
+    if not text.startswith("---"):
+        return text.strip()
+    end = text.find("---", 3)
+    if end == -1:
+        return ""
+    body = text[end + 3:]
+    return body.strip()

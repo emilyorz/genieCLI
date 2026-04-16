@@ -112,7 +112,10 @@ def _build_system_prompt(cfg: dict, use_skills: bool, model: str = "") -> str:
     tier = profile.skill_tier if profile else None
     skills = SkillRegistry.all(tier=tier)
     tool_lines = []
+    active_groups: list[str] = []
     for skill in skills:
+        if skill.group and skill.group not in active_groups:
+            active_groups.append(skill.group)
         if skill.args:
             parts = []
             for arg in skill.args:
@@ -129,6 +132,14 @@ def _build_system_prompt(cfg: dict, use_skills: bool, model: str = "") -> str:
 
     tools_block = "\n".join(tool_lines)
 
+    # Collect SKILL.md instructions for active skill groups (Anthropic-style narrative)
+    instructions_blocks = []
+    for group in active_groups:
+        body = SkillRegistry.get_instructions(group)
+        if body:
+            instructions_blocks.append(f"### {group}\n\n{body}")
+    instructions_block = "\n\n".join(instructions_blocks)
+
     skill_prompt = f"""## HOW TO USE TOOLS
 
 When you need a tool, output ONLY this JSON (no explanation, no markdown):
@@ -141,6 +152,8 @@ When the task is complete and no more tools are needed, output:
 
 {tools_block}
 """
+    if instructions_block:
+        skill_prompt += f"\n## SKILL INSTRUCTIONS\n\n{instructions_block}\n"
     return f"{base}\n\n{skill_prompt}".strip() if base else skill_prompt
 
 
