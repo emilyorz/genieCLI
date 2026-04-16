@@ -22,7 +22,7 @@ from pathlib import Path
 from typing import Any, Callable, Optional
 
 from genie.core.sql_extraction import extract_sql_from_reply
-from .client import McpClient, McpConfig, load_mcp_config
+from .client import McpClient, McpConfig, McpError, load_mcp_config
 
 # sqlglot is already a project dependency — used for table name extraction
 import sqlglot
@@ -486,10 +486,34 @@ def _parse_explain_stages(text: str) -> list[dict]:
 # MCP execution helpers
 # ---------------------------------------------------------------------------
 
+_query_tool_name: str | None = None
+
+
+def _resolve_query_tool(client: McpClient) -> str:
+    """Find the MCP tool that executes SQL queries."""
+    global _query_tool_name
+    if _query_tool_name:
+        return _query_tool_name
+    tools = client.list_tools()
+    for name in ("query", "trino_query", "execute", "execute_query", "run_query"):
+        if any(t["name"] == name for t in tools):
+            _query_tool_name = name
+            return name
+    for t in tools:
+        schema = t.get("inputSchema", {})
+        props = schema.get("properties", {})
+        if "sql" in props or "query" in props:
+            _query_tool_name = t["name"]
+            return t["name"]
+    available = [t["name"] for t in tools]
+    raise McpError(-1, f"No SQL query tool found on MCP server. Available tools: {available}")
+
+
 def _execute_via_mcp(client: McpClient, sql: str) -> dict:
     """Execute SQL via MCP server, return parsed result with timing."""
+    tool_name = _resolve_query_tool(client)
     t0 = time.monotonic()
-    raw = client.call_tool("query", {"sql": sql})
+    raw = client.call_tool(tool_name, {"sql": sql})
     elapsed_ms = (time.monotonic() - t0) * 1000
 
     # Parse the response — MCP tools return text content
