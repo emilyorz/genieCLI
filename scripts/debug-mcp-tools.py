@@ -11,17 +11,76 @@ returns CPU/Memory/Rows = 0 and the optimizer can't rank candidates.
 
 from __future__ import annotations
 
+import argparse
 import json
 import sys
+from dataclasses import asdict, is_dataclass
+from typing import Any
 
 from genie.skills.mcp_trino.client import McpClient, load_mcp_config
 from genie.skills.mcp_trino.research import (
-    _resolve_query_tool,
+    _execute_via_mcp,
     _find_sql_param,
+    _resolve_query_tool,
 )
 
 
+def _dump(label: str, value: Any) -> None:
+    print(f"---- {label} ----")
+    if is_dataclass(value):
+        value = asdict(value)
+    if isinstance(value, (dict, list)):
+        print(json.dumps(value, indent=2, default=str))
+    else:
+        print(repr(value))
+    print()
+
+
+def _probe(client: McpClient) -> None:
+    print("=" * 78)
+    print("PROBE MODE — running real queries to inspect server response shape")
+    print("=" * 78)
+    print()
+
+    for label, sql in (
+        ("SELECT 1", "SELECT 1"),
+        ("EXPLAIN ANALYZE SELECT 1", "EXPLAIN ANALYZE SELECT 1"),
+    ):
+        print(f">>> {label}")
+        try:
+            result = _execute_via_mcp(client, sql)
+        except Exception as exc:
+            print(f"  FAILED: {exc!r}")
+            print()
+            continue
+
+        # _execute_via_mcp returns dict with rows/columns/row_count/metrics/error/raw
+        _dump("rows", result.get("rows"))
+        _dump("columns", result.get("columns"))
+        _dump("row_count", result.get("row_count"))
+        _dump("metrics (parsed)", result.get("metrics"))
+        _dump("error", result.get("error"))
+
+        raw = result.get("raw")
+        # Try to parse raw as JSON for clearer key inspection; fall back to text
+        try:
+            parsed_raw = json.loads(raw) if isinstance(raw, str) else raw
+        except (json.JSONDecodeError, TypeError):
+            parsed_raw = {"_unparsed_text": raw}
+        _dump("raw response (parsed)", parsed_raw)
+        print("=" * 78)
+        print()
+
+
 def main() -> int:
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument(
+        "--probe",
+        action="store_true",
+        help="After listing tools, run SELECT 1 and EXPLAIN ANALYZE SELECT 1 to dump raw response shape.",
+    )
+    args = parser.parse_args()
+
     cfg = load_mcp_config()
     if not cfg.enabled:
         print("MCP not enabled in config. Edit your config.toml and set [mcp.trino].enabled = true.", file=sys.stderr)
@@ -67,6 +126,10 @@ def main() -> int:
         print(f"               from the greedy fallback in _resolve_query_tool.")
     else:
         print(f"UNEXPECTED: picked {tool_name!r} via fallback. Verify it actually runs the SQL.")
+
+    if args.probe:
+        print()
+        _probe(client)
 
     return 0
 
