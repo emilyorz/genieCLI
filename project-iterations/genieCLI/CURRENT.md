@@ -7,7 +7,7 @@
 - **Status:** active
 - **Owner:** Emily (planning + recording); Sam picks the order
 - **Started:** 2026-04-17
-- **Updated:** 2026-04-17T17:55+0800
+- **Updated:** 2026-04-17T18:25+0800
 - **Focus:** Resume v25's deferred async MCP banner work, plus two small follow-ups (smoke discipline note + v15/v10 close-out)
 - **Touched features:** [mcp-banner](features/mcp-banner.md), [trino-research](features/trino-research.md)
 
@@ -28,9 +28,9 @@ Max 3 items. From v25's promote decisions.
 
 | From | Item | Outcome | Evidence |
 |------|------|---------|----------|
-| v25-#change-next-1 | Async MCP banner probe | still-pending | not started — was the original v25 focus, deferred for the metric-pipeline hotfix |
-| v25-#failed-2 | End-to-end smoke discipline | still-pending | not started — first action of v26 should be writing this somewhere durable (LEARNINGS.md or a short note in features/trino-research.md Limits) |
-| v25-#park-aging | v15 R3 + v10 T9 close-out | partially-done | tests landed in v25 (b3f7566 — 641 pass); live verify confirmed by Sam; only docs cleanup + formal record + park deletion remain |
+| v25-#change-next-1 | Async MCP banner probe | still-pending | T1 not yet started — fragility risk (Rich console redraw vs prompt readline, per v24 design log); pending Sam's call on threading vs fast-fail timeout |
+| v25-#failed-2 | End-to-end smoke discipline | **worked** | T2 done — Limits-section note added to features/trino-research.md prescribing bare-list shape for MCP-contract tests, with v25 incident as the cited example |
+| v25-#park-aging | v15 R3 + v10 T9 close-out | **worked** | T5 done — verification record + docs entry written into features/trino-research.md (v26 touchpoint); both parks formally retired |
 
 ## Active Parks (carried from prior iterations)
 
@@ -50,15 +50,38 @@ Max 3 items. From v25's promote decisions.
 
 | ID | Status | Pri | Task | Feature | Note |
 |----|--------|-----|------|---------|------|
-| T1 | pending | P0 | Refactor `chat.py` MCP banner probe to background thread; banner shows `mcp    checking...` immediately, updates to ok/offline when probe finishes | mcp-banner | Probe still 3s timeout but no longer blocks startup |
-| T2 | pending | P0 | Add end-to-end smoke discipline note: short paragraph in `features/trino-research.md` Limits section saying "MCP-contract tests must use the actual server's response shape (e.g. bare-list for mcp-trino), not the convenient dict default — see v25 for the failure mode" | trino-research | Process discipline, not code |
-| T3 | pending | P1 | Measure cold-start latency with MCP unreachable: time from `genie chat` invocation to first prompt | mcp-banner | Criterion <200 ms |
+| T1 | pending | P0 | Refactor `chat.py` MCP banner probe to background thread; banner shows `mcp    checking...` immediately, updates to ok/offline when probe finishes | mcp-banner | Fragility risk per v24 design log. Awaiting Sam's pick: threading (as spec'd) vs fast-fail timeout (simpler: change 3s → 500ms) |
+| T2 | **done** | P0 | End-to-end smoke discipline note added to `features/trino-research.md` Limits | trino-research | Done 18:20 — see Reports |
+| T3 | pending | P1 | Measure cold-start latency with MCP unreachable: time from `genie chat` invocation to first prompt | mcp-banner | Criterion <200 ms (depends on T1 approach) |
 | T4 | pending | P1 | Test all three banner states (ok / offline / not-configured) under new async path | mcp-banner | Regression coverage for T1 |
-| T5 | pending | P1 | v15 R3 close-out: brief docs-cleanup commit + delete park entry. v10 T9 close-out: short verification record (Sam's office E2E, Trino 467 + localhost:8811, real CPU/Memory/Input rows shown) + delete park entry | trino-research | Bundled — both about closing the metric-pipeline saga |
+| T5 | **done** | P1 | v15 R3 + v10 T9 close-out record in `features/trino-research.md` Iteration touchpoints | trino-research | Done 18:20 — see Reports |
 
 ## Reports
 
-_(empty — populated as Todos complete)_
+### T2 — 2026-04-17T18:20+0800
+
+End-to-end smoke discipline note landed in `features/trino-research.md` Limits section (v26 entry). Cites v25's `13dbfab` failure: unit test mocked dict-shape response, real mcp-trino returns bare-list, "fix" passed CI but failed in production. Mitigation: prefer `json.dumps([{...}, ...])` over `json.dumps({"rows": [...]})` for `_execute_via_mcp` / `_fetch_explain_analyze` tests unless explicitly testing the wrapped path.
+
+- Verify (code): no code change; pure docs.
+- Verify (doc): features/trino-research.md updated (v26 in Limits + Iteration touchpoints).
+- Decision: accept.
+
+### T5 — 2026-04-17T18:20+0800
+
+v15 R3 + v10 T9 close-out written into `features/trino-research.md` Iteration touchpoints (v26 entry). Records:
+- v15 R3 tests landed in v25 commit `b3f7566` (`test_execute_via_mcp_handles_bare_list_response` + `test_measure_mcp_backfills_metrics_from_explain_analyze` — 641 pass)
+- v10 T9 live verify confirmed by Sam against real Trino 467 + localhost:8811 — `_measure_mcp` produces non-zero CPU≈35us, Peak Memory=132B, Input rows from `EXPLAIN ANALYZE`-backfilled stats
+- Both parks formally retired; metric-pipeline saga that started in v10/v15 is done
+
+- Verify (code): no code change; v25 commits already shipped.
+- Verify (doc): features/trino-research.md updated (v26 in Iteration touchpoints).
+- Decision: accept; both parks deletable from STATUS.md / CURRENT.md Active Parks lists.
+
+### Pre-commit hook installed in genieCLI repo — 2026-04-17T18:25+0800
+
+Mirrored `bin/validate-ledger-precommit.sh` from workspace-emily to `.git/hooks/pre-commit` (inlined since this repo has no `bin/` infrastructure). Ledger commits to `project-iterations/genieCLI/**/*.md` will now run `validate_ledger.py` automatically. Out-of-band; not a numbered Todo, but captured here for the running record.
+
+- Verify: hook fires + passes on this very commit (look for `ledger-validator: project-iterations/genieCLI` line in commit output).
 
 ## Blocked
 
