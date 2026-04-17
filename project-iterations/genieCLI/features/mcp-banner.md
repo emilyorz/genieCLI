@@ -28,3 +28,4 @@
 ## Iteration touchpoints
 
 - **v24:** Added synchronous banner probe with 3s timeout and three-state rendering (ok/offline/not-configured).
+- **v25:** No code change — async refactor was the original v25 focus but got pre-empted by `/trino-research` metric-pipeline bugs Sam surfaced at office. The 3s sync timeout still blocks startup. Re-listed as v26 Carryover #1 (⭐ P0 S).
