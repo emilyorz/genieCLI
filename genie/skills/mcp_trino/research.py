@@ -610,6 +610,25 @@ def _measure_mcp(client: McpClient, sql: str, metric_key: str,
             raise RuntimeError(f"MCP query failed: {result['error']}")
 
         metrics = result["metrics"]
+
+        # Server-stat backfill: some MCP servers (e.g. mcp-trino) execute the
+        # query but don't populate structured per-run stats — they return only
+        # the rows, so query_time_ms (Python-measured) is non-zero but every
+        # server-side field reads as 0. Fall back to a single EXPLAIN ANALYZE
+        # round and parse the stage totals so the optimizer can rank candidates.
+        if metrics.cpu_time_ms == 0 and metrics.peak_memory_bytes == 0:
+            ea_label = f"{label}: explain-analyze backfill {i + 1}/{runs}"
+            if output and hasattr(output, "status"):
+                with output.status(ea_label):
+                    ea = _fetch_explain_analyze(client, sql)
+            else:
+                ea = _fetch_explain_analyze(client, sql)
+            if ea.available:
+                metrics.cpu_time_ms = ea.total_cpu_ms
+                metrics.wall_time_ms = ea.total_wall_ms
+                metrics.peak_memory_bytes = ea.total_memory_bytes
+                metrics.processed_rows = ea.total_input_rows
+
         value = getattr(metrics, metric_key, metrics.query_time_ms)
         samples.append(float(value))
         all_metrics.append(metrics)

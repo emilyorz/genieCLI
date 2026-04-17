@@ -231,7 +231,12 @@ class TestUxHelpers:
         mock_client.list_tools.return_value = [
             {"name": "query", "inputSchema": {"properties": {"sql": {"type": "string"}}}},
         ]
-        mock_client.call_tool.return_value = json.dumps({"rows": [], "columns": [], "duration_ms": 1})
+        mock_client.call_tool.return_value = json.dumps({
+            "rows": [], "columns": [], "duration_ms": 1,
+            # Non-zero server-side metrics so backfill doesn't trigger
+            # extra EXPLAIN ANALYZE rounds in this status-coverage test.
+            "metrics": {"cpu_time_ms": 1, "peak_memory_bytes": 1},
+        })
         import genie.skills.mcp_trino.research as _mod
         _mod._resolved_tool = None
 
@@ -241,6 +246,57 @@ class TestUxHelpers:
         assert len(calls) == 3
         assert "baseline: run 1/3" in calls[0]
         assert "baseline: run 3/3" in calls[2]
+
+    def test_measure_mcp_backfills_metrics_from_explain_analyze(self):
+        """When the MCP server returns rows but no structured stats,
+        _measure_mcp should fall back to EXPLAIN ANALYZE and parse stage totals."""
+        from genie.skills.mcp_trino.research import _measure_mcp
+
+        # Server returns rows but empty metrics dict on raw SELECT,
+        # and a Trino EXPLAIN ANALYZE plan text on the EXPLAIN ANALYZE call.
+        explain_text = (
+            "Trino version: 467\n"
+            "Queued: 78us, Analysis: 225us, Planning: 4ms, Execution: 2.40s\n"
+            "Fragment 1 [SINGLE]\n"
+            "    CPU: 35.44us, Scheduled: 35.98us, Blocked 0.00ns "
+            "(Input: 0.00ns, Output: 0.00ns), Input: 1 row (5B); per task: avg.: 1.00 std.dev.: 0.00, "
+            "Output: 1 row (5B)\n"
+            "    Peak Memory: 132B, Tasks count: 1; per task: max: 132B\n"
+        )
+
+        def call_tool_side_effect(tool_name, params):
+            sql = params.get("sql") or params.get("query") or ""
+            if sql.upper().startswith("EXPLAIN ANALYZE"):
+                return json.dumps({"rows": [{"Query Plan": explain_text}], "columns": []})
+            return json.dumps({"rows": [{"x": 1}], "columns": ["x"]})
+
+        mock_client = MagicMock(spec=McpClient)
+        mock_client.list_tools.return_value = [
+            {"name": "execute_query", "inputSchema": {"properties": {"query": {"type": "string"}}}},
+        ]
+        mock_client.call_tool.side_effect = call_tool_side_effect
+        import genie.skills.mcp_trino.research as _mod
+        _mod._resolved_tool = None
+
+        result = _measure_mcp(mock_client, "SELECT 1", "cpu_time_ms", runs=2)
+
+        # Median run's metrics should now have non-zero server-side fields
+        # backfilled from the EXPLAIN ANALYZE parse.
+        assert result.metrics.cpu_time_ms > 0, (
+            f"cpu_time_ms should be backfilled from EA parse, got {result.metrics.cpu_time_ms}"
+        )
+        assert result.metrics.peak_memory_bytes > 0, (
+            f"peak_memory_bytes should be backfilled, got {result.metrics.peak_memory_bytes}"
+        )
+        assert result.metrics.processed_rows > 0, (
+            f"processed_rows should be backfilled, got {result.metrics.processed_rows}"
+        )
+
+        # Median sample uses the requested metric_key (cpu_time_ms here).
+        assert result.median_metric > 0
+
+        # 2 runs * (1 raw + 1 EA) = 4 call_tool invocations.
+        assert mock_client.call_tool.call_count == 4
 
     def test_render_summary_card_shows_improvement(self):
         out = self._mock_output()
