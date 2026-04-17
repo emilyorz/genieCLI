@@ -1,85 +1,51 @@
-# Sprint Status
+# genieCLI — Workflow Status
 
-- Last iteration: v24 (done — UX sprint pt.3 + SKILL.md expert review)
-- Carryover: v10 T9 — live verify MCP client against Sam's localhost:8811 (pending Sam's E2E test)
-- Archived:
-  - TASK-LEDGER-v1-archived.md
-  - TASK-LEDGER-v2-archived.md
-  - TASK-LEDGER-v5-archived.md
-- Complete:
-  - TASK-LEDGER-v3.md (read for retro context)
-  - TASK-LEDGER-v4.md (read for retro context)
-  - TASK-LEDGER-v6.md (read for retro context)
-  - TASK-LEDGER-v7.md (read for retro context)
-  - TASK-LEDGER-v8.md (skill-architecture migration — SKILL.md)
-  - TASK-LEDGER-v9.md (browser skill tuning for Gemini Flash 2.5)
-  - TASK-LEDGER-v10.md (MCP Trino client integration — code-complete, live verify blocked on Sam)
-  - TASK-LEDGER-v11.md (DX + subtraction + report depth)
-  - TASK-LEDGER-v12.md (oracle2trino/trino_linter convergence + EXPLAIN ANALYZE)
-  - TASK-LEDGER-v13.md (subtraction & deduplication)
-  - TASK-LEDGER-v14.md (pyproject build-backend fix for pip install)
-  - TASK-LEDGER-v16.md (CLI subcommand routing audit & fix — callback variadic arg)
-  - TASK-LEDGER-v17.md (MCP full integration sprint — 5 rounds, 6 PRs)
-  - TASK-LEDGER-v18.md (Anthropic-style SKILL.md body injection — tune via markdown)
-  - TASK-LEDGER-v19.md (safety guardrails — preflight evaluate-level: read-only + size estimate + row cap + safe-limit)
-  - TASK-LEDGER-v20.md (report polish — compact explain summary, sample-note, table-suggestions messaging, Lakehouse Team footer)
-  - TASK-LEDGER-v21.md (post-release bug fixes — paste-mode leak, null-tool guard, explain us/ns parser, 4 PRs)
-  - TASK-LEDGER-v22.md (UX sprint — SQL diff, iteration status block, plan card, final summary card)
-  - TASK-LEDGER-v23.md (UX sprint pt.2 — live spinner, verify-run progress, /trino-research --help)
-  - TASK-LEDGER-v24.md (UX sprint pt.3 + SKILL.md expert review — SQL preview, /help routing, MCP banner, Trino guide expansion)
-- Active:
-  - TASK-LEDGER-v15.md (R1-R2 done, R3 tests+docs pending after Sam's E2E confirm)
-- v24 summary (2026-04-17, 4 rounds, 1 PR):
-  - R1: Plan card SQL syntax highlight preview (first 5 lines with Rich Syntax)
-  - R2: /help trino-research routes to sub-help; extracted reusable help function
-  - R3: MCP status in startup banner (green ok / red offline / dim not-configured)
-  - R4: SKILL.md expert expansion (3.5KB→6KB): connector-specific (Hive/Iceberg/Delta), join strategy table, window function tips, 5 new anti-patterns
-  - Verify: 629 tests pass; no regression
-- v23 summary (2026-04-16, 3 rounds, 1 PR):
-  - R5: Live spinner during AI thinking — HumanSink.status() via rich.Console.status (dots)
-  - R6: Per-run progress for verify loops — _measure_mcp wraps each run in output.status(label)
-  - R7: Inline help for /trino-research — --help/-h prints usage + flags + examples
-  - Verify: 629 tests pass (+1 new); no regression
-- v22 summary (2026-04-16, 4 rounds, 1 PR):
-  - R1: SQL diff between iterations — `_render_sql_diff()` shows colored +/- of AI proposal vs current best
-  - R2: Structured iteration status block — color-coded KEPT/WORSE/REVERT/FAIL/SKIP + per-iteration elapsed time
-  - R3: Pre-launch plan card — one-shot visual of sql/metric/iterations/server/safety before baseline runs
-  - R4: Final summary card — visual bars baseline vs best + improvement arrow + data check
-  - Helper: `_fmt_metric_value()` adaptive precision for live output (sibling to `_fmt_ms` in report)
-  - Verify: 628 tests pass (+8 new); zero regression
-- v21 summary (2026-04-16, 4 rounds):
-  - R1/PR #42: paste-mode PromptSession isolation — Ctrl-D-only stuck state after /trino-research
-  - R2/PR #43: transient debug traceback dump (for diagnosing R3)
-  - R3/PR #44: handle {"tool": null} as task-done signal (our own system prompt's footgun); revert R2
-  - R4/PR #45: EXPLAIN parser now recognizes us/ns/µs/min/h time units + first-match-wins per stage (fixes CPU/Memory/Input/Output = 0 on Trino 467)
-  - Verify: 620 tests pass (+3 new regression tests using Sam's real Trino 467 EXPLAIN fixture)
-- v20 summary (2026-04-16):
-  - Based on Sam's real-run feedback
-  - EXPLAIN sections now render compact totals table when plan text isn't parseable (no more raw JSON dump)
-  - Added "First 10 rows..." explainer under both Result (Sample) sections
-  - Table Structure Suggestions now distinguishes "no qualified tables" vs "no issues detected" with actionable hint
-  - Footer now credits the Lakehouse Team
-  - 617 tests pass (+1 new)
-- v19 summary (2026-04-16):
-  - Root cause: no pre-flight gate — CLI could OOM on huge result sets; AI could (in principle) emit DML; default 30s timeout too short for real queries
-  - Fix: new preflight module (read-only whitelist + EXPLAIN size estimation + budget); _measure_mcp row cap; truncation-safe row count check; opt-in `--safe-limit`; query timeout → 300s default with `--query-timeout` flag
-  - Content: 25 new tests covering all preflight surfaces
-  - Verify: 616 tests pass (+25); manual smoke verified
-- v18 summary (2026-04-16):
-  - Root cause: v8 migration to Anthropic-style SKILL.md was half-done — only frontmatter parsed, body discarded. Tuning required Python changes.
-  - Fix: `parse_skill_md_body()` + `SkillRegistry.get_instructions(group)`; injected into chat sys prompt AND /trino-research sys prompt
-  - Content: moved Trino best practices from hardcoded Python to mcp_trino/SKILL.md body (3.5KB guide: priorities, anti-patterns, metric wins)
-  - Verify: 591 tests pass (+4 new); smoke test confirms body reaches registry
-- v17 summary (2026-04-16, 5 rounds):
-  - R1/PR #33: CLI subcommand routing — variadic args fix for `genie setup [target]`
-  - R2/PR #35: MCP endpoint path → default URL `/mcp` + registration warning
-  - R3/PR #36: /trino-research hard-requires MCP, no silent fallback; --direct opt-in
-  - R4/PR #37: Dynamic tool name discovery (match execute_query from Sam's server)
-  - R5/PR #38: Dynamic SQL parameter name discovery (sql/query/statement)
-  - All rounds: 587 tests pass, 0 failures
-- v16 summary:
-  - Root cause: callback positional ate subcommand names; setup missing from shim
-  - Fix: variadic `args: Optional[list[str]]`; shim reads args[0]/args[1]
-- v15 status:
-  - R1 done (diagnosis), R2 done (shipped via v17 R3-R5), R3 pending (tests + docs)
-- Next action: Sam re-runs /trino-research on Trino 467 → verify CPU/Memory/Input/Output metrics non-zero; if OK, close v15 R3 (tests + docs cleanup).
+> Living dashboard. First read on every session.
+> Migrated to task-ledger-cycle v2 spec on 2026-04-17 (second pilot after bullet-monitor).
+
+## Active Iteration
+
+- **Ledger:** [CURRENT.md](CURRENT.md) (v25)
+- **Focus:** Async MCP banner probe — chat startup must not block on the 3s timeout
+- **Touched features:** [mcp-banner](features/mcp-banner.md)
+- **Started:** 2026-04-17
+
+## Next Iteration Focus (preview from last retro)
+
+> v24 retro under old spec — back-filled into v25's Carryover + Active Parks under new lifecycle.
+
+## Active Parks
+
+Items waiting for a trigger condition. Each ages by 1 per retro round; auto-drops at 3/3.
+
+- Per-connector SKILL.md toggle (load only the connector relevant to current SQL) — age 1/3 — trigger: SKILL.md body exceeds 12KB OR measurable token-budget pressure observed in Trino enhancement runs — origin: v24-#change-next-2
+- Add more connector-specific optimization rules (Hive/Iceberg/Delta) — age 1/3 — trigger: Sam runs SQL against ≥3 real tables and identifies missing rules empirically — origin: v24-#change-next-1
+- v15 R3 cleanup (tests + docs) — age 1/3 — trigger: Sam's E2E run on Trino 467 confirms CPU/Memory/Input/Output metrics non-zero — origin: v15-R3 (carried since 2026-04-15)
+- v10 T9 live MCP verify against Sam's localhost:8811 — age 1/3 — trigger: Sam runs live E2E end-to-end and signs off — origin: v10-T9 (carried since 2026-04-12)
+
+## Theme Tracker
+
+| Theme | Appearances | Status |
+|-------|-------------|--------|
+| UX polish (cards / banners / spinners / syntax highlights) | v22, v23, v24 | long-term — sub-items tracked at theme level, not individually |
+
+## Feature Index
+
+| Feature | Doc | Last touched |
+|---------|-----|--------------|
+| mcp-banner | [features/mcp-banner.md](features/mcp-banner.md) | v24 |
+| trino-research | [features/trino-research.md](features/trino-research.md) | v24 |
+
+## Archive
+
+All historical iteration ledgers in [archive/](archive/) — naming kept as `TASK-LEDGER-v*.md` for git history clarity. v1 → v24 plus a v25 demo file from spec design (safe to delete).
+
+## Meta-retro Log
+
+- No meta-retro yet — first one due at v30 (5 iterations from v25).
+- Full history: [LEARNINGS.md](LEARNINGS.md)
+
+## Notes
+
+- `MIGRATION-MAP.md` is pre-existing v8 skill-architecture migration record — left alone, not part of the new spec.
+- Pre-commit hook from workspace-emily lives at workspace-level. To wire validation in this repo too: `ln -sf "$(pwd)/../../bin/validate-ledger-precommit.sh" .git/hooks/pre-commit` (or symlink to the workspace-emily copy).
