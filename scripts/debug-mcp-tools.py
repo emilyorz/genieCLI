@@ -20,7 +20,10 @@ from typing import Any
 from genie.skills.mcp_trino.client import McpClient, load_mcp_config
 from genie.skills.mcp_trino.research import (
     _execute_via_mcp,
+    _fetch_explain_analyze,
     _find_sql_param,
+    _measure_mcp,
+    _parse_explain_stages,
     _resolve_query_tool,
 )
 
@@ -72,12 +75,78 @@ def _probe(client: McpClient) -> None:
         print()
 
 
+def _measure(client: McpClient, sql: str) -> None:
+    print("=" * 78)
+    print("MEASURE MODE — verify _measure_mcp + EXPLAIN ANALYZE backfill")
+    print("=" * 78)
+    print(f">>> SQL: {sql}")
+    print()
+
+    # Step 1: raw _execute_via_mcp output (so we see what _measure_mcp sees)
+    raw = _execute_via_mcp(client, sql)
+    raw_metrics = raw["metrics"]
+    print("---- _execute_via_mcp returned metrics ----")
+    print(f"  query_time_ms       = {raw_metrics.query_time_ms}")
+    print(f"  cpu_time_ms         = {raw_metrics.cpu_time_ms}")
+    print(f"  peak_memory_bytes   = {raw_metrics.peak_memory_bytes}")
+    print(f"  processed_rows      = {raw_metrics.processed_rows}")
+    triggers_backfill = raw_metrics.cpu_time_ms == 0 and raw_metrics.peak_memory_bytes == 0
+    print(f"  → triggers backfill? {triggers_backfill}")
+    print()
+
+    # Step 2: directly call _fetch_explain_analyze and inspect parser output
+    print("---- _fetch_explain_analyze(sql) ----")
+    ea = _fetch_explain_analyze(client, sql)
+    print(f"  available           = {ea.available}")
+    print(f"  total_cpu_ms        = {ea.total_cpu_ms}")
+    print(f"  total_wall_ms       = {ea.total_wall_ms}")
+    print(f"  total_memory_bytes  = {ea.total_memory_bytes}")
+    print(f"  total_input_rows    = {ea.total_input_rows}")
+    print(f"  total_output_rows   = {ea.total_output_rows}")
+    print(f"  stages parsed       = {len(ea.stages)}")
+    for s in ea.stages:
+        print(f"    stage {s}")
+    print()
+    if not ea.available:
+        print("  raw_text (first 800 chars):")
+        print("    " + (ea.raw_text[:800].replace("\n", "\n    ") if ea.raw_text else "(empty)"))
+        print()
+    elif not ea.stages:
+        print("  PARSER FAILED — raw_text (first 800 chars):")
+        print("    " + (ea.raw_text[:800].replace("\n", "\n    ") if ea.raw_text else "(empty)"))
+        print()
+
+    # Step 3: full _measure_mcp call (this is what /trino-research uses)
+    print("---- _measure_mcp(sql, 'cpu_time_ms', runs=2) ----")
+    try:
+        m = _measure_mcp(client, sql, "cpu_time_ms", runs=2)
+        print(f"  median_metric       = {m.median_metric}")
+        print(f"  samples             = {m.samples}")
+        print(f"  row_count           = {m.row_count}")
+        print(f"  metrics.cpu_time_ms       = {m.metrics.cpu_time_ms}")
+        print(f"  metrics.wall_time_ms      = {m.metrics.wall_time_ms}")
+        print(f"  metrics.peak_memory_bytes = {m.metrics.peak_memory_bytes}")
+        print(f"  metrics.processed_rows    = {m.metrics.processed_rows}")
+    except Exception as exc:
+        print(f"  FAILED: {exc!r}")
+    print()
+
+
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument(
         "--probe",
         action="store_true",
         help="After listing tools, run SELECT 1 and EXPLAIN ANALYZE SELECT 1 to dump raw response shape.",
+    )
+    parser.add_argument(
+        "--measure",
+        metavar="SQL",
+        nargs="?",
+        const="SELECT 1",
+        help="Run _measure_mcp on the given SQL (default 'SELECT 1') and dump every layer "
+             "(_execute_via_mcp metrics → _fetch_explain_analyze parsed → _measure_mcp result). "
+             "Use this to verify the EXPLAIN ANALYZE backfill is wired correctly.",
     )
     args = parser.parse_args()
 
@@ -130,6 +199,10 @@ def main() -> int:
     if args.probe:
         print()
         _probe(client)
+
+    if args.measure is not None:
+        print()
+        _measure(client, args.measure)
 
     return 0
 
