@@ -565,10 +565,22 @@ def _execute_via_mcp(client: McpClient, sql: str) -> dict:
         if "duration_ms" in data:
             metrics.query_time_ms = float(data["duration_ms"])
 
-    # Extract rows and columns
-    rows = data.get("rows", []) if isinstance(data, dict) else []
-    columns = data.get("columns", []) if isinstance(data, dict) else []
-    error = data.get("error") if isinstance(data, dict) else None
+    # Extract rows and columns. Two response shapes seen in the wild:
+    #   (a) {"rows": [...], "columns": [...], "metrics": {...}, ...}  — wrapped
+    #   (b) [{"col1": val, ...}, ...]                                  — bare list
+    # mcp-trino returns (b); previous code silently dropped to rows=[].
+    if isinstance(data, dict):
+        rows = data.get("rows", [])
+        columns = data.get("columns", [])
+        error = data.get("error")
+    elif isinstance(data, list):
+        rows = data
+        columns = list(rows[0].keys()) if rows and isinstance(rows[0], dict) else []
+        error = None
+    else:
+        rows = []
+        columns = []
+        error = None
 
     return {
         "rows": rows,

@@ -247,6 +247,29 @@ class TestUxHelpers:
         assert "baseline: run 1/3" in calls[0]
         assert "baseline: run 3/3" in calls[2]
 
+    def test_execute_via_mcp_handles_bare_list_response(self):
+        """mcp-trino returns rows as a top-level JSON list, not wrapped in {"rows": ...}.
+        _execute_via_mcp must extract rows + infer columns from the list shape."""
+        from genie.skills.mcp_trino.research import _execute_via_mcp
+
+        mock_client = MagicMock(spec=McpClient)
+        mock_client.list_tools.return_value = [
+            {"name": "execute_query", "inputSchema": {"properties": {"query": {"type": "string"}}}},
+        ]
+        # Server returns a bare JSON list — mcp-trino's actual shape.
+        mock_client.call_tool.return_value = json.dumps([
+            {"col_a": 1, "col_b": "x"},
+            {"col_a": 2, "col_b": "y"},
+        ])
+        import genie.skills.mcp_trino.research as _mod
+        _mod._resolved_tool = None
+
+        result = _execute_via_mcp(mock_client, "SELECT * FROM t")
+        assert result["row_count"] == 2
+        assert result["rows"] == [{"col_a": 1, "col_b": "x"}, {"col_a": 2, "col_b": "y"}]
+        assert sorted(result["columns"]) == ["col_a", "col_b"]
+        assert result["error"] is None
+
     def test_measure_mcp_backfills_metrics_from_explain_analyze(self):
         """When the MCP server returns rows but no structured stats,
         _measure_mcp should fall back to EXPLAIN ANALYZE and parse stage totals."""
@@ -266,9 +289,11 @@ class TestUxHelpers:
 
         def call_tool_side_effect(tool_name, params):
             sql = params.get("sql") or params.get("query") or ""
+            # Use bare-list response shape (mcp-trino's actual behavior)
+            # to ensure backfill works end-to-end on the real server contract.
             if sql.upper().startswith("EXPLAIN ANALYZE"):
-                return json.dumps({"rows": [{"Query Plan": explain_text}], "columns": []})
-            return json.dumps({"rows": [{"x": 1}], "columns": ["x"]})
+                return json.dumps([{"Query Plan": explain_text}])
+            return json.dumps([{"x": 1}])
 
         mock_client = MagicMock(spec=McpClient)
         mock_client.list_tools.return_value = [
