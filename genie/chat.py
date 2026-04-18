@@ -342,7 +342,7 @@ def _chat_loop(
         mcp_cfg = load_mcp_config()
         if mcp_cfg.enabled and mcp_cfg.url:
             probe_cfg = type(mcp_cfg)(url=mcp_cfg.url, enabled=True,
-                                      timeout=min(mcp_cfg.timeout, 3))
+                                      timeout=0.2)
             try:
                 tools = McpClient(probe_cfg).list_tools()
                 output.kv("mcp", f"[green]ok[/green] {mcp_cfg.url} ({len(tools)} tools)")

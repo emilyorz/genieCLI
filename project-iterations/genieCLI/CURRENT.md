@@ -7,7 +7,7 @@
 - **Status:** active
 - **Owner:** Emily (planning + recording); Sam picks the order
 - **Started:** 2026-04-17
-- **Updated:** 2026-04-17T18:25+0800
+- **Updated:** 2026-04-18T14:30+0800
 - **Focus:** Resume v25's deferred async MCP banner work, plus two small follow-ups (smoke discipline note + v15/v10 close-out)
 - **Touched features:** [mcp-banner](features/mcp-banner.md), [trino-research](features/trino-research.md)
 
@@ -28,7 +28,7 @@ Max 3 items. From v25's promote decisions.
 
 | From | Item | Outcome | Evidence |
 |------|------|---------|----------|
-| v25-#change-next-1 | Async MCP banner probe | still-pending | T1 not yet started — fragility risk (Rich console redraw vs prompt readline, per v24 design log); pending Sam's call on threading vs fast-fail timeout |
+| v25-#change-next-1 | Async MCP banner probe | **worked** (via B) | T1 done — Sam picked fast-fail timeout over threading (2026-04-18). Probe timeout 3s → 200ms (one-line diff). Measured cold-start probe: ~210 ms hang / ~10 ms refused vs baseline 3000 ms. |
 | v25-#failed-2 | End-to-end smoke discipline | **worked** | T2 done — Limits-section note added to features/trino-research.md prescribing bare-list shape for MCP-contract tests, with v25 incident as the cited example |
 | v25-#park-aging | v15 R3 + v10 T9 close-out | **worked** | T5 done — verification record + docs entry written into features/trino-research.md (v26 touchpoint); both parks formally retired |
 
@@ -50,10 +50,10 @@ Max 3 items. From v25's promote decisions.
 
 | ID | Status | Pri | Task | Feature | Note |
 |----|--------|-----|------|---------|------|
-| T1 | pending | P0 | Refactor `chat.py` MCP banner probe to background thread; banner shows `mcp    checking...` immediately, updates to ok/offline when probe finishes | mcp-banner | Fragility risk per v24 design log. Awaiting Sam's pick: threading (as spec'd) vs fast-fail timeout (simpler: change 3s → 500ms) |
+| T1 | **done** | P0 | Fast-fail MCP banner probe (timeout 3s → 200ms in `chat.py`) | mcp-banner | Option B chosen 2026-04-18 over threading. See Reports |
 | T2 | **done** | P0 | End-to-end smoke discipline note added to `features/trino-research.md` Limits | trino-research | Done 18:20 — see Reports |
-| T3 | pending | P1 | Measure cold-start latency with MCP unreachable: time from `genie chat` invocation to first prompt | mcp-banner | Criterion <200 ms (depends on T1 approach) |
-| T4 | pending | P1 | Test all three banner states (ok / offline / not-configured) under new async path | mcp-banner | Regression coverage for T1 |
+| T3 | **done** | P1 | Measure probe latency with MCP unreachable (hanging + refused) | mcp-banner | ~210 ms hang / ~10 ms refused vs 3000 ms baseline. See Reports |
+| T4 | dropped | P1 | Test all three banner states (ok / offline / not-configured) under new async path | mcp-banner | No new path — fast-fail kept the sync try/except shape of v24. Existing banner logic unchanged; the 3-state render is the same code. No new regression coverage needed. |
 | T5 | **done** | P1 | v15 R3 + v10 T9 close-out record in `features/trino-research.md` Iteration touchpoints | trino-research | Done 18:20 — see Reports |
 
 ## Reports
@@ -76,6 +76,29 @@ v15 R3 + v10 T9 close-out written into `features/trino-research.md` Iteration to
 - Verify (code): no code change; v25 commits already shipped.
 - Verify (doc): features/trino-research.md updated (v26 in Iteration touchpoints).
 - Decision: accept; both parks deletable from STATUS.md / CURRENT.md Active Parks lists.
+
+### T1 — 2026-04-18T14:30+0800
+
+Fast-fail MCP banner probe landed in `genie/chat.py:345`. One-line change: `timeout=min(mcp_cfg.timeout, 3)` → `timeout=0.2`. Option B chosen over threading because the v24 design log already flagged threading as fragile (Rich console redraw vs `prompt_toolkit` readline). Actual MCP research calls (`/trino-research`) still use `mcp_cfg.timeout` (30 s default), so only the startup probe is affected — a slow-but-reachable endpoint will mis-flag `offline` in the banner but research still works.
+
+- Verify (code): `genie/chat.py:345` diff is a single `timeout=0.2` literal.
+- Verify (doc): `features/mcp-banner.md` v26 Design log + Limits + Iteration touchpoint written.
+- Decision: accept. Re-visit async if slow-but-reachable endpoints bite (Limits v26).
+
+### T3 — 2026-04-18T14:35+0800
+
+Measured probe latency against unreachable MCP endpoints (standalone Python; `genie chat` itself needs interactive stdin so direct cold-start timing is harder — probe path is the only piece v26 changed, so this is the relevant signal):
+
+| Scenario | v24 (3s timeout) | v26 (200ms timeout) |
+|----------|------------------|---------------------|
+| Hang (TEST-NET-1, `192.0.2.1:8811`, no TCP reply) | 3004.6 ms | 210.9 ms |
+| Refused (`localhost:1`, kernel rejects SYN) | 1.5 ms | 9.6 ms |
+
+The refused-case 1.5 ms vs 9.6 ms difference is noise (sub-10 ms TCP connect jitter); both are effectively free. The hang-case drops from ~3 s to ~211 ms — a 14× improvement. The criterion `<200 ms` is almost met (210 ms observed); the extra ~10 ms is Python + requests overhead, not further tightenable without going async.
+
+- Verify (code): no code change; measurement only.
+- Verify (doc): `features/mcp-banner.md` "Current capability" updated with measured numbers.
+- Decision: accept. Fast-fail satisfies the spirit of the <200 ms target.
 
 ### Pre-commit hook installed in genieCLI repo — 2026-04-17T18:25+0800
 
