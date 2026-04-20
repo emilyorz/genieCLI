@@ -4,111 +4,126 @@
 
 - **Project:** genieCLI
 - **Iteration:** 27
-- **Status:** active (PLAN — blocked on ack gate)
-- **Owner:** Emily (planning + recording); Sam picks the order
+- **Status:** active (DO — PLAN v2 ack'd by Sam via Telegram msg 811)
+- **Owner:** Emily (planning + execution); Sam picks direction
 - **Started:** 2026-04-20
-- **Updated:** 2026-04-20T21:40+0800
-- **Focus:** E2E mode disambiguation (stop misreading the daily smoke's `kept=0` as a product regression) + fix cron plumbing so E2E branches actually land as PRs.
-- **Touched features:** [trino-research](features/trino-research.md) (Limits + Iteration touchpoint for v27 smoke semantics)
+- **Updated:** 2026-04-20T21:55+0800
+- **Focus:** `/trino-research` UX overhaul — terminal slim + iteration-centric report + ./report/ subdir. Removes three pain points Sam identified as "整個有點混亂".
+- **Touched features:** [trino-research](features/trino-research.md)
 
 ## Goal
 
-- **One-line summary:** Stop the 4am E2E from generating a false product-value signal, and make sure its branch-push actually turns into a PR Sam can review.
+- **One-line summary:** Make `/trino-research` output scannable — no terminal dump of giant SQL, no cwd pollution, no triple-SQL duplication in the report.
 - **Done when:**
-  - `research-e2e.json` carries an explicit `e2e_mode` field whose value is documented in `features/trino-research.md` Limits.
-  - A fresh 4am cron run writes the new field and emits `[INFO] smoke mode — kept=0 expected` instead of `[WARN] No iterations kept`.
-  - `cron.log` on the next run shows zero `fatal: ... outside repository` and zero `HTTP 401` lines; a PR URL appears in the log.
-  - v26's two P0/P1 promotes are verified in the v27 RETRO Promote Verification table with `worked` evidence.
+  - Terminal after a run shows summary table + iteration history + `Report saved: ./report/<file>.md` — no full Optimized SQL printed to stdout.
+  - Report has **one** Best SQL block (not three), with per-iteration sections that carry the full hypothesis (no 60-char truncation) + a mini diff scoped to that iteration's change + verdict + metric.
+  - Report is saved under `./report/<name>.md` (auto-created), not directly in cwd.
+  - `features/trino-research.md` reflects the new UX in Design log + Iteration touchpoint.
+  - Sam sign-off on the new report/terminal layout (T5 dropped per msg 813 — no real-run verification in v27; will exercise in first natural use after merge).
 
 ## Carryover (from v26)
 
-Max 3 items. From v26's promote decisions (2 promotes — under cap).
+Max 3 items. v26 promoted 2 items; both **deferred** at v27 PLAN ack stage per Sam's Telegram msg 807 ("三個都還好") and msg 809 (picked D — UX — instead).
 
-- ⭐ P0 S — **E2E mode disambiguation** (smoke vs product-value; decide + label + mute false alarm) — from: v26-#change-next-1 (change-next)
-- ⭐ P1 S — **Cron plumbing fix** (`E2E-REPORT.md outside repository` git add fatal + `HTTP 401` gh auth) — from: v26-#change-next-2 (change-next)
+- ⭐ P0 S — E2E mode disambiguation — **deferred to park** (see Active Parks)
+- ⭐ P1 S — Cron plumbing fix — **deferred to park** (see Active Parks)
 
 ## Promote Verification (mandatory first PLAN action)
 
-Carryover items from v26 — outcomes will be filled when v27 Todo items complete and their VERIFY passes.
+Walk every Carryover item from v26. Outcomes filled at v27 PLAN ack stage (user-directed deferral, not waiting for Todo verification).
 
 | From | Item | Outcome | Evidence |
 |------|------|---------|----------|
-| v26-#change-next-1 | E2E mode disambiguation | still-pending | will be filled at v27 RETRO — tied to T1 completion |
-| v26-#change-next-2 | Cron plumbing fix | still-pending | will be filled at v27 RETRO — tied to T2 completion (or park if fallback picked) |
+| v26-#change-next-1 | E2E mode disambiguation | **deferred-by-user-ack** | Telegram msg 807 ("這三個都還好") + msg 809 (Sam picked D instead); moved to park with age 0/3 and revival trigger. Not lost — re-evaluatable at v28 retro or earlier if trigger fires. |
+| v26-#change-next-2 | Cron plumbing fix | **deferred-by-user-ack** | Same Telegram msgs; moved to park with age 0/3 and trigger "Sam actually tries to view an E2E PR and can't find it". |
 
-## Active Parks (carried from prior iterations)
+## Active Parks (carried from prior iterations + deferred v26 promotes)
 
-5 parks entering v27 (v26 aged out 2, promoted 0 from parks, added 2 new).
+7 parks entering v27 DO (5 carried + 2 deferred from v26 promotes).
 
-- Display rounding hides sub-ms metrics (`cpu={:.0f}ms` makes 35us show as 0ms) — age 2/3 — trigger: a real Trino query (not SELECT 1) shows misleading 0 in the optimizer output AND a user complains. Production-sized queries have ms-scale CPU so unlikely to surface. — origin: v25-#change-next-2
-- `debug-mcp-tools.py` permanent home (currently in `scripts/`, no `genie debug-mcp` entry point) — age 2/3 — trigger: third time someone (Sam, onboarding, future agent) asks "how do I check if MCP integration is working" — origin: v25-#change-next-3
-- "Always probe before patching MCP-contract assumptions" process insight — age 2/3 — trigger: meta-retro at v30 reviews v25-v30 patterns, decides whether to formalize into AGENTS.md or self-model.md — origin: v25-#failed-1
-- Ledger roll-over drag ("closing retro doesn't happen until Sam asks for next thing") — age 1/3 — trigger: a second iteration closes >1 day after its final Todo is accepted. If it reappears, formalize a "same-day retro or flag blocker" rule in AGENTS.md. — origin: v26-#failed-2
-- Autoresearch product-value signal (separate from pipeline smoke) — age 1/3 — trigger: v27's E2E mode decision lands AND smoke mode is picked; this park then activates as "build a weekly product-value run against Sam's real PBB queries" in v28 or later. If v27 picks product mode instead, this park drops as subsumed. — origin: v26-#change-next-3
+- Display rounding hides sub-ms metrics — age 2/3 — trigger: real Trino query (not SELECT 1) shows misleading 0 AND user complains — origin: v25-#change-next-2
+- `debug-mcp-tools.py` permanent home — age 2/3 — trigger: third time someone asks "how do I check if MCP integration is working" — origin: v25-#change-next-3
+- "Always probe before patching MCP-contract assumptions" — age 2/3 — trigger: meta-retro at v30 — origin: v25-#failed-1
+- Ledger roll-over drag — age 1/3 — trigger: a second iteration closes >1 day after final Todo accepted — origin: v26-#failed-2
+- Autoresearch product-value signal — age 1/3 — trigger: v27's E2E mode decision lands AND smoke mode picked — origin: v26-#change-next-3
+- **E2E smoke mode labelling (new)** — age 0/3 — trigger: next time `kept=0/2` in an E2E report causes a human (Sam, Emily, Elena, or onboarding) to suspect a product regression when it isn't — origin: v26-#change-next-1 (deferred at v27 ack)
+- **Cron plumbing: `E2E-REPORT.md outside repo` + `HTTP 401` (new)** — age 0/3 — trigger: Sam actually tries to open an auto-generated E2E PR and finds the branch exists but no PR — origin: v26-#change-next-2 (deferred at v27 ack)
 
 ## Theme Tracker (cluster radar)
 
 | Theme | Appearances | Status |
 |-------|-------------|--------|
-| UX polish (cards / banners / spinners / syntax highlights) | v22, v23, v24, v26 (banner fast-fail) | long-term — no per-instance lifecycle; surfaces again only if a UX regression or new polish request arrives |
-| E2E signal hygiene (what the test measures vs what the output looks like) | v27 (new — triggered by v26 failed-1) | active — watch whether this becomes a pattern; if a second E2E ambiguity surfaces in v28-v29 re-classify as long-term |
+| UX polish (cards / banners / spinners / syntax highlights / output layout) | v22, v23, v24, v26 (banner fast-fail), v27 (trino-research output) | long-term — no per-instance lifecycle; v27 is a substantial new entry |
+| E2E signal hygiene (what the test measures vs what the output looks like) | v27 parks (deferred) | dormant — activates when a park trigger fires |
 
 ## Hardthink — Alternatives considered
 
-### For P0 (E2E mode disambiguation)
+### For T2 (Report iteration-centric rewrite)
 
-1. **Smoke only + mute false alarm** — keep `noop_build_prompt` + `qwen3.5:4b`; add `e2e_mode: "smoke"` to report JSON; downgrade `[WARN] No iterations kept` → `[INFO] smoke mode — kept=0 expected`. Cheap (~30 min). Preserves pipeline-health signal. Leaves "is the LLM's rewrite actually saving time" unanswered — that question migrates to the product-value park.
-2. **Product-value only + solve qwen3.5:9b truncation** — wire real `build_prompt` + fix 9b's ~1800-char output truncation (try Ollama stream mode, or swap model: MiniMax-M2.7 remote / deepseek-coder / qwen-coder). Produces real `kept%` signal. Risk: the truncation may have no workaround on current hardware; if research fails, v27 ships nothing. Model swap also changes cron cost model (remote API budget).
-3. **Dual-mode (daily smoke + weekly product-value)** — keep smoke as daily cron; add weekly product-value cron against remote model API. Two reports side-by-side, can't be confused. Most complete signal, highest work (new launchd entry + GH_TOKEN + API key management + first-run debugging).
+1. **Full replacement** — delete Original SQL + Optimized SQL blocks entirely; the report becomes Summary card → per-iteration sections → final Best SQL (once). Diff lives inside each iteration section, scoped to just that round's change. Most aggressive; addresses "三份看三次" completely.
+2. **Original as appendix** — keep Original SQL but move it to end of report under a `## Appendix` heading; Optimized SQL gone; per-iteration sections as in #1. Keeps reproducibility for someone who opens the report standalone but pushes it off the first screen.
+3. **Minimal patch** — keep current layout but un-truncate hypothesis (drop `[:60]`) and add a verdict column. Cheapest, doesn't address Sam's "整個混亂" complaint.
 
-**Recommendation: #1.** Reasons: (a) cron plumbing P1 already absorbs the other half of v27's budget; (b) product-value needs Sam's real PBB queries, not the synthetic `memory.*` catalog test — shipping product-value against fake data would mis-signal again; (c) park #5 gives a clean hand-off to v28 if Sam wants it promoted.
+**Recommendation: #1.** Sam explicitly named "三份看三次" as a pain. #2 adds structural complexity (appendix navigation) without solving it. #3 is rearranging deck chairs. If a consumer of the report needs Original SQL, they can read the first iteration's diff (delta from Original) or rerun with `--show-original` in a future iteration.
 
-### For P1 (Cron plumbing fix)
+### For T3 (report path)
 
-1. **Fix both failures** — (a) copy or symlink the E2E report into the repo's working tree before `git add`, or use `git add -f` against an explicit path; (b) inject `GH_TOKEN` into the launchd `EnvironmentVariables` (read from `~/.config/gh/hosts.yml` or `op item get` at job start). ~1-2 hours. Preserves auto-PR flow. Has a clean fallback to #2 if token injection hits macOS sandbox.
-2. **Branch-only mode** — remove the `git add E2E-REPORT.md` + `gh pr create` steps; cron just pushes the branch, Sam opens PRs manually if he wants to review. ~10 min. Gives up automation but stops the silent failures.
-3. **Move to GitHub Actions** — E2E from local launchd → GHA runner. Auth becomes trivial. Blocker: local Trino + Ollama can't run on GHA (would need self-hosted runner or remote Trino access), so effectively 1+ days of infra work that delivers the same `kept` signal.
+1. **`./report/`** — Sam's suggestion (msg 811 literally said "report folder"). Per-project, co-located with the SQL being researched. Clean under one project; noisy if Sam runs /trino-research from home or a temp dir.
+2. **`~/.genie/reports/`** — global cache. Clean across projects, but decouples report from the project context (finding "the report for yesterday's PBB query" requires grep across all projects).
+3. **`$XDG_STATE_HOME/genie/reports/`** — XDG-compliant version of #2.
 
-**Recommendation: #1.** Reasons: (a) both fixes are small and reversible; (b) #2 is a clean fallback inside v27 scope — if `GH_TOKEN` injection hits macOS Full Disk Access / keychain permissions, swap to #2 same-day and document; (c) #3 is off-budget (Trino / Ollama locality).
+**Recommendation: #1** (Sam explicitly picked it). If cwd-polution becomes annoying later, add `--report-dir` flag; don't pre-engineer.
+
+### For T1 (terminal slim)
+
+1. **Pure redirect** — terminal shows "Report saved: ./report/xxx.md", nothing else after the run (summary too). Saves the most scroll.
+2. **Summary-only** — terminal keeps summary table + iteration one-liners (current lines 570-582 behavior), drops the full SQL print. Sam still sees the outcome at a glance without navigating to the file.
+3. **Current + pagination** — pipe long SQL through `less` if tty, skip if not. Complexity, fragile.
+
+**Recommendation: #2.** Sam's pain is the "70 lines of Optimized SQL洗版", not the summary/iteration lines — those are compact and useful. #1 is overcorrection (forces Sam to open the file even for quick runs). #3 overengineered.
 
 ## Hardthink — Scope
 
 ### In
 
-- `scripts/geniecli-research-e2e.py` — add `e2e_mode: "smoke"` to report JSON; change WARN → INFO for the smoke-mode expected case.
-- `features/trino-research.md` — v27 Limits (explain smoke semantics: noop prompt + 4b model + why kept=0 is expected) + Iteration touchpoint.
-- Cron/launchd wiring — fix `git add` path issue and `GH_TOKEN` injection (or swap to branch-only per P1 alternative #2 if injection fails).
-- `project-iterations/genieCLI/CURRENT.md` (this file), `archive/v26.md` lock-in, `STATUS.md` roll-over.
-- Optional (light-weight, 1 line): AGENTS.md "same-day retro" note — only if Sam agrees (Open question #3).
+- `genie/skills/trino_query/research.py` — three edits:
+  - `run_trino_research` line 584-590: remove full Optimized SQL print; keep "Optimized SQL saved" pointer
+  - `_generate_report` lines 390-462: rewrite to iteration-centric layout; remove Original/Optimized duplicates; un-truncate hypothesis; add per-iteration mini diff
+  - Report save path lines 595-599: change `Path.cwd() / report_name` → `Path.cwd() / "report" / report_name` with `mkdir(parents=True, exist_ok=True)`
+- `features/trino-research.md` — v27 Design log + Iteration touchpoint + Current capability bump
+- `project-iterations/genieCLI/CURRENT.md` + `STATUS.md` — this PLAN v2 + Todo progression
 
-### Out
+### Out (explicitly deferred)
 
-- `qwen3.5:9b` truncation investigation — deferred; lives behind the product-value park trigger.
-- Product-value E2E implementation — deferred; lives behind park #5.
-- Any code change inside `genie/` (core product) — v27 is tooling + docs + cron only.
-- The four non-promoted parks (Display rounding, debug-mcp-tools home, Always-probe insight, Ledger roll-over drag) — aging pass only; no implementation work.
-- Theme Tracker's UX-polish row — no v27 contribution planned.
+- Semantic diff (AST-level change summary) — larger body of work; can park if Sam wants it in v28
+- Side-by-side / word-level diff rendering — current unified diff kept; no new dep
+- `--report-dir` flag — add when someone asks; not pre-engineered
+- Machine sink / JSON output format — untouched
+- Interactive (`genie chat`) vs non-interactive (`--sql-file`) divergence — both behave identically after T1
+- All seven Active Parks (aging-only, no implementation this round)
 
 ## Hardthink — Open questions
 
-1. **P0 mode choice** — Emily's recommendation is alternative #1 (smoke-only + mute). Does Sam agree, or does he want to pull product-value (alt #2 or #3) into v27 despite the model-swap risk and budget impact?
-2. **P1 fallback trigger** — if `GH_TOKEN` injection hits a macOS sandbox block (similar to the 2026-04-19 crontab FDA incident), swap to alternative #2 (branch-only) same-day, or park the whole P1 and let v27 ship without cron plumbing fix?
-3. **Ledger discipline scope** — v26 retro's "same-day retro" rule is a plausible AGENTS.md addition. Write it in v27 (cheap) or wait until the `ledger roll-over drag` park trigger fires a second time (which would force promote)?
+**None — proceeding.**
+
+Rationale: Sam acked A/B/C via Telegram msgs 809 + 811 and explicitly dropped T5 in msg 813 ("T5 不用 , 先走 T1~T4"). Folder name fixed to `./report/` per his word. Diff style stays unified (no new dep). Interactive/non-interactive unified behavior (no question).
 
 ## Todo
 
-_(empty — Ack gate blocks DO. Populated after Sam's ack on the three Open questions.)_
-
 | ID | Status | Pri | Task | Feature | Note |
 |----|--------|-----|------|---------|------|
+| T1 | pending | P0 | Terminal slim: drop full-Optimized-SQL print in `run_trino_research` (research.py:584-590); keep summary + iteration lines | trino-research | Keep "Report saved:" pointer; interactive/non-interactive identical behavior |
+| T2 | pending | P0 | `_generate_report` iteration-centric rewrite: remove Original/Optimized full dumps; per-iteration section with full hypothesis + mini diff + verdict; one Best SQL block at end | trino-research | Biggest code change of the iteration; keep stdlib `difflib` — no new dep |
+| T3 | pending | P0 | Report path → `./report/<name>.md` with `mkdir(parents=True, exist_ok=True)` (research.py:595-599) | trino-research | Sam's word: cwd底下開 report folder |
+| T4 | pending | P1 | `features/trino-research.md` — Design log entry (UX trio), Iteration touchpoint (v27), Current capability snapshot update | trino-research | Doc-track VERIFY enforcement (SKILL.md rule 10) |
 
 ## Reports
 
-_(empty — no Todo has entered DO.)_
+_(populated as Todo items complete)_
 
 ## Blocked
 
-- v27 DO entry — blocked on Sam ack for the three Open questions above. SKILL.md rule 15: Ack blocks DO when PLAN lists open questions OR touches a production path; both hold here.
+- None — T5 dropped per Sam Telegram msg 813 ("T5 不用 , 先走 T1~T4"). v27 closes on T1-T4.
 
 ## Retro
 
@@ -132,7 +147,7 @@ _(tbd — grep against `archive/v1..v26` and this file before each Change-next i
 
 ### Park aging pass
 
-_(tbd — 5 parks entering v27; none expected to auto-drop this round unless triggers fire)_
+_(tbd — 7 parks entering v27; trigger checks at retro time)_
 
 ## Process gap
 
@@ -148,12 +163,12 @@ _(populated at end of v27)_
 
 ## Roll-over Checklist
 
-- [ ] Promote Verification table filled with `worked | regressed | still-pending` for both Carryover items
+- [ ] Promote Verification table filled (v26 deferrals recorded; v27 Todo items verified as they complete)
 - [ ] All Failed/Change-next items tagged
 - [ ] Promote count ≤ 3
-- [ ] `features/trino-research.md` updated with v27 Limits + Iteration touchpoint
-- [ ] Park aging applied (5 parks entering; ledger-drag park's trigger fires iff v27 also drags)
-- [ ] Theme Tracker — E2E signal hygiene row reclassified if a second instance surfaces
+- [ ] `features/trino-research.md` updated with v27 Design log + Limits + Iteration touchpoint (T4 enforces this)
+- [ ] Park aging applied (7 parks entering; aging triggers checked)
+- [ ] Theme Tracker — UX polish row bumped with v27 entry
 - [ ] Move this file to `archive/v27.md`
 - [ ] Create new `CURRENT.md` with Carryover from v27 promotes
 - [ ] Update `STATUS.md`: Active Iteration pointer → v28, Next Iteration Focus, refreshed Parks, Feature Index
