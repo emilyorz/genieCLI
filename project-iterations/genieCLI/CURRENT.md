@@ -4,7 +4,7 @@
 
 - **Project:** genieCLI
 - **Iteration:** 28
-- **Status:** PLAN — ack gate OPEN (production path + 3+ files + 1 Open question requires Sam's read)
+- **Status:** DO — ack'd by Sam via Telegram msg 824 ("option !" = Option 1 — L1 + L3 + K-retry tiered correctness). Executing T1 (probe) → T2-T5 code → T6 doc → T7 smoke.
 - **Owner:** Emily (planning + execution); Sam picks direction
 - **Started:** 2026-04-20
 - **Updated:** 2026-04-21T09:25+0800
@@ -156,12 +156,9 @@ This is the one choice Sam needs to ack — it affects engineering scope, correc
 
 ## Hardthink — Open questions
 
-**One — Sam's ack needed on this.**
+**None — Sam ack'd Option 1 via Telegram msg 824 + 825 ("option !" → "1").**
 
-1. **Correctness tier: Option 1 (L1 + L3 + K-retry) vs Option 2 (L3-only + K-retry)?**
-   - Option 1 adds ~200-300 lines of plan-signature + structural-equivalence code and two new test files' worth of unit coverage; catches ~80% of LLM hallucinations at iter-time for free.
-   - Option 2 ships ~1/3 the code; same final correctness (L3 is the gate); worst-case wall-time identical; typical-case wall-time slightly worse (more L3 fallbacks on hallucinating runs).
-   - My recommendation: Option 1. Willing to drop to Option 2 if you want a faster-to-ship v28 and accept "hallucination tax" on wall-time.
+- **Correctness tier: Option 1 (L1 + L3 + K-retry) — LOCKED.** L1 structural-invariant check per iter, L3 row-equivalence on final winner, K=3 retry fallback to next-ranked. All other design defaults in Alternatives sections above carry (ranking = `estimate_from_explain`, gate = `--long-query` hard flag @ 60s threshold, timeout = Trino session property `query_max_run_time` @ 1.2× baseline).
 
 All other design choices (ranking metric = plan cost, gate mechanism = `--long-query` flag, timeout = Trino session property, K default = 3, threshold default = 60s, thresholds tunable via flags) are stated in the Alternatives above; I'm picking the recommendation unless you flag one.
 
