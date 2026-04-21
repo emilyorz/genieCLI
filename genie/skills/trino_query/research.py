@@ -201,6 +201,7 @@ def _run_optimization_loop(
     for iteration in range(1, max_iterations + 1):
         output.print("")
         output.progress(f"  ── Iteration {iteration}/{max_iterations} ──")
+        iter_base_sql = best_sql  # snapshot for per-iteration diff in report
 
         # Build context for AI
         last_str = "N/A (first iteration)"
@@ -254,6 +255,7 @@ def _run_optimization_loop(
                 history.append({
                     "iteration": iteration, "status": "no_sql",
                     "metric": best_metric, "delta": 0.0, "hypothesis": "no SQL extracted",
+                    "base_sql": iter_base_sql, "candidate_sql": None,
                 })
                 continue
 
@@ -263,9 +265,9 @@ def _run_optimization_loop(
             for line in reply.split("\n"):
                 line = line.strip()
                 if line and not line.startswith("```") and not line.startswith("|"):
-                    hypothesis = line[:80]
+                    hypothesis = line
                     break
-        output.progress(f"  [Hypothesis] {hypothesis}")
+        output.progress(f"  [Hypothesis] {hypothesis[:80]}")
 
         # Guard 1: Lint check
         lint_ok, lint_msg = _lint_sql(candidate_sql)
@@ -275,6 +277,7 @@ def _run_optimization_loop(
             history.append({
                 "iteration": iteration, "status": "lint_failed",
                 "metric": best_metric, "delta": 0.0, "hypothesis": hypothesis,
+                "base_sql": iter_base_sql, "candidate_sql": candidate_sql,
             })
             continue
 
@@ -287,6 +290,7 @@ def _run_optimization_loop(
             history.append({
                 "iteration": iteration, "status": "exec_failed",
                 "metric": best_metric, "delta": 0.0, "hypothesis": hypothesis,
+                "base_sql": iter_base_sql, "candidate_sql": candidate_sql,
             })
             continue
 
@@ -311,6 +315,7 @@ def _run_optimization_loop(
             history.append({
                 "iteration": iteration, "status": "semantic_drift",
                 "metric": candidate_metric, "delta": delta, "hypothesis": hypothesis,
+                "base_sql": iter_base_sql, "candidate_sql": candidate_sql,
             })
             continue
 
@@ -350,6 +355,8 @@ def _run_optimization_loop(
             "metric": candidate_metric,
             "delta": delta,
             "hypothesis": hypothesis,
+            "base_sql": iter_base_sql,
+            "candidate_sql": candidate_sql,
         })
 
         # Early exit: 3 consecutive non-improvements → plateau
@@ -387,8 +394,31 @@ def _print_metrics(output, metrics: QueryMetrics) -> None:
                  f"splits={metrics.total_splits} rows={metrics.processed_rows}[/dim]")
 
 
+_VERDICT = {
+    "improved": "kept — new best",
+    "worse": "reverted — slower than current best",
+    "semantic_drift": "reverted — row results diverged from baseline",
+    "lint_failed": "reverted — failed lint",
+    "exec_failed": "reverted — execution error",
+    "no_sql": "skipped — no SQL block in AI reply",
+}
+
+
+def _iteration_diff(base_sql: str, candidate_sql: str) -> str:
+    """Unified diff scoped to a single iteration's change."""
+    import difflib
+    diff = difflib.unified_diff(
+        base_sql.splitlines(keepends=True),
+        candidate_sql.splitlines(keepends=True),
+        fromfile="base",
+        tofile="candidate",
+        n=2,
+    )
+    return "".join(diff).rstrip()
+
+
 def _generate_report(result: dict, metric_key: str, model: str, verify_runs: int) -> str:
-    """Generate a markdown report from optimization results."""
+    """Generate a markdown report — iteration-centric, single Best SQL block."""
     from datetime import datetime
 
     lines = [
@@ -402,61 +432,61 @@ def _generate_report(result: dict, metric_key: str, model: str, verify_runs: int
         "",
         "## Summary",
         "",
-        f"| Metric | Value |",
-        f"|--------|-------|",
+        "| Metric | Value |",
+        "|--------|-------|",
         f"| Baseline | {result['baseline_metric']:.1f} |",
         f"| Best | {result['best_metric']:.1f} |",
         f"| Improvement | {result['total_improvement']:+.1f} ({result['improvement_pct']:+.1f}%) |",
         f"| Iterations | {result['iterations']} ({result['kept']} kept) |",
         f"| Row count | {result['baseline_rows']} (preserved) |",
         "",
-        "## Iteration History",
+        "## Iteration history",
         "",
-        "| # | Status | Metric | Delta | Hypothesis |",
-        "|---|--------|--------|-------|------------|",
+        "| # | Status | Metric | Delta |",
+        "|---|--------|--------|-------|",
     ]
-
     for h in result["history"]:
         lines.append(
-            f"| {h['iteration']} | {h['status']} | {h['metric']:.1f} | "
-            f"{h['delta']:+.1f} | {h['hypothesis'][:60]} |"
+            f"| {h['iteration']} | {h['status']} | {h['metric']:.1f} | {h['delta']:+.1f} |"
         )
 
     lines.append("")
-    lines.append("## Original SQL")
+    lines.append("## Iterations")
     lines.append("")
-    lines.append("```sql")
-    lines.append(result["original_sql"])
-    lines.append("```")
-    lines.append("")
-
-    if result["best_sql"] != result["original_sql"]:
-        lines.append("## Optimized SQL")
+    for h in result["history"]:
+        lines.append(f"### Iteration {h['iteration']} — {h['status']}")
         lines.append("")
+        lines.append(f"**Hypothesis:** {h['hypothesis']}")
+        lines.append("")
+        lines.append(
+            f"**Metric:** {h['metric']:.1f} (delta {h['delta']:+.1f}) — "
+            f"{_VERDICT.get(h['status'], h['status'])}"
+        )
+        lines.append("")
+        candidate_sql = h.get("candidate_sql")
+        base_sql = h.get("base_sql")
+        if candidate_sql and base_sql:
+            diff_text = _iteration_diff(base_sql, candidate_sql)
+            if diff_text:
+                lines.append("```diff")
+                lines.append(diff_text)
+                lines.append("```")
+            else:
+                lines.append("_(candidate SQL identical to current best — no diff)_")
+            lines.append("")
+
+    lines.append("## Best SQL")
+    lines.append("")
+    if result["best_sql"] == result["original_sql"]:
+        lines.append("_No improvement kept. Original SQL is the best so far for this metric._")
+        lines.append("")
+        lines.append("```sql")
+        lines.append(result["original_sql"])
+        lines.append("```")
+    else:
         lines.append("```sql")
         lines.append(result["best_sql"])
         lines.append("```")
-        lines.append("")
-
-        # Side-by-side diff
-        import difflib
-        diff = difflib.unified_diff(
-            result["original_sql"].splitlines(keepends=True),
-            result["best_sql"].splitlines(keepends=True),
-            fromfile="Original",
-            tofile="Optimized",
-        )
-        diff_text = "".join(diff)
-        if diff_text:
-            lines.append("## Diff")
-            lines.append("")
-            lines.append("```diff")
-            lines.append(diff_text.rstrip())
-            lines.append("```")
-    else:
-        lines.append("## Result")
-        lines.append("")
-        lines.append("No improvement found. Original SQL is already optimal for this metric.")
 
     lines.append("")
     return "\n".join(lines)
@@ -581,19 +611,17 @@ def run_trino_research(
         output.print(f"    [{icon}] iter {h['iteration']}: {h['status']:<15s} "
                      f"metric={h['metric']:.1f} delta={h['delta']:+.1f}")
 
-    # Final SQL
-    if result["best_sql"] != result["original_sql"]:
-        output.print("\n  [yellow]Optimized SQL:[/yellow]")
-        for line in result["best_sql"].split("\n"):
-            output.print(f"    {line}")
-    else:
+    # Final SQL — full body lives in the report; terminal stays scannable.
+    if result["best_sql"] == result["original_sql"]:
         output.print("\n  [dim]No improvement found — original SQL unchanged.[/dim]")
 
     # Generate and save report
     report = _generate_report(result, metric, model, runs)
     from datetime import datetime
     report_name = f"trino-research-{datetime.now().strftime('%Y%m%d-%H%M%S')}.md"
-    report_path = Path.cwd() / report_name
+    report_dir = Path.cwd() / "report"
+    report_dir.mkdir(parents=True, exist_ok=True)
+    report_path = report_dir / report_name
     try:
         report_path.write_text(report)
         output.progress(f"\n  Report saved: {report_path}")
