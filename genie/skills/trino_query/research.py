@@ -156,6 +156,10 @@ def _run_optimization_loop(
     verify_runs: int,
     output,
     build_prompt: Callable[..., str],
+    *,
+    long_query_opt_in: bool = False,
+    long_query_threshold_s: Optional[int] = None,
+    max_fallbacks: Optional[int] = None,
 ) -> dict:
     """Run the optimization loop. Returns summary dict."""
     from genie.core.provider import CompletionRequest
@@ -176,6 +180,25 @@ def _run_optimization_loop(
     output.progress(f"  Baseline {metric_key}: {baseline_metric} (median of {verify_runs} runs)")
     output.progress(f"  Baseline row count: {baseline_rows}")
     _print_metrics(output, baseline["metrics"])
+
+    # ── Upfront cost gate (v28) ──
+    from genie.skills.mcp_trino.preflight import (
+        DEFAULT_LONG_QUERY_THRESHOLD_S,
+        DEFAULT_MAX_FALLBACKS,
+        check_long_query_gate,
+    )
+    threshold_s = long_query_threshold_s if long_query_threshold_s is not None else DEFAULT_LONG_QUERY_THRESHOLD_S
+    fallbacks = max_fallbacks if max_fallbacks is not None else DEFAULT_MAX_FALLBACKS
+    gate = check_long_query_gate(
+        baseline_wall_ms=float(getattr(baseline["metrics"], "wall_time_ms", 0) or 0),
+        max_iterations=max_iterations,
+        long_query_opt_in=long_query_opt_in,
+        threshold_s=threshold_s,
+        max_fallbacks=fallbacks,
+    )
+    if not gate.ok:
+        output.error(f"  [abort] {gate.message}")
+        return {"status": "aborted", "reason": "long_query_gate", "message": gate.message}
 
     # ── Session setup ──
     skill_prompt = build_prompt(True, model)
@@ -510,6 +533,11 @@ def run_trino_research(
     metric: Optional[str] = None,
     iterations: Optional[int] = None,
     runs: Optional[int] = None,
+    safe_limit: Optional[int] = None,
+    query_timeout: Optional[int] = None,
+    long_query_opt_in: bool = False,
+    long_query_threshold_s: Optional[int] = None,
+    max_fallbacks: Optional[int] = None,
 ) -> None:
     """Entry point for /trino-research command.
 
@@ -589,12 +617,18 @@ def run_trino_research(
         verify_runs=runs,
         output=output,
         build_prompt=build_prompt,
+        long_query_opt_in=long_query_opt_in,
+        long_query_threshold_s=long_query_threshold_s,
+        max_fallbacks=max_fallbacks,
     )
 
     # ── Print summary ──
     output.print("")
     if result["status"] == "failed":
         output.error(f"  Run failed: {result.get('error', 'unknown')}")
+        return
+    if result["status"] == "aborted":
+        # Gate message already surfaced by _run_optimization_loop.
         return
 
     output.print("  [yellow]══ Summary ══[/yellow]")

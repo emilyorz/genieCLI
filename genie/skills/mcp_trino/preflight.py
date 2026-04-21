@@ -121,6 +121,43 @@ def estimate_from_explain(explain_result: str) -> tuple[Optional[int], Optional[
     return rows, bytes_
 
 
+def plan_cost(
+    sql: str,
+    explain_runner,
+) -> tuple[Optional[int], Optional[int], Optional[object]]:
+    """Return (rows_est, bytes_est, raw_plan_json) from EXPLAIN (FORMAT JSON).
+
+    Args:
+        sql: SQL to plan-cost (caller is responsible for read-only check).
+        explain_runner: callable `(sql) -> str | None` that returns raw EXPLAIN
+            JSON text. If it returns falsy or raises, result is all-None.
+
+    The tuple members are independent — bytes_est can be None while rows_est is set.
+    raw_plan_json is the parsed plan (dict or list) for downstream callers that
+    want to walk it for structural signatures (T3); it is None when the raw
+    response isn't valid JSON.
+    """
+    if explain_runner is None:
+        return None, None, None
+    try:
+        raw = explain_runner(sql)
+    except Exception:
+        return None, None, None
+    if not raw:
+        return None, None, None
+
+    rows, bytes_ = estimate_from_explain(raw)
+
+    try:
+        plan_json = json.loads(raw) if isinstance(raw, str) else raw
+    except (json.JSONDecodeError, TypeError):
+        plan_json = None
+    if not isinstance(plan_json, (dict, list)):
+        plan_json = None
+
+    return rows, bytes_, plan_json
+
+
 def run_preflight(
     sql: str,
     explain_runner,
@@ -175,6 +212,92 @@ def run_preflight(
         estimated_rows=est_rows,
         estimated_bytes=est_bytes,
     )
+
+
+DEFAULT_LONG_QUERY_THRESHOLD_S = 60
+DEFAULT_MAX_FALLBACKS = 3
+PER_CANDIDATE_TIMEOUT_FACTOR = 1.2
+
+
+class LongQueryAbort(RuntimeError):
+    """Raised by the iteration loop when the upfront cost gate rejects a run.
+
+    Carries the user-facing message so the outer entry-point can surface it
+    without re-deriving the prediction math.
+    """
+
+    def __init__(self, message: str, baseline_s: float, predicted_total_s: float):
+        super().__init__(message)
+        self.baseline_s = baseline_s
+        self.predicted_total_s = predicted_total_s
+
+
+@dataclass
+class LongQueryGateResult:
+    """Verdict from the upfront cost gate.
+
+    - `ok=True`: caller may proceed with iteration.
+    - `ok=False`: caller should abort and surface `message` to the user.
+    """
+    ok: bool
+    message: str = ""
+    baseline_s: float = 0.0
+    predicted_total_s: float = 0.0
+
+
+def check_long_query_gate(
+    baseline_wall_ms: float,
+    max_iterations: int,
+    *,
+    long_query_opt_in: bool,
+    threshold_s: int = DEFAULT_LONG_QUERY_THRESHOLD_S,
+    max_fallbacks: int = DEFAULT_MAX_FALLBACKS,
+) -> LongQueryGateResult:
+    """Decide whether a run should be aborted because the baseline is too slow.
+
+    Worst-case wall-time model matches v28 PLAN:
+        predicted_total = baseline + (iter × 1.2 × baseline) + baseline + (fallbacks × baseline)
+    i.e. one baseline sample + iter candidate measurements capped at 1.2× baseline
+    + one final L3 verify + up to `max_fallbacks` L3 fallbacks.
+    """
+    baseline_s = baseline_wall_ms / 1000.0
+    predicted_total_s = baseline_s * (
+        1  # baseline
+        + max_iterations * PER_CANDIDATE_TIMEOUT_FACTOR
+        + 1  # final L3 verify on winner
+        + max_fallbacks  # K-retry L3 fallbacks worst-case
+    )
+
+    if baseline_s <= threshold_s:
+        return LongQueryGateResult(ok=True, baseline_s=baseline_s,
+                                   predicted_total_s=predicted_total_s)
+
+    if long_query_opt_in:
+        return LongQueryGateResult(ok=True, baseline_s=baseline_s,
+                                   predicted_total_s=predicted_total_s)
+
+    message = (
+        f"baseline wall-time {baseline_s:.1f}s exceeds --long-query-threshold "
+        f"{threshold_s}s; predicted worst-case total "
+        f"{predicted_total_s / 60:.1f} min "
+        f"(iter={max_iterations}, fallbacks={max_fallbacks}). "
+        f"Pass --long-query to proceed anyway."
+    )
+    return LongQueryGateResult(
+        ok=False, message=message,
+        baseline_s=baseline_s, predicted_total_s=predicted_total_s,
+    )
+
+
+def make_query_max_run_time_sql(baseline_wall_ms: float) -> str:
+    """Build a `SET SESSION query_max_run_time = '<N>ms'` statement.
+
+    N = ceil(1.2 × baseline_wall_ms), clamped to at least 1000ms so that tiny
+    baselines don't produce absurdly short timeouts during smoke runs.
+    """
+    import math
+    n_ms = max(1000, int(math.ceil(baseline_wall_ms * PER_CANDIDATE_TIMEOUT_FACTOR)))
+    return f"SET SESSION query_max_run_time = '{n_ms}ms'"
 
 
 def apply_safe_limit(sql: str, limit: int) -> str:

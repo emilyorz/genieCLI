@@ -1056,6 +1056,10 @@ def run_mcp_enhancement(
     reasoning: str = "disable",
     output=None,
     build_prompt: Callable[..., str] | None = None,
+    *,
+    long_query_opt_in: bool = False,
+    long_query_threshold_s: Optional[int] = None,
+    max_fallbacks: Optional[int] = None,
 ) -> EnhancementReport:
     """Run the MCP-based query enhancement loop.
 
@@ -1093,6 +1097,43 @@ def run_mcp_enhancement(
         output.progress(f"  Baseline {metric_key}: {baseline.median_metric:.1f} (median of {verify_runs} runs)")
         output.progress(f"  Baseline rows: {baseline.row_count}")
         output.print(f"    [dim]{baseline.metrics.summary()}[/dim]")
+
+    # ── Upfront cost gate (v28) ──
+    from .preflight import (
+        DEFAULT_LONG_QUERY_THRESHOLD_S,
+        DEFAULT_MAX_FALLBACKS,
+        LongQueryAbort,
+        check_long_query_gate,
+        make_query_max_run_time_sql,
+    )
+    threshold_s = long_query_threshold_s if long_query_threshold_s is not None else DEFAULT_LONG_QUERY_THRESHOLD_S
+    fallbacks = max_fallbacks if max_fallbacks is not None else DEFAULT_MAX_FALLBACKS
+    gate = check_long_query_gate(
+        baseline_wall_ms=float(baseline.metrics.wall_time_ms or baseline.metrics.query_time_ms or 0),
+        max_iterations=max_iterations,
+        long_query_opt_in=long_query_opt_in,
+        threshold_s=threshold_s,
+        max_fallbacks=fallbacks,
+    )
+    if not gate.ok:
+        if output:
+            output.error(f"  [abort] {gate.message}")
+        raise LongQueryAbort(gate.message, gate.baseline_s, gate.predicted_total_s)
+
+    # ── Per-candidate wall-clock kill (best-effort) ──
+    # mcp-trino may or may not persist SET SESSION across separate tool calls.
+    # We emit it anyway; if the server ignores it, candidates that overshoot
+    # 1.2× baseline will still burn wall-time but will not corrupt correctness.
+    baseline_wall_ms = float(baseline.metrics.wall_time_ms or baseline.metrics.query_time_ms or 0)
+    if baseline_wall_ms > 0:
+        timeout_sql = make_query_max_run_time_sql(baseline_wall_ms)
+        try:
+            _execute_via_mcp(client, timeout_sql)
+            if output:
+                output.progress(f"  Session property set: {timeout_sql}")
+        except Exception as exc:
+            if output:
+                output.progress(f"  [dim]Session property emit failed (best-effort): {exc}[/dim]")
 
     # ── EXPLAIN ANALYZE baseline ──
     original_explain: ExplainAnalyzeResult | None = None
@@ -1544,6 +1585,9 @@ def run_trino_research_via_mcp(
     runs: Optional[int] = None,
     safe_limit: Optional[int] = None,
     query_timeout: Optional[int] = None,
+    long_query_opt_in: bool = False,
+    long_query_threshold_s: Optional[int] = None,
+    max_fallbacks: Optional[int] = None,
 ) -> None:
     """MCP-routed entry point for /trino-research.
 
@@ -1678,18 +1722,26 @@ def run_trino_research_via_mcp(
     )
 
     # ── Run MCP enhancement loop ──
-    report = run_mcp_enhancement(
-        client=client,
-        sql=sql,
-        metric_key=metric,
-        max_iterations=iterations,
-        verify_runs=runs,
-        provider=provider,
-        model=model,
-        reasoning=reasoning,
-        output=output,
-        build_prompt=build_prompt,
-    )
+    from .preflight import LongQueryAbort
+    try:
+        report = run_mcp_enhancement(
+            client=client,
+            sql=sql,
+            metric_key=metric,
+            max_iterations=iterations,
+            verify_runs=runs,
+            provider=provider,
+            model=model,
+            reasoning=reasoning,
+            output=output,
+            build_prompt=build_prompt,
+            long_query_opt_in=long_query_opt_in,
+            long_query_threshold_s=long_query_threshold_s,
+            max_fallbacks=max_fallbacks,
+        )
+    except LongQueryAbort:
+        # Message already printed by run_mcp_enhancement via output.error.
+        return
 
     # Save report markdown (same pattern as direct path)
     try:

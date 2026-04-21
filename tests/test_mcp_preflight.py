@@ -6,11 +6,16 @@ import json
 import pytest
 
 from genie.skills.mcp_trino.preflight import (
+    DEFAULT_LONG_QUERY_THRESHOLD_S,
+    PER_CANDIDATE_TIMEOUT_FACTOR,
     PreflightBudget,
     PreflightReport,
     apply_safe_limit,
+    check_long_query_gate,
     check_read_only,
     estimate_from_explain,
+    make_query_max_run_time_sql,
+    plan_cost,
     run_preflight,
 )
 
@@ -140,6 +145,127 @@ class TestRunPreflight:
             raise RuntimeError("mcp boom")
         report = run_preflight("SELECT 1", explain_runner=raiser)
         assert report.ok  # read-only passes; explain failure is non-blocking
+
+
+class TestPlanCost:
+    def test_happy_path_returns_rows_bytes_and_parsed_plan(self):
+        explain = json.dumps({
+            "estimates": [
+                {"outputRowCount": 1234, "outputSizeInBytes": 55_555}
+            ],
+            "children": [],
+        })
+        rows, bytes_, plan = plan_cost("SELECT 1", lambda s: explain)
+        assert rows == 1234
+        assert bytes_ == 55_555
+        assert isinstance(plan, dict)
+        assert plan["estimates"][0]["outputRowCount"] == 1234
+
+    def test_missing_estimates_returns_none_rows_and_bytes_but_keeps_plan(self):
+        explain = json.dumps({"children": [{"name": "OutputNode"}]})
+        rows, bytes_, plan = plan_cost("SELECT 1", lambda s: explain)
+        assert rows is None
+        assert bytes_ is None
+        assert isinstance(plan, dict)
+        assert plan["children"][0]["name"] == "OutputNode"
+
+    def test_malformed_json_returns_all_none_without_raising(self):
+        rows, bytes_, plan = plan_cost("SELECT 1", lambda s: "not-valid-json{")
+        assert rows is None
+        assert bytes_ is None
+        assert plan is None
+
+    def test_explain_runner_raises_returns_all_none(self):
+        def boom(s):
+            raise RuntimeError("mcp down")
+        assert plan_cost("SELECT 1", boom) == (None, None, None)
+
+    def test_explain_runner_returns_none_returns_all_none(self):
+        assert plan_cost("SELECT 1", lambda s: None) == (None, None, None)
+
+    def test_none_runner_returns_all_none(self):
+        assert plan_cost("SELECT 1", None) == (None, None, None)
+
+    def test_accepts_bare_list_plan_shape(self):
+        # Trino EXPLAIN JSON shouldn't be a list, but defensively we tolerate it.
+        explain = json.dumps([{"outputRowCount": 10, "outputSizeInBytes": 500}])
+        rows, bytes_, plan = plan_cost("SELECT 1", lambda s: explain)
+        # estimate_from_explain only handles dict-root, so rows/bytes None here;
+        # but raw plan should round-trip as a list so T3 can still inspect it.
+        assert rows is None
+        assert bytes_ is None
+        assert isinstance(plan, list)
+
+
+class TestLongQueryGate:
+    def test_short_baseline_passes_without_opt_in(self):
+        r = check_long_query_gate(
+            baseline_wall_ms=5_000, max_iterations=5, long_query_opt_in=False
+        )
+        assert r.ok
+        assert r.message == ""
+        assert r.baseline_s == 5.0
+
+    def test_long_baseline_aborts_without_opt_in(self):
+        r = check_long_query_gate(
+            baseline_wall_ms=90_000, max_iterations=5,
+            long_query_opt_in=False, threshold_s=60,
+        )
+        assert not r.ok
+        assert "exceeds --long-query-threshold 60s" in r.message
+        assert "Pass --long-query" in r.message
+        assert r.baseline_s == 90.0
+
+    def test_long_baseline_proceeds_with_opt_in(self):
+        r = check_long_query_gate(
+            baseline_wall_ms=3_600_000, max_iterations=5,
+            long_query_opt_in=True, threshold_s=60, max_fallbacks=3,
+        )
+        assert r.ok
+        assert r.message == ""
+        # baseline + 5*1.2*baseline + baseline(final verify) + 3*baseline(fallbacks)
+        # = 3600 * (1 + 6 + 1 + 3) = 3600 * 11 = 39600s
+        assert r.predicted_total_s == 3600.0 * (1 + 5 * PER_CANDIDATE_TIMEOUT_FACTOR + 1 + 3)
+
+    def test_custom_threshold_and_fallbacks(self):
+        r = check_long_query_gate(
+            baseline_wall_ms=30_000, max_iterations=3,
+            long_query_opt_in=False, threshold_s=10, max_fallbacks=1,
+        )
+        assert not r.ok
+        assert "exceeds --long-query-threshold 10s" in r.message
+        assert "fallbacks=1" in r.message
+
+    def test_message_reports_predicted_total_in_minutes(self):
+        r = check_long_query_gate(
+            baseline_wall_ms=120_000, max_iterations=5,
+            long_query_opt_in=False, threshold_s=60, max_fallbacks=3,
+        )
+        assert not r.ok
+        # predicted_total_s > 60 → message should contain "min"
+        assert "min" in r.message
+
+
+class TestMakeQueryMaxRunTimeSql:
+    def test_builds_valid_set_session_syntax(self):
+        sql = make_query_max_run_time_sql(10_000)  # 10s baseline
+        # 1.2 × 10_000 = 12_000 ms
+        assert sql == "SET SESSION query_max_run_time = '12000ms'"
+
+    def test_clamps_tiny_baseline_to_1000ms_minimum(self):
+        sql = make_query_max_run_time_sql(100)  # would be 120ms otherwise
+        assert sql == "SET SESSION query_max_run_time = '1000ms'"
+
+    def test_rounds_up_fractional_ms(self):
+        # 500ms × 1.2 = 600ms, but floor is 1000ms → clamp wins here; test with larger baseline
+        sql = make_query_max_run_time_sql(10_000.4)
+        # 1.2 × 10000.4 = 12000.48 → ceil → 12001 ms
+        assert sql == "SET SESSION query_max_run_time = '12001ms'"
+
+    def test_one_hour_baseline(self):
+        sql = make_query_max_run_time_sql(3_600_000)  # 1h
+        # 1.2 × 3.6M = 4.32M ms = 72 min
+        assert sql == "SET SESSION query_max_run_time = '4320000ms'"
 
 
 class TestApplySafeLimit:

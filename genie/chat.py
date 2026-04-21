@@ -286,17 +286,22 @@ def _print_trino_research_help(output) -> None:
     output.print("")
     output.print("  [dim]Usage[/dim]")
     output.print("    /trino-research [--file <path>] [--metric <m>] [--iterations <n>] [--runs <n>]")
-    output.print("                    [--safe-limit <n>] [--query-timeout <sec>] [--direct]")
+    output.print("                    [--safe-limit <n>] [--query-timeout <sec>]")
+    output.print("                    [--long-query] [--long-query-threshold <sec>] [--max-fallbacks <n>]")
+    output.print("                    [--direct]")
     output.print("")
     output.print("  [dim]Flags[/dim]")
-    output.print("    --file <path>        SQL file; prompts interactively if omitted")
-    output.print("    --metric <m>         query_time_ms | cpu_time_ms | wall_time_ms |")
-    output.print("                         physical_input_bytes | processed_rows | total_splits")
-    output.print("    --iterations <n>     max optimization rounds (default 5)")
-    output.print("    --runs <n>           runs per candidate for median (default 3)")
-    output.print("    --safe-limit <n>     wrap SQL with outer LIMIT n (changes semantics!)")
-    output.print("    --query-timeout <s>  per-query timeout (default 300s)")
-    output.print("    --direct             bypass MCP, use trino driver directly")
+    output.print("    --file <path>             SQL file; prompts interactively if omitted")
+    output.print("    --metric <m>              query_time_ms | cpu_time_ms | wall_time_ms |")
+    output.print("                              physical_input_bytes | processed_rows | total_splits")
+    output.print("    --iterations <n>          max optimization rounds (default 5)")
+    output.print("    --runs <n>                runs per candidate for median (default 3)")
+    output.print("    --safe-limit <n>          wrap SQL with outer LIMIT n (changes semantics!)")
+    output.print("    --query-timeout <s>       per-query timeout (default 300s)")
+    output.print("    --long-query             opt-in acknowledgement that the baseline is slow")
+    output.print("    --long-query-threshold <s> abort without --long-query when baseline exceeds this (default 60s)")
+    output.print("    --max-fallbacks <n>       K-retry cap for final L3 row-equivalence verify (default 3)")
+    output.print("    --direct                  bypass MCP, use trino driver directly")
     output.print("")
     output.print("  [dim]Examples[/dim]")
     output.print("    /trino-research --file query.sql --metric query_time_ms --iterations 5")
@@ -809,7 +814,7 @@ def _chat_loop(
             if "--help" in args or "-h" in args:
                 _print_trino_research_help(output)
                 continue
-            # Parse optional flags: --file, --metric, --iterations, --runs, --direct, --safe-limit, --query-timeout
+            # Parse optional flags
             kwargs = {}
             force_direct = False
             i = 0
@@ -831,6 +836,15 @@ def _chat_loop(
                     i += 2
                 elif args[i] == "--query-timeout" and i + 1 < len(args):
                     kwargs["query_timeout"] = int(args[i + 1])
+                    i += 2
+                elif args[i] == "--long-query":
+                    kwargs["long_query_opt_in"] = True
+                    i += 1
+                elif args[i] == "--long-query-threshold" and i + 1 < len(args):
+                    kwargs["long_query_threshold_s"] = int(args[i + 1])
+                    i += 2
+                elif args[i] == "--max-fallbacks" and i + 1 < len(args):
+                    kwargs["max_fallbacks"] = int(args[i + 1])
                     i += 2
                 elif args[i] == "--direct":
                     force_direct = True
