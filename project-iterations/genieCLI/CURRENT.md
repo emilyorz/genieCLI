@@ -4,10 +4,11 @@
 
 - **Project:** genieCLI
 - **Iteration:** 28
-- **Status:** DO — ack'd by Sam via Telegram msg 824 ("option !" = Option 1 — L1 + L3 + K-retry tiered correctness). T2 + T5 complete (2026-04-22); T1/T3/T4/T7 blocked on live Trino env.
+- **Status:** DO — partial landing (T2 + T5 + T6 complete 2026-04-22); T1/T3/T4/T7 **carried over** to next session pending live Trino env at localhost:8811. Session parked at review/waiting per Sam's 2026-04-22 directive.
 - **Owner:** Emily (planning + execution); Sam picks direction
 - **Started:** 2026-04-20
-- **Updated:** 2026-04-22T11:00+0800
+- **Updated:** 2026-04-22T11:20+0800
+- **Resume point:** T1 is the single unblocker. When localhost:8811 is back up, run `curl -s -m 3 http://localhost:8811/ -o /dev/null -w "%{http_code}"` — expect 200. Then T1 → T3 → T4 → T7 can execute in sequence. No PLAN rework needed; Option 1 is locked.
 - **Focus:** `/trino-research` long-query handling — stop burning N × baseline_time on slow queries by replacing per-iteration execution with EXPLAIN-based plan-cost ranking + tiered correctness guards + upfront cost gate + per-candidate wall-clock kill.
 - **Touched features:** [trino-research](features/trino-research.md)
 
@@ -171,7 +172,7 @@ All other design choices (ranking metric = plan cost, gate mechanism = `--long-q
 | T3 | pending | P0 | `_explain_plan_signature` + `_structural_equivalent` — walks plan JSON, extracts output columns / agg functions / group-by keys / filter predicates into a frozen dataclass. Equivalence: hard on first three, soft (log-warn) on fourth. Unit tests use T1 fixtures. | trino-research | Edit + pytest | 6+ unit tests pass: signature extraction for simple SELECT / agg / join / CTE; equivalence accepts reordered output columns; rejects changed agg function; rejects changed group-by; accepts semantically-equivalent filter rewrite (via warn-not-reject). | **Blocked on T1 fixtures** (need real Trino EXPLAIN JSON to pin field names). |
 | T4 | pending | P0 | Rewrite `_run_optimization_loop`: replace per-iter `_measure(capture_rows=True)` with `_plan_cost` + L1 structural check + new history statuses. After loop: re-rank, pick top candidate, full `_measure` + `_results_equivalent`, K-retry to next-ranked on fail, emit `no_verifiable_improvement` if all fail. | trino-research | Edit + pytest | Existing 647 tests still pass. New tests cover: skip-execution-on-L1-reject, K-retry fallback on L3 fail, `no_verifiable_improvement` when all candidates fail. | Largest code change; depends on T2 (done) + T3 (blocked). Under Option 1. |
 | T5 | done | P0 | Upfront cost gate + per-candidate wall-clock kill + 3 new flags (`--long-query`, `--long-query-threshold`, `--max-fallbacks`). | trino-research | Edit + pytest | ✓ 9 unit tests pass + 647 total (see Reports). Gate wired into both MCP + direct paths; session property emitted best-effort on MCP. | Completed 2026-04-22 — ship with T2. Live-env confirmation of SET SESSION persistence deferred to T7 smoke. |
-| T6 | pending | P1 | `features/trino-research.md` — Design log (v28 full rationale + alternatives + L1 soft/hard split), Limits (L2 deferred with revisit condition), Iteration touchpoint, Current capability update. | trino-research | Edit | Re-read confirms Design log v28 entry, Limits entry on L2, Iteration touchpoint for v28, Current capability flags listed. | Doc-track VERIFY enforcement (SKILL.md rule 10). |
+| T6 | done | P1 | `features/trino-research.md` — Design log v28 entry (T2+T5 rationale + alternatives + Option 1 correctness tier), Limits (L2 deferred, SET SESSION persistence unverified on MCP, direct-path session property deferred), Iteration touchpoint v28, Current capability updated with long-query gate. | trino-research | Edit | ✓ 4 sections updated; validate_ledger.py touchpoint regex matches. | Completed 2026-04-22 — ships with T2+T5 commit as follow-up doc commit. |
 | T7 | pending | P1 | Smoke run — dry-run the iteration loop end-to-end against localhost:8811 or Sam's Trino with `SELECT 1` (confirms no regression) + one `EXPLAIN (FORMAT JSON)`-returning query (confirms L1 happy path). Not a long-query test. | trino-research | Bash + mcp trino tool | Terminal output shows new status values (`plan_cost_better` etc.), final report renders via v27 layout, no exceptions. | Real long-query verification (baseline ≥ 1h) deferred to whenever Sam has such a query to throw at it; not a blocker for v28 merge. |
 
 ## Reports
@@ -186,12 +187,16 @@ All other design choices (ranking metric = plan cost, gate mechanism = `--long-q
   - Verification: 647 tests pass (up from 641; 16 new tests in `test_mcp_preflight.py`). Sanity check on Sam's 1h-baseline scenario: no-opt-in produces `baseline wall-time 3600.0s exceeds --long-query-threshold 60s; predicted worst-case total 660.0 min (iter=5, fallbacks=3). Pass --long-query to proceed anyway.` opt-in produces predicted_total = 11h (= 1 + 6 + 1 + 3 × baseline, matching PLAN math).
   - Live-env items still blocked for T5: no end-to-end confirmation that mcp-trino honours the `SET SESSION` across separate tool calls. Behaviour is best-effort; T1 probe + T7 smoke will confirm.
 
-## Blocked
+## Blocked / Carryover to next session
 
-- **T1** blocks on a Trino environment handy for EXPLAIN probing — localhost:8811 currently returns HTTP 000 (MCP-trino server not running). Same env as v25. Expected to take <10 min once server is up.
-- **T3** blocks transitively on T1 — L1 structural signature extractor needs real EXPLAIN JSON fixtures to pin field names (the JSON shape is reused across tests).
-- **T4** blocks transitively on T3 — the loop rewrite consumes `_structural_equivalent`. It could land with L1 omitted (Option 2 fallback), but Sam ack'd Option 1 so we wait.
-- **T7** blocks on the same Trino env as T1 (end-to-end smoke against localhost:8811).
+All four items below are parked pending the same unblocker (localhost:8811 up). They are **not** v28-retro parks (no age ticks) — they are in-flight v28 Todos explicitly carried across a session boundary at Sam's direction (2026-04-22). When resumed, they stay Option 1 under the existing PLAN; no design re-ack required.
+
+- **T1 (probe) — carryover.** Blocker: localhost:8811 returns HTTP 000 (MCP-trino server down). Resume action: bring server up → run T1 exactly as specified in Todo row (capture 2-3 EXPLAIN JSON samples under `tests/fixtures/explain_plans/` + confirm `query_max_run_time` session-property error code). Estimated <10 min once server is up.
+- **T3 (`_explain_plan_signature` + `_structural_equivalent`) — carryover.** Transitive on T1 (needs fixtures for tests and for field-path extraction). No independent start.
+- **T4 (loop rewrite) — carryover.** Transitive on T3 under Option 1. Would also fold in: direct-path session-property plumbing via `connection.py` `session_properties` kwarg (deferred from T5). No independent start under Option 1.
+- **T7 (smoke run) — carryover.** Requires T1/T3/T4 landed and localhost:8811 reachable. End-to-end acceptance test + confirms mcp-trino's SET SESSION persistence (flagged as open question in Limits v28).
+
+Next session's entry point should: (1) read STATUS.md's Active Iteration line (v28 DO — partial), (2) read the Resume point field in this file's Basic Info, (3) probe localhost:8811 — if up, go to T1; if still down, raise with Sam rather than start a parallel workstream.
 
 ## Retro
 

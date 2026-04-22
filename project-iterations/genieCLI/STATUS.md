@@ -5,11 +5,13 @@
 
 ## Active Iteration
 
-- **Ledger:** [CURRENT.md](CURRENT.md) (v28)
-- **Status:** PLAN — open, awaiting Sam's ack on Carryover preview vs alternative Focus
-- **Focus:** _(unset — Carryover preview: PLAN-time validator dry-run + Hypothesis prompt structure)_
-- **Touched features:** _(unset)_
+- **Ledger:** [CURRENT.md](CURRENT.md) (v28 — partial landing, session parked at review/waiting 2026-04-22)
+- **Status:** DO — T2 + T5 + T6 complete; **T1 / T3 / T4 / T7 carried over** (all blocked on localhost:8811 MCP-trino being up). No design re-ack needed — Option 1 (L1 + L3 + K=3 retry) is locked.
+- **Focus:** `/trino-research` long-query handling — Baseline × N-iteration × N-run geometric blow-up resolved for the upfront gate; L1 structural-invariant loop rewrite pending live-env probe.
+- **Touched features:** [trino-research](features/trino-research.md)
 - **Started:** 2026-04-20
+- **Last commit:** `9c5d7a6` feat(trino-research): upfront cost gate + plan_cost helper (v28 T2 + T5) — not yet pushed (Sam's hold)
+- **Resume action:** `curl -s -m 3 -o /dev/null -w "%{http_code}\n" http://localhost:8811/` — if 200, pick up T1 from CURRENT.md; if 000, flag to Sam rather than start parallel work.
 
 ## Next Iteration Focus (preview from v27 retro)
 
