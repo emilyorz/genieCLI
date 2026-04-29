@@ -1,0 +1,13 @@
+{
+  "name": "Output[col]",
+  "descriptor": {"columnNames": "[col]"},
+  "estimates": [{"outputRowCount": 950.0, "outputSizeInBytes": 7600.0}],
+  "children": [
+    {
+      "name": "TableScan[hive.default.t]",
+      "descriptor": {"table": "hive.default.t"},
+      "estimates": [{"outputRowCount": 950.0, "outputSizeInBytes": 7600.0}],
+      "children": []
+    }
+  ]
+}

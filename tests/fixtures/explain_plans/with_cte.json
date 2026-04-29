@@ -1,0 +1,20 @@
+{
+  "name": "Output[x]",
+  "descriptor": {"columnNames": "[x]"},
+  "estimates": [{"outputRowCount": 100.0}],
+  "children": [
+    {
+      "name": "Filter",
+      "descriptor": {"predicate": "(x > 10)"},
+      "estimates": [{"outputRowCount": 100.0}],
+      "children": [
+        {
+          "name": "TableScan[hive.default.t]",
+          "descriptor": {"table": "hive.default.t"},
+          "estimates": [{"outputRowCount": 1000.0}],
+          "children": []
+        }
+      ]
+    }
+  ]
+}
