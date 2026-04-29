@@ -1086,26 +1086,76 @@ def run_mcp_enhancement(
         output.progress(f"  Server: {client.config.url}")
         output.progress(f"  Metric: {metric_key} | Iterations: {max_iterations} | Verify: {verify_runs} runs")
 
+    # ── Static analysis (cheap; runs in both has-data and no-data paths) ──
+    from genie.skills.trino_query.sql_static import analyze as static_analyze
+    try:
+        static_report = static_analyze(sql)
+    except Exception as exc:
+        if output:
+            output.progress(f"  [warn] static analysis skipped: {exc}")
+        static_report = None
+
     # ── Baseline ──
     if output:
         output.progress("  Measuring baseline...")
 
-    baseline = _measure_mcp(client, sql, metric_key, verify_runs, capture_rows=True,
-                            output=output, label="baseline")
+    from .preflight import (
+        DEFAULT_LONG_QUERY_THRESHOLD_S,
+        DEFAULT_MAX_FALLBACKS,
+        LongQueryAbort,
+        NoDataDetected,
+        check_long_query_gate,
+        detect_no_data_reason,
+        make_query_max_run_time_sql,
+    )
+
+    baseline = None
+    baseline_exc: BaseException | None = None
+    try:
+        baseline = _measure_mcp(client, sql, metric_key, verify_runs, capture_rows=True,
+                                output=output, label="baseline")
+    except Exception as exc:
+        baseline_exc = exc
+
+    # ── No-data dispatch (v28 T9 — wired into MCP path) ──
+    no_data = detect_no_data_reason(
+        baseline_row_count=baseline.row_count if baseline else None,
+        baseline_exc=baseline_exc,
+    )
+    if no_data is not None:
+        if output:
+            if no_data == "table_not_found":
+                output.progress(f"  [yellow]No-data path:[/yellow] table/schema not found — switching to static analysis report")
+            else:
+                output.progress(f"  [yellow]No-data path:[/yellow] baseline returned 0 rows — switching to static analysis report")
+        from genie.skills.trino_query.research import _run_no_data_path
+        result = _run_no_data_path(
+            provider=provider,
+            model=model,
+            reasoning=reasoning,
+            original_sql=sql,
+            no_data_reason=no_data,
+            static_report=static_report,
+            baseline_exc=baseline_exc,
+            output=output,
+        )
+        raise NoDataDetected(no_data, result)
+
+    if baseline_exc is not None:
+        # Real failure — not a no-data case, propagate
+        raise baseline_exc
 
     if output:
         output.progress(f"  Baseline {metric_key}: {baseline.median_metric:.1f} (median of {verify_runs} runs)")
         output.progress(f"  Baseline rows: {baseline.row_count}")
         output.print(f"    [dim]{baseline.metrics.summary()}[/dim]")
+        if static_report and static_report.findings:
+            output.progress(
+                f"  Static analysis: {static_report.summary} "
+                f"({len(static_report.findings)} finding(s))"
+            )
 
     # ── Upfront cost gate (v28) ──
-    from .preflight import (
-        DEFAULT_LONG_QUERY_THRESHOLD_S,
-        DEFAULT_MAX_FALLBACKS,
-        LongQueryAbort,
-        check_long_query_gate,
-        make_query_max_run_time_sql,
-    )
     threshold_s = long_query_threshold_s if long_query_threshold_s is not None else DEFAULT_LONG_QUERY_THRESHOLD_S
     fallbacks = max_fallbacks if max_fallbacks is not None else DEFAULT_MAX_FALLBACKS
     gate = check_long_query_gate(
@@ -1722,7 +1772,7 @@ def run_trino_research_via_mcp(
     )
 
     # ── Run MCP enhancement loop ──
-    from .preflight import LongQueryAbort
+    from .preflight import LongQueryAbort, NoDataDetected
     try:
         report = run_mcp_enhancement(
             client=client,
@@ -1741,6 +1791,18 @@ def run_trino_research_via_mcp(
         )
     except LongQueryAbort:
         # Message already printed by run_mcp_enhancement via output.error.
+        return
+    except NoDataDetected as nd:
+        # No-data dispatch fired: write static-analysis report instead of EnhancementReport.
+        try:
+            report_dir = Path.cwd() / "report"
+            report_dir.mkdir(parents=True, exist_ok=True)
+            report_name = f"trino-research-nodata-{datetime.now().strftime('%Y%m%d-%H%M%S')}.md"
+            report_path = report_dir / report_name
+            report_path.write_text(nd.result.get("report_markdown", ""))
+            output.progress(f"\n  Report saved: {report_path}")
+        except Exception as exc:
+            output.error(f"  Failed to save no-data report: {exc}")
         return
 
     # Save report markdown (same pattern as direct path)

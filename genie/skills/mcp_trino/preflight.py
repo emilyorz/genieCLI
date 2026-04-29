@@ -232,6 +232,20 @@ class LongQueryAbort(RuntimeError):
         self.predicted_total_s = predicted_total_s
 
 
+class NoDataDetected(RuntimeError):
+    """Raised when baseline returns 0 rows or hits TABLE_NOT_FOUND.
+
+    Short-circuits the iteration loop so the entry-point can write the
+    static-analysis no-data report instead. Carries the result dict from
+    `_run_no_data_path` so the caller doesn't re-derive it.
+    """
+
+    def __init__(self, reason: str, result: dict):
+        super().__init__(f"no-data dispatch: {reason}")
+        self.reason = reason
+        self.result = result
+
+
 @dataclass
 class LongQueryGateResult:
     """Verdict from the upfront cost gate.
