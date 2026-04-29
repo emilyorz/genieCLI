@@ -264,7 +264,11 @@ else:                                                                           
 - **Delta from v28 PLAN baseline:** +77 net tests vs 657 baseline → **657 + 77 = 734 expected, 724 + 10 skip observed = 734 ✓**
 - **New test files:** `test_sql_static_rules.py` (25) + `test_sql_static_orchestrator.py` (11) + `test_plan_signature.py` (14) + `test_run_loop_mode_dispatch.py` (19) + `test_plan_cost_loop.py` (8) = **77 new**
 - **New source files:** `plan_signature.py` (140 lines), `sql_static/__init__.py` (~120 lines) + 8 rule modules under `sql_static/rules/`
-- **Modified source files:** `mcp_trino/preflight.py` (+ `detect_no_data_reason`), `trino_query/research.py` (+ `_format_static_findings`, `_no_data_report`, `_run_no_data_path`, `_run_plan_cost_loop`, dispatch in `_run_optimization_loop`)
+- **Modified source files:** `mcp_trino/preflight.py` (+ `detect_no_data_reason`, `NoDataDetected`), `trino_query/research.py` (+ `_format_static_findings`, `_no_data_report`, `_run_no_data_path`, `_run_plan_cost_loop`, dispatch in `_run_optimization_loop`), `mcp_trino/research.py` (no-data dispatch wired into `run_mcp_enhancement` post-baseline + caller catches `NoDataDetected`)
+
+## Hotfix log
+
+- **bd1a97a (2026-04-29 post-push)** — Sam smoke caught: T9 no-data dispatch only landed on `--direct` path; MCP path (`run_mcp_enhancement`, the production default) never called `detect_no_data_reason`, so a 0-row baseline still iterated uselessly with all-zero metrics. Wired symmetric dispatch into MCP path + new `NoDataDetected` exception caught by entry-point. Confirmed working by Sam (msg 1132 "可以的，沒有問題"). **Lesson saved to dual-path memory** (`feedback_dual_path_dispatch.md`): cross-cutting changes to `/trino-research` must touch BOTH `_run_optimization_loop` and `run_mcp_enhancement`. Same failure shape as v25 metric-pipeline saga (fix-on-one-path).
 
 ## Blocked / Carryover to next session
 
