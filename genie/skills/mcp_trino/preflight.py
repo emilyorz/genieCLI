@@ -306,3 +306,47 @@ def apply_safe_limit(sql: str, limit: int) -> str:
         return sql
     stripped = sql.strip().rstrip(";").strip()
     return f"SELECT * FROM ({stripped}) AS _safe_wrapped LIMIT {limit}"
+
+
+# ── No-data detection (v28 T9) ────────────────────────────────────────────────
+
+# Substrings the Trino client surfaces when a referenced table/schema/catalog
+# doesn't exist. Matched case-insensitively against str(exception).
+_TABLE_NOT_FOUND_MARKERS = (
+    "TABLE_NOT_FOUND",
+    "SCHEMA_NOT_FOUND",
+    "CATALOG_NOT_FOUND",
+    "does not exist",
+    "Table.*not found",
+    "Schema.*does not exist",
+)
+
+
+def detect_no_data_reason(
+    *,
+    baseline_row_count: Optional[int] = None,
+    baseline_exc: Optional[BaseException] = None,
+) -> Optional[str]:
+    """Classify why a baseline run has no usable data.
+
+    Returns one of:
+        - "table_not_found": exception text matches a known not-found marker
+        - "empty_result": baseline succeeded but row count == 0
+        - None: there is data, no fallback needed
+
+    The caller decides what to do — typically: switch from the iteration loop
+    to a single-call static-analysis report.
+    """
+    if baseline_exc is not None:
+        msg = str(baseline_exc)
+        upper = msg.upper()
+        for marker in _TABLE_NOT_FOUND_MARKERS:
+            if marker.upper() in upper:
+                return "table_not_found"
+            if re.search(marker, msg, re.IGNORECASE):
+                return "table_not_found"
+        # Any other exception → not a no-data case (let caller surface error)
+        return None
+    if baseline_row_count is not None and baseline_row_count == 0:
+        return "empty_result"
+    return None

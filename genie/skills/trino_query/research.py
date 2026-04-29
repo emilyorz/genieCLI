@@ -140,6 +140,503 @@ def _lint_sql(sql: str) -> tuple[bool, str]:
         return False, f"lint error: {e}"
 
 
+def _format_static_findings(report) -> str:
+    """Render a sql_static report as a compact bullet list for prompt injection."""
+    if report is None or not report.findings:
+        return ""
+    lines = []
+    for f in report.findings:
+        lines.append(f"  - [{f.severity}] {f.rule_id} (line {f.line}): {f.message}")
+        lines.append(f"      → {f.suggestion}")
+    return "\n".join(lines)
+
+
+def _no_data_report(
+    *,
+    sql: str,
+    reason: str,
+    static_report,
+    llm_finishing: Optional[str],
+    model: str,
+) -> str:
+    """Render the no-data path report (sticky warning + L1 findings + L3 finishing)."""
+    from datetime import datetime
+
+    reason_human = {
+        "table_not_found": "referenced table/schema/catalog does not exist",
+        "empty_result": "query ran but returned 0 rows",
+    }.get(reason, reason)
+
+    lines = [
+        "# Trino Query Static Analysis Report (no-data path)",
+        "",
+        f"**Date:** {datetime.now().strftime('%Y-%m-%d %H:%M')}",
+        f"**Model:** {model}",
+        f"**Mode:** static — iteration loop skipped because **{reason_human}**",
+        "",
+        "## Why this report instead of an iteration run",
+        "",
+        f"- {reason_human}",
+        "- Without measurable rows there is nothing to optimize empirically.",
+        "- Static analysis still surfaces query-shape issues that hold regardless of data.",
+        "",
+        "## Original SQL",
+        "",
+        "```sql",
+        sql.rstrip(),
+        "```",
+        "",
+        "## Static analysis findings",
+        "",
+    ]
+
+    if static_report is None or static_report.parse_error:
+        err = (static_report.parse_error if static_report else "analyzer unavailable")
+        lines += [f"_Parse failed: {err}_", ""]
+    elif not static_report.findings:
+        lines += [
+            "_No structural issues detected._",
+            "",
+            "If the query is correct, the next step is to confirm the table name / "
+            "catalog / schema, or re-check the partition filter.",
+            "",
+        ]
+    else:
+        lines += [f"**Summary:** {static_report.summary}", ""]
+        lines += ["| # | Severity | Rule | Line | Message | Suggestion |",
+                  "|---|---|---|---|---|---|"]
+        for i, f in enumerate(static_report.findings, 1):
+            msg = f.message.replace("|", "\\|")
+            sug = f.suggestion.replace("|", "\\|")
+            lines.append(f"| {i} | {f.severity} | {f.rule_id} | {f.line} | {msg} | {sug} |")
+        lines.append("")
+
+    if llm_finishing:
+        lines += ["## LLM finishing pass", "", llm_finishing.rstrip(), ""]
+
+    lines += ["## Next steps", "",
+              "1. Verify the referenced tables exist and contain data.",
+              "2. Apply the highest-severity findings above.",
+              "3. Re-run `/trino-research` against the corrected query.", ""]
+    return "\n".join(lines)
+
+
+
+
+# ---------------------------------------------------------------------------
+# No-data path (v28 T9 + T10)
+# ---------------------------------------------------------------------------
+
+def _run_no_data_path(
+    *,
+    provider,
+    model: str,
+    reasoning: str,
+    original_sql: str,
+    no_data_reason: str,
+    static_report,
+    baseline_exc: Optional[BaseException],
+    output,
+) -> dict:
+    """Single-call static analysis + optional LLM finishing — no iteration loop.
+
+    Triggered when the baseline either raised a table-not-found-shaped error
+    or returned 0 rows. Cost: ≤1 LLM call vs N for the iteration path.
+    """
+    reason_human = {
+        "table_not_found": "table/schema/catalog not found",
+        "empty_result": "baseline returned 0 rows",
+    }.get(no_data_reason, no_data_reason)
+
+    output.print("")
+    output.error(f"  [no-data] {reason_human} — switching to static analysis mode")
+    if baseline_exc is not None:
+        output.print(f"  [dim]baseline error: {baseline_exc}[/dim]")
+
+    if static_report is None:
+        output.error("  Static analyzer unavailable — emitting bare report")
+    elif static_report.parse_error:
+        output.error(f"  Static parse failed: {static_report.parse_error}")
+    else:
+        output.progress(f"  Static analysis: {static_report.summary}")
+        for f in static_report.findings:
+            output.print(f"    [{f.severity[0].upper()}] {f.rule_id}: {f.message}")
+
+    # Optional finishing pass: ask the model to synthesise findings into a
+    # rewrite recommendation. Single call — no iteration, no measurement.
+    llm_finishing: Optional[str] = None
+    has_findings = bool(static_report and static_report.findings)
+    if provider is not None and has_findings:
+        try:
+            from genie.core.provider import CompletionRequest
+            from genie.session.manager import new_msg
+
+            findings_text = _format_static_findings(static_report)
+            sys_prompt = (
+                "You are a Trino SQL reviewer. The user's query could not be benchmarked "
+                "(table missing or empty), but a static analyzer found structural issues. "
+                "Combine the findings below with the SQL and write a concise rewrite "
+                "recommendation. Return: (1) a one-paragraph diagnosis, (2) a single "
+                "rewritten SQL block, (3) a short list of any further checks the user "
+                "should perform before re-running."
+            )
+            user_prompt = (
+                f"Original SQL:\n```sql\n{original_sql.rstrip()}\n```\n\n"
+                f"Static findings:\n{findings_text}\n\n"
+                f"Reason for no-data path: {reason_human}."
+            )
+            req = CompletionRequest(
+                messages=[new_msg("system", sys_prompt), new_msg("user", user_prompt)],
+                model=model,
+                reasoning=reasoning,
+            )
+            output.progress("  Calling LLM for finishing pass...")
+            llm_finishing = provider.complete_text(req)
+        except Exception as exc:
+            output.progress(f"  [warn] LLM finishing pass failed: {exc}")
+            llm_finishing = None
+
+    report_md = _no_data_report(
+        sql=original_sql,
+        reason=no_data_reason,
+        static_report=static_report,
+        llm_finishing=llm_finishing,
+        model=model,
+    )
+
+    return {
+        "status": "no_data",
+        "reason": no_data_reason,
+        "baseline_error": str(baseline_exc) if baseline_exc else None,
+        "original_sql": original_sql,
+        "best_sql": original_sql,
+        "static_findings": (
+            [
+                {
+                    "severity": f.severity,
+                    "rule_id": f.rule_id,
+                    "message": f.message,
+                    "suggestion": f.suggestion,
+                    "line": f.line,
+                }
+                for f in static_report.findings
+            ]
+            if static_report else []
+        ),
+        "llm_finishing": llm_finishing,
+        "report_markdown": report_md,
+    }
+
+
+# ---------------------------------------------------------------------------
+# Long-query plan-cost loop (v28 T4)
+# ---------------------------------------------------------------------------
+
+def _run_plan_cost_loop(
+    *,
+    provider,
+    model: str,
+    reasoning: str,
+    original_sql: str,
+    metric_key: str,
+    max_iterations: int,
+    verify_runs: int,
+    output,
+    build_prompt: Callable[..., str],
+    baseline: dict,
+    baseline_data: list,
+    static_report,
+    explain_runner: Callable[[str], Optional[str]],
+    max_fallbacks: int,
+) -> dict:
+    """Plan-cost ranking + L1 structural guard + K-retry on row-equivalence.
+
+    Iteration phase: generate candidates via LLM, score each by EXPLAIN plan
+    cost (rows × bytes estimate). No execution, no measurement — cheap.
+    Reject candidates whose plan signature diverges from baseline (L1).
+
+    Verification phase: rank surviving candidates by plan cost ascending; for
+    each in turn run real _measure + _results_equivalent. First L3 PASS wins.
+    If all top candidates fail L3 within max_fallbacks attempts, emit
+    `no_verifiable_improvement`.
+    """
+    from genie.core.provider import CompletionRequest
+    from genie.session.manager import new_msg, new_session
+    from genie.skills.mcp_trino.preflight import plan_cost
+    from genie.skills.trino_query.plan_signature import (
+        plan_signature,
+        structural_equivalent,
+    )
+
+    baseline_metric = baseline["median"]
+    baseline_rows = baseline["row_count"]
+
+    # Baseline plan cost + signature
+    baseline_rows_est, baseline_bytes_est, baseline_plan = plan_cost(
+        original_sql, explain_runner
+    )
+    baseline_sig = plan_signature(baseline_plan) if baseline_plan is not None else None
+    baseline_cost = (baseline_rows_est or 0) * (baseline_bytes_est or 1)
+
+    output.print("")
+    output.progress(
+        f"  [long-query] Plan-cost loop active "
+        f"(baseline rows~{baseline_rows_est}, bytes~{baseline_bytes_est}, "
+        f"max_fallbacks={max_fallbacks})"
+    )
+
+    # Session setup — same prompt structure as the legacy loop
+    skill_prompt = build_prompt(True, model)
+    sys_prompt = (
+        f"You are optimizing a Trino SQL query for performance.\n"
+        f"Target metric: {metric_key} (lower is better).\n\n"
+        f"Rules:\n"
+        f"- Return the COMPLETE optimized SQL in a ```sql code block\n"
+        f"- Do NOT use file_patch or any tool calls\n"
+        f"- Keep the EXACT same result set — same columns, same rows, same values\n"
+        f"- Make ONE focused change per iteration\n"
+        f"- Trino best practices: partition filters, named columns, CTEs over subqueries, "
+        f"APPROX_DISTINCT over COUNT(DISTINCT), COALESCE instead of NVL\n\n"
+        f"{skill_prompt}"
+    )
+    session = new_session(sys_prompt)
+
+    candidates: list[dict] = []  # ranked entries with plan_cost + sig + sql
+    history: list[dict] = []
+
+    for iteration in range(1, max_iterations + 1):
+        output.print("")
+        output.progress(f"  ── Iteration {iteration}/{max_iterations} (plan-cost mode) ──")
+
+        static_block = ""
+        if iteration == 1 and static_report and static_report.findings:
+            static_block = (
+                "Static analysis findings (sqlglot AST rules — apply these in priority order):\n"
+                f"{_format_static_findings(static_report)}\n\n"
+            )
+
+        # Lean history
+        sys_msgs = [m for m in session["history"] if m["role"] == "system"]
+        non_sys = [m for m in session["history"] if m["role"] != "system"]
+        session["history"] = sys_msgs + non_sys[-4:]
+
+        context = (
+            f"[Long-query plan-cost iteration {iteration}]\n"
+            f"Baseline rows estimate: {baseline_rows_est}\n"
+            f"Baseline bytes estimate: {baseline_bytes_est}\n"
+            f"{static_block}"
+            f"Current SQL:\n```sql\n{original_sql}\n```\n\n"
+            f"Return the COMPLETE optimized SQL in a ```sql block. ONE change only. "
+            f"Do NOT include a trailing semicolon."
+        )
+        session["history"].append(new_msg("user", context))
+
+        output.progress("  AI thinking...")
+        req = CompletionRequest(messages=session["history"], model=model, reasoning=reasoning)
+        reply = provider.complete_text(req)
+        if not reply:
+            output.error("  Empty AI response — stopping iteration phase.")
+            break
+        session["history"].append(new_msg("assistant", reply))
+
+        candidate_sql = extract_sql_from_reply(reply)
+        if not candidate_sql:
+            output.progress("  [SKIP] No SQL extracted")
+            history.append({
+                "iteration": iteration, "status": "no_sql",
+                "candidate_sql": None, "plan_cost": None,
+            })
+            continue
+
+        # Lint guard (cheap)
+        lint_ok, lint_msg = _lint_sql(candidate_sql)
+        if not lint_ok:
+            output.progress(f"  [SKIP] Lint failed: {lint_msg}")
+            history.append({
+                "iteration": iteration, "status": "lint_failed",
+                "candidate_sql": candidate_sql, "plan_cost": None,
+            })
+            session["history"].append(new_msg("user", f"SQL failed lint: {lint_msg}. Try a different change."))
+            continue
+
+        # Plan cost (cheap, no execution)
+        try:
+            cand_rows_est, cand_bytes_est, cand_plan = plan_cost(candidate_sql, explain_runner)
+        except Exception as exc:
+            output.progress(f"  [SKIP] EXPLAIN failed: {exc}")
+            history.append({
+                "iteration": iteration, "status": "explain_failed",
+                "candidate_sql": candidate_sql, "plan_cost": None,
+            })
+            continue
+
+        if cand_rows_est is None and cand_bytes_est is None:
+            output.progress("  [SKIP] EXPLAIN returned no estimates")
+            history.append({
+                "iteration": iteration, "status": "explain_failed",
+                "candidate_sql": candidate_sql, "plan_cost": None,
+            })
+            continue
+
+        cand_cost = (cand_rows_est or 0) * (cand_bytes_est or 1)
+        cand_sig = plan_signature(cand_plan) if cand_plan is not None else None
+
+        # L1 structural guard
+        if baseline_sig is not None and cand_sig is not None:
+            if not structural_equivalent(baseline_plan, cand_plan):
+                output.progress(
+                    f"  [REJECT] Structural divergence (L1) — candidate plan shape differs from baseline"
+                )
+                history.append({
+                    "iteration": iteration, "status": "structural_reject",
+                    "candidate_sql": candidate_sql, "plan_cost": cand_cost,
+                })
+                session["history"].append(new_msg(
+                    "user",
+                    "Candidate plan shape differs from baseline (L1 reject) — likely lost a column / "
+                    "filter / aggregation. Try a different change that preserves the plan structure."
+                ))
+                continue
+
+        verdict = "plan_cost_better" if cand_cost < baseline_cost else "plan_cost_worse"
+        output.progress(
+            f"  [{'+' if verdict == 'plan_cost_better' else '-'}] {verdict} "
+            f"(cand_cost={cand_cost:.2e}, baseline_cost={baseline_cost:.2e})"
+        )
+
+        candidates.append({
+            "iteration": iteration,
+            "sql": candidate_sql,
+            "plan_cost": cand_cost,
+            "rows_est": cand_rows_est,
+            "bytes_est": cand_bytes_est,
+            "verdict": verdict,
+        })
+        history.append({
+            "iteration": iteration, "status": verdict,
+            "candidate_sql": candidate_sql, "plan_cost": cand_cost,
+        })
+        session["history"].append(new_msg(
+            "user",
+            f"Candidate accepted into ranking pool with plan cost {cand_cost:.2e} "
+            f"(baseline {baseline_cost:.2e}). Suggest another rewrite for the next iteration."
+        ))
+
+    # ── Verification phase: rank by plan cost, K-retry on L3 fail ──
+    output.print("")
+    output.progress(f"  [verify] {len(candidates)} candidate(s) survived L1; ranking by plan cost")
+
+    surviving_better = sorted(
+        [c for c in candidates if c["plan_cost"] < baseline_cost],
+        key=lambda c: c["plan_cost"],
+    )
+
+    if not surviving_better:
+        output.progress("  [verify] No candidate beats baseline plan cost — emitting no_verifiable_improvement")
+        return {
+            "status": "no_verifiable_improvement",
+            "baseline_metric": baseline_metric,
+            "best_metric": baseline_metric,
+            "total_improvement": 0.0,
+            "improvement_pct": 0.0,
+            "iterations": len(history),
+            "kept": 0,
+            "baseline_rows": baseline_rows,
+            "baseline_plan_cost": baseline_cost,
+            "original_sql": original_sql,
+            "best_sql": original_sql,
+            "history": history,
+            "candidates_evaluated": len(candidates),
+        }
+
+    fallbacks_used = 0
+    winner: Optional[dict] = None
+    verify_log: list[dict] = []
+    for ranked in surviving_better:
+        if fallbacks_used > max_fallbacks:
+            output.progress(f"  [verify] Exhausted K={max_fallbacks} fallbacks")
+            break
+        output.progress(
+            f"  [verify] Trying iter#{ranked['iteration']} "
+            f"(plan_cost={ranked['plan_cost']:.2e})"
+        )
+        try:
+            measured = _measure(ranked["sql"], metric_key, verify_runs, capture_rows=True)
+        except Exception as exc:
+            output.progress(f"  [verify] _measure failed: {exc}")
+            verify_log.append({"iter": ranked["iteration"], "result": "exec_failed", "reason": str(exc)})
+            fallbacks_used += 1
+            continue
+
+        equiv, reason = _results_equivalent(baseline_data, measured["rows"])
+        if not equiv:
+            output.progress(f"  [verify] L3 row-equiv FAIL — {reason}")
+            verify_log.append({"iter": ranked["iteration"], "result": "row_equiv_fail", "reason": reason})
+            fallbacks_used += 1
+            continue
+
+        # WINNER
+        winner = {
+            **ranked,
+            "measured_metric": measured["median"],
+            "measured_rows": measured["row_count"],
+            "samples": measured["samples"],
+            "metrics": measured["metrics"],
+        }
+        verify_log.append({"iter": ranked["iteration"], "result": "verified", "metric": measured["median"]})
+        break
+
+    if winner is None:
+        return {
+            "status": "no_verifiable_improvement",
+            "baseline_metric": baseline_metric,
+            "best_metric": baseline_metric,
+            "total_improvement": 0.0,
+            "improvement_pct": 0.0,
+            "iterations": len(history),
+            "kept": 0,
+            "baseline_rows": baseline_rows,
+            "baseline_plan_cost": baseline_cost,
+            "original_sql": original_sql,
+            "best_sql": original_sql,
+            "history": history,
+            "verify_log": verify_log,
+            "candidates_evaluated": len(candidates),
+        }
+
+    # Convert winner into legacy-shape result so report rendering works as-is
+    winner_history = [{
+        "iteration": h["iteration"],
+        "status": "improved" if (h["candidate_sql"] == winner["sql"]) else h["status"],
+        "metric": winner["measured_metric"] if (h["candidate_sql"] == winner["sql"]) else baseline_metric,
+        "delta": winner["measured_metric"] - baseline_metric if (h["candidate_sql"] == winner["sql"]) else 0.0,
+        "hypothesis": "(plan-cost-loop)",
+        "base_sql": original_sql,
+        "candidate_sql": h.get("candidate_sql"),
+    } for h in history]
+
+    return {
+        "status": "completed",
+        "mode": "plan_cost",
+        "baseline_metric": baseline_metric,
+        "best_metric": winner["measured_metric"],
+        "total_improvement": winner["measured_metric"] - baseline_metric,
+        "improvement_pct": (
+            (winner["measured_metric"] - baseline_metric) / baseline_metric * 100
+            if baseline_metric else 0
+        ),
+        "iterations": len(history),
+        "kept": 1,
+        "baseline_rows": baseline_rows,
+        "baseline_plan_cost": baseline_cost,
+        "winner_plan_cost": winner["plan_cost"],
+        "original_sql": original_sql,
+        "best_sql": winner["sql"],
+        "history": winner_history,
+        "verify_log": verify_log,
+        "candidates_evaluated": len(candidates),
+        "fallbacks_used": fallbacks_used,
+    }
 
 
 # ---------------------------------------------------------------------------
@@ -160,18 +657,58 @@ def _run_optimization_loop(
     long_query_opt_in: bool = False,
     long_query_threshold_s: Optional[int] = None,
     max_fallbacks: Optional[int] = None,
+    explain_runner: Optional[Callable[[str], Optional[str]]] = None,
 ) -> dict:
-    """Run the optimization loop. Returns summary dict."""
+    """Run the optimization loop. Returns summary dict.
+
+    v28 dispatch:
+        - baseline raises with table-not-found-shaped error → no-data path
+        - baseline returns 0 rows                          → no-data path
+        - else                                              → has-data iteration
+          (with sql_static findings injected into the per-iteration context)
+    """
     from genie.core.provider import CompletionRequest
     from genie.session.manager import new_msg, new_session
+    from genie.skills.mcp_trino.preflight import detect_no_data_reason
+    from genie.skills.trino_query.sql_static import analyze as static_analyze
+
+    # ── Static analysis (cheap; runs in both paths) ──
+    try:
+        static_report = static_analyze(original_sql)
+    except Exception as exc:
+        output.progress(f"  [warn] static analysis skipped: {exc}")
+        static_report = None
 
     # ── Baseline ──
     output.progress("  Measuring baseline...")
+    baseline = None
+    baseline_exc: Optional[BaseException] = None
     try:
         baseline = _measure(original_sql, metric_key, verify_runs, capture_rows=True)
     except Exception as e:
-        output.error(f"  Baseline measurement failed: {e}")
-        return {"status": "failed", "error": str(e)}
+        baseline_exc = e
+
+    no_data = detect_no_data_reason(
+        baseline_row_count=baseline["row_count"] if baseline else None,
+        baseline_exc=baseline_exc,
+    )
+
+    if no_data is not None:
+        return _run_no_data_path(
+            provider=provider,
+            model=model,
+            reasoning=reasoning,
+            original_sql=original_sql,
+            no_data_reason=no_data,
+            static_report=static_report,
+            baseline_exc=baseline_exc,
+            output=output,
+        )
+
+    if baseline_exc is not None:
+        # Real failure — not a no-data case
+        output.error(f"  Baseline measurement failed: {baseline_exc}")
+        return {"status": "failed", "error": str(baseline_exc)}
 
     baseline_metric = baseline["median"]
     baseline_rows = baseline["row_count"]
@@ -180,6 +717,12 @@ def _run_optimization_loop(
     output.progress(f"  Baseline {metric_key}: {baseline_metric} (median of {verify_runs} runs)")
     output.progress(f"  Baseline row count: {baseline_rows}")
     _print_metrics(output, baseline["metrics"])
+
+    if static_report and static_report.findings:
+        output.progress(
+            f"  Static analysis: {static_report.summary} "
+            f"({len(static_report.findings)} finding(s) — feeding into prompt)"
+        )
 
     # ── Upfront cost gate (v28) ──
     from genie.skills.mcp_trino.preflight import (
@@ -199,6 +742,28 @@ def _run_optimization_loop(
     if not gate.ok:
         output.error(f"  [abort] {gate.message}")
         return {"status": "aborted", "reason": "long_query_gate", "message": gate.message}
+
+    # ── v28 T4 dispatch: long-query plan-cost loop ──
+    # When the user opts into long-query mode AND we have an EXPLAIN runner,
+    # skip per-iteration execution; rank candidates by plan cost; verify only
+    # the top-K via real _measure with row-equivalence check.
+    if long_query_opt_in and explain_runner is not None:
+        return _run_plan_cost_loop(
+            provider=provider,
+            model=model,
+            reasoning=reasoning,
+            original_sql=original_sql,
+            metric_key=metric_key,
+            max_iterations=max_iterations,
+            verify_runs=verify_runs,
+            output=output,
+            build_prompt=build_prompt,
+            baseline=baseline,
+            baseline_data=baseline_data,
+            static_report=static_report,
+            explain_runner=explain_runner,
+            max_fallbacks=fallbacks,
+        )
 
     # ── Session setup ──
     skill_prompt = build_prompt(True, model)
@@ -232,12 +797,20 @@ def _run_optimization_loop(
             last = history[-1]
             last_str = f"{last['status']} (metric={last['metric']:.1f}, delta={last['delta']:+.1f})"
 
+        static_block = ""
+        if iteration == 1 and static_report and static_report.findings:
+            static_block = (
+                "Static analysis findings (sqlglot AST rules — apply these in priority order):\n"
+                f"{_format_static_findings(static_report)}\n\n"
+            )
+
         context = (
             f"[Trino Query Optimization — Iteration {iteration}]\n"
             f"Target metric: {metric_key} (lower is better)\n"
             f"Baseline: {baseline_metric}\n"
             f"Current best: {best_metric}\n"
             f"Last iteration: {last_str}\n\n"
+            f"{static_block}"
             f"Current SQL:\n```sql\n{best_sql}\n```\n\n"
             f"Return the COMPLETE optimized SQL in a ```sql block. ONE change only. "
             f"Do NOT include a trailing semicolon."
@@ -629,6 +1202,20 @@ def run_trino_research(
         return
     if result["status"] == "aborted":
         # Gate message already surfaced by _run_optimization_loop.
+        return
+    if result["status"] == "no_data":
+        # Static-analysis-only report — save it and exit early.
+        from datetime import datetime
+        report_md = result.get("report_markdown") or ""
+        report_dir = Path.cwd() / "report"
+        report_dir.mkdir(parents=True, exist_ok=True)
+        report_name = f"trino-research-nodata-{datetime.now().strftime('%Y%m%d-%H%M%S')}.md"
+        report_path = report_dir / report_name
+        try:
+            report_path.write_text(report_md)
+            output.progress(f"\n  Static report saved: {report_path}")
+        except Exception as e:
+            output.error(f"  Failed to save report: {e}")
         return
 
     output.print("  [yellow]══ Summary ══[/yellow]")
