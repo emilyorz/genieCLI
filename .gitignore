@@ -19,6 +19,10 @@ screenshot.png
 element.png
 *.png
 
+# task-ledger v3 runtime (machine-specific hook paths + session pid/cwd)
+.claude/
+.task-ledger-active.json
+
 # Editor
 .DS_Store
 .vscode/

@@ -47,6 +47,7 @@
 
 ## Iteration touchpoints
 
+- **v29:** (T1, in progress) New pure leaf module `genie/skills/mcp_trino/pre_execution_diagnosis.py` + `tests/test_pre_execution_diagnosis.py` (31 tests). Turns the three already-computed-but-discarded diagnostics (static AST findings, EXPLAIN plan cost, table metadata) + optional runtime `peak_memory_bytes` into a deterministically-ranked `list[OptimizationDirection]` (frozen dataclass: `kind` / `severity` / `rationale` / `evidence` / `target_metric`). Four independent pure contributors fan into one total-order ranker `(severity_rank, source_rank, kind, evidence)`; never raises; any/all inputs None → `[]`. Partition detection mirrors production `research.py:231-232` (Iceberg `partitioning` / Hive `partitioned_by`; `""`/`"[]"` → not partitioned). Memory signal = max non-leaf `outputSizeInBytes` proxy + optional post-run `peak_memory_bytes`. Shared contract consumed by T2 (MCP prompt wiring), T3 (long-query zero-cost report), T4 (`--direct` parity). Full suite 755 pass + 10 skip (+31 net, zero regression). Built under task-ledger v3 strict (runtime-honesty deviation: hooks installed not live, single-runtime, claude-code-only).
 - **v17:** MCP hard-requirement; `--direct` opt-in; dynamic tool name + SQL parameter discovery.
 - **v18:** SKILL.md body injection; Trino best practices moved to markdown.
 - **v19:** Preflight gate (read-only / size estimate / row cap / safe-limit / 300s timeout default).

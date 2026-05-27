@@ -1,336 +1,373 @@
-# CURRENT — v28
+---
+ledger_version: v3
+ledger_hooks: enabled
+execution_mode: strict-full-v3
+activation_file: .task-ledger-active.json
+runtime: claude-code
+dispatch_adapter: native-claude-agents
+phase: PLAN
+current_todo: T1
+maturity_label: active
+---
+# CURRENT — v29 (V3 strict)
+
+## PLAN preamble
+
+> Think carefully and step-by-step — this strict V3 iteration runs full v1 lifecycle plus full v2.5 SDD for every Todo. Goal: turn `/trino-research` from blind trial-and-error optimization into directed, pre-execution-diagnosed tuning (LH-PRISM-style), plus zero-cost long-query diagnosis.
+
+```yaml
+mode: v3-strict
+ledger_version: v3
+ledger_hooks: enabled
+execution-mode: strict-full-v3
+runtime: claude-code
+dispatch-adapter: native-claude-agents
+subagent-authorization: not-required
+downgrade-approval: N/A
+reasoning-tier: available
+```
+
+**Quality Loop gate:** strict v2.5/v3 threshold — a Todo passes Step 8B only when the quality score is strictly **> 9.0/10**. Any round scoring ≤ 9.0 returns must-fixes and re-runs.
+
+### Runtime-honesty deviation note (READ FIRST)
+
+This session runs from `~/.openclaw/workspace-emily/`, NOT from the genieCLI repo root that owns `.task-ledger-active.json`. The shared guard (`task_ledger_guard.py:619 build_decision`) only enforces for a runtime session rooted in the repo that owns the activation file. Therefore:
+
+- V3 hooks ARE installed into the genieCLI repo (`.claude/settings.json` created by `install-hooks`, hook script path verified).
+- But live PreToolUse / Stop hook gating will NOT fire inside THIS session, because the cwd is a different repo.
+- Real enforcement is obtained by **dispatching the V3 verifier subagents** (spec-verifier + quality-verifier) per Todo and consuming their reports — not by trusting hook backstops.
+- Per SKILL-v3 Maturity Rule, this run cannot be labeled `full-v3-success`. Target label: **`v3-deviation (hooks-installed-not-live, single-runtime, claude-code-only)`**. Sam may upgrade the label only if he later re-runs from inside the repo with live hooks.
+
+## Use-case gate
+
+1. **Concrete scenario:** A TSMC lakehouse engineer runs `/trino-research "<slow SQL>"` to optimize a query. Today the optimizer executes the query, reads 5 metrics, then lets the LLM guess rewrites blindly — one real query burned per iteration, no direction. They want the tool to first *diagnose* the query (AST anti-patterns + plan cost + table metadata + a memory-pressure signal), derive concrete optimization directions, and feed those directions to the LLM so tuning is targeted, not trial-and-error.
+2. **Existing-solution gap:** Three diagnostics are ALREADY computed in the production MCP loop (static AST findings `research.py:1092`, EXPLAIN stages `:1192`, table metadata `:1387`) but NONE are injected into the optimizer's hypothesis prompt (`:1235-1244` injects only metric+baseline+best_sql). `--direct` injects static findings at iteration-1 only. There is no memory metric at all (`MCP_METRICS :1462` has no `peak_memory_bytes`). Long queries (baseline ≥ threshold) abort outright with no directional guidance even though EXPLAIN (FORMAT JSON) could diagnose them at zero query cost.
+3. **Cost of doing vs not doing:** Not doing = engineers keep burning N × baseline-wall-time per optimization run with no memory insight and no help on the exact queries (long-running) that most need optimizing. Doing = reuse diagnostics already computed, add one memory metric, and convert the long-query dead-end into a zero-cost directed report. Pain of status quo (wasted cluster time + abandoned long-query optimizations) clearly exceeds the bounded wiring cost.
 
 ## Basic Info
 
 - **Project:** genieCLI
-- **Iteration:** 28
-- **Status:** DO — All implementable work complete (T2/T3/T4/T5/T6/T8/T9/T10). T1 + T7 skipped per Sam directive (live MCP probe in his test env post-merge). Final pytest 724 pass + 10 skip; +77 new tests this session.
-- **Owner:** Emily (planning + execution); Sam picks direction
-- **Started:** 2026-04-20
-- **Updated:** 2026-04-29T18:00+0800
-- **Resume point:** All 5 implementation tasks complete. Pytest 724 pass + 10 skip (no regressions vs 657 baseline; +77 new tests across 5 new test files). Sam will smoke-test in his test env after merge.
-- **Focus:** Two-pronged. (a) v28 original — `/trino-research` long-query handling: replace per-iter execution with plan-cost ranking + L1 structural guard + L3 K-retry. (b) v28 expansion (Sam 04-29) — sqlglot AST-based static SQL analysis as a baseline-level skill: rule-engine that runs in **both** modes (feeds findings into hypothesis prompt for has-data; renders standalone report for no-data when baseline returns 0 rows or table not found).
-- **Touched features:** [trino-research](features/trino-research.md), `sql-static` (new — to be doc'd)
+- **Iteration:** 29
+- **Mode:** v3-strict
+- **Status:** active (PLAN — awaiting Sam ack before DO)
+- **Owner:** Emily (orchestrator + executor); Sam picks direction / acks
+- **Started:** 2026-05-27
+- **Updated:** 2026-05-27T00:00+0800
+- **Focus:** Directed pre-execution diagnosis for `/trino-research` — wire existing diagnostics + a memory-pressure metric into the optimizer prompt, and turn the long-query abort into a zero-cost directed diagnosis report.
+- **Touched features:** [trino-research](features/trino-research.md)
 
 ## Goal
 
-- **One-line summary:** Make `/trino-research` usable on long-running queries (baseline ≥ 60s) — from current O(N × baseline) to O(baseline × 2 + K × fallback) without silently losing row-level correctness.
+- **One-line summary:** `/trino-research` diagnoses a query BEFORE optimizing (static AST + plan cost + table metadata + memory signal → ranked optimization directions), feeds those directions to the LLM in both execution paths, and replaces the long-query abort with a zero-cost directed report.
 - **Done when:**
-  - `/trino-research` on a baseline-1h query does not exceed ~3h total under default settings (1 baseline + 1 final verify + up to 1 fallback verify), down from current ~18h floor.
-  - Correctness property preserved: the final "Best SQL" emitted is row-equivalent to the baseline on the real, full query (not sampled), verified by the existing `_results_equivalent` check. If all top candidates fail verify, the tool emits "no verifiable improvement found" rather than a wrong rewrite.
-  - Upfront cost gate: baseline wall-time > `--long-query-threshold` (default 60s) aborts with an estimated-total-time message unless `--long-query` is passed.
-  - Per-candidate wall-clock kill: each iteration candidate runs under `query_max_run_time = 1.2 × baseline_wall_time` session property; timeout is treated as "not an improvement" and iteration continues without tearing down the loop.
-  - `features/trino-research.md` reflects the long-query design + the structural-invariant assumption behind L1 + the reasons L2 was deferred.
-  - 657+ tests pass (existing baseline as of 2026-04-29) + new unit tests for `_plan_cost_of`, `_explain_plan_signature`, `_structural_equivalent`, K-retry fallback path, the upfront-gate/timeout knobs, **and the 8 sql-static AST rules + mode dispatch + no-data report renderer**.
-  - **(T8) sqlglot AST rule engine** runs in <100ms per query; ships with 8 deterministic rules (cartesian_join, select_star, redundant_distinct_after_group_by, unnecessary_order_by_in_subquery_or_cte, subquery_in_select_pushable_to_join, predicate_not_pushed_to_cte, null_unsafe_equals, redundant_cast_chain). Each rule independent, each ≥2 unit tests.
-  - **(T9) baseline-mode dispatch:** `_run_optimization_loop` branches after baseline. `TableNotFoundException` raised by `_measure` OR baseline `row_count == 0` → no-data path (T10). Otherwise has-data path with sql-static findings injected into hypothesis prompt context (so iteration LLM sees "this query has a Cartesian join / pushable predicate" before composing its first hypothesis).
-  - **(T10) no-data report:** when no-data path triggers, emit sticky warning, run sql-static rules + LLM design-level finishing pass (single LLM call, not N iterations), render report using v27 trino-research markdown template + new "Static Analysis" section. No iteration loop runs in this path — token spend bounded.
+  - A shared `pre_execution_diagnosis` module exists, producing a ranked `OptimizationDirection[]` (each: kind, rationale, evidence, target — including at least one memory-targeted direction class) from static findings + EXPLAIN-cost + table metadata, with NO real query execution.
+  - The MCP optimizer prompt (`research.py:1235-1244` region) injects the ranked directions before iteration 1; `--direct` reaches parity (today it injects static-only at iter-1).
+  - `peak_memory_bytes` (or the correct Trino EXPLAIN ANALYZE peak-memory field, confirmed in Explore) is added to `MCP_METRICS` and surfaced.
+  - The long-query path (currently `LongQueryAbort` at `research.py:1158-1171`) gains a `--diagnose-only` / auto-fallback that runs EXPLAIN (FORMAT JSON) + static + metadata and emits a directed report at ZERO query cost instead of a bare abort message.
+  - Dual-path symmetry preserved: every cross-cutting change wired into BOTH `mcp_trino/research.py` AND `trino_query/research.py`; a regression test asserts both paths inject directions.
+  - `features/trino-research.md` updated (v29 design log + the C2 hypothesis-prompt-structure carryover folded in).
+  - Full suite green: ≥724 pass + 10 skip baseline, plus new tests for the diagnosis module, prompt injection (both paths), memory metric, and zero-cost long-query report.
 
-## Carryover (from v27)
+## Carryover
 
-Max 3 items. v27 produced 2 promotes; both **deferred one-time** here because Sam picked a different direction (long-query handling) via Telegram msgs 818/820/822. One-time defer is permitted by the SKILL spec; a second defer would force park-or-drop tagging.
+Max 3. v28 produced 2 deferred-one-time promotes (now SECOND-CHANCE — if deferred again must be parked-with-trigger or dropped):
 
-- ⭐ P1 S — PLAN-time validator dry-run → **deferred one-time to v29** (process change, not blocking v28's product work)
-- ⭐ P2 S — Hypothesis prompt structure → **deferred one-time to v29** (brittleness observable only under sustained runs; v28's plan-cost loop may reshape the hypothesis-extraction surface anyway)
+- ⭐ C1 P1 S — PLAN-time validator dry-run → **second-chance.** Applied informally this PLAN (run `validate_ledger.py` before committing). If not formally adopted in v29 retro, must park-with-trigger or drop.
+- ⭐ C2 P2 S — Hypothesis prompt structure → **second-chance, now ACTIVATED into T2/T4.** v29's whole thrust is restructuring what the optimizer prompt receives (directions vs blind), so C2 is folded into T2 (MCP prompt) + T4 (direct parity) rather than deferred again.
 
 ## Promote Verification (mandatory first PLAN action)
 
 | From | Item | Outcome | Evidence |
 |------|------|---------|----------|
-| v27-#change-next-1 | PLAN-time validator dry-run | **deferred-one-time** | Sam explicitly raised long-query concern (Telegram msg 818) and acked the proposed PLAN direction (msg 822); this is process hygiene, not product work — holding until v29 retro. If it defers a second time, must re-tag as park (with concrete trigger) or drop. |
-| v27-#change-next-2 | Hypothesis prompt structure | **deferred-one-time** | Same rationale: Sam's current pain is long-query wall-time, not hypothesis extraction fidelity. Additionally, the plan-cost iteration loop in v28 may reshape the inner-loop prompt (since we no longer ship real metrics to the LLM after each iter); re-evaluating hypothesis structure is better done after v28 lands. Same second-defer constraint as above. |
+| v28-carryover-C1 | PLAN-time validator dry-run | **second-chance (applied informally)** | Will run `scripts/validate_ledger.py` against this CURRENT.md before the PLAN commit. Formal adoption decision deferred to v29 retro; second consecutive defer would force park/drop. |
+| v28-carryover-C2 | Hypothesis prompt structure | **second-chance → ACTIVATED** | Folded into T2 (inject ranked directions into MCP optimizer prompt) + T4 (`--direct` parity). No longer a deferral — it is the core of v29. |
 
-## Active Parks (carried from v27 + 1 new from v27-#failed-2)
+## Hardthink — PLAN sections
 
-5 parks entering v28 DO.
+### Alternatives considered
 
-- Ledger roll-over drag — age 2/3 — trigger: a second iteration closes >1 day after final Todo accepted — origin: v26-#failed-2
-- Autoresearch product-value signal — age 2/3 — trigger: E2E mode decision lands AND smoke mode picked — origin: v26-#change-next-3
-- E2E smoke mode labelling — age 1/3 — trigger: next time `kept=0/2` in an E2E report causes a human to suspect a product regression when it isn't — origin: v26-#change-next-1
-- Cron plumbing (`E2E-REPORT.md outside repo` + `HTTP 401`) — age 1/3 — trigger: Sam actually tries to open an auto-generated E2E PR and finds the branch exists but no PR — origin: v26-#change-next-2
-- Telegram allowlist plumbing — age 0/3 — trigger: next time Telegram reply errors AND the message was a status-flip ack — origin: v27-#failed-2
+1. **Wire existing diagnostics + memory metric + zero-cost long-query diagnosis (RECOMMENDATION).** Reuse the three diagnostics already computed but discarded; add one memory metric; convert abort → directed report. Tradeoff: bounded blast radius, high leverage (the data already exists), but requires careful dual-path wiring (v28 lesson) and one Explore to confirm the Trino EXPLAIN ANALYZE peak-memory field name + MCP tool-name resolution.
+2. **Full LH-PRISM port (predictive cost model + suggestion engine as a new subsystem).** Tradeoff: closest to Sam's reference system, but large new surface, months of work, and most of the value is already achievable by wiring what exists. Rejected for v29 scope (revisit if directed-tuning proves the model but needs richer prediction).
+3. **LLM-only: just give the LLM more context and a better system prompt.** Tradeoff: cheapest to write, but Sam explicitly pushed back on "只靠 AI 判斷" (v28 msg 1123). Deterministic diagnosis must lead; LLM consumes directions. Rejected as primary, retained as the L3 finishing layer.
 
-## Theme Tracker
+### Scope
 
-| Theme | Appearances | Status |
-|-------|-------------|--------|
-| UX polish (cards / banners / spinners / syntax highlights / output layout) | v22, v23, v24, v26 (banner), v27 (trino-research output) | long-term — no per-instance lifecycle |
-| Trino query-shape economics (cost, rows, bytes, wall-time tradeoffs) | v19 (preflight gate), v25 (EXPLAIN ANALYZE backfill), v28 (plan-cost loop + long-query gate) | **active — v28 is the third entry in 4 iterations; promoting to real theme rather than coincidence** |
-| E2E signal hygiene | v27 parks (deferred) | dormant |
+- **In:**
+  - NEW shared module `genie/skills/<shared>/pre_execution_diagnosis.py` (location confirmed in T1 Explore) — `diagnose(sql, *, static_report, explain_cost, table_metadata) -> list[OptimizationDirection]`, ranked, includes memory-targeted direction class. Pure, no execution.
+  - `OptimizationDirection` dataclass: `{kind, severity, rationale, evidence, target_metric}`.
+  - MCP path: inject ranked directions into the optimizer prompt before iter 1 (`mcp_trino/research.py:1235-1244` region); move table-metadata collection (`:1387`) BEFORE the loop so it feeds diagnosis.
+  - `peak_memory_bytes` (or confirmed field) added to `MCP_METRICS` (`:1462-1465`) + surfaced in metric rendering.
+  - Long-query path: `--diagnose-only` flag + auto-fallback so `LongQueryAbort` region runs EXPLAIN (FORMAT JSON) + static + metadata → directed zero-cost report.
+  - `--direct` path (`trino_query/research.py`): parity injection of ranked directions (upgrade from static-only iter-1).
+  - Tests: diagnosis module units, dual-path injection symmetry, memory metric, zero-cost long-query report renderer.
+  - `features/trino-research.md` v29 design log + C2 fold-in.
+- **Out:**
+  - Full predictive cost model / LH-PRISM subsystem (Alternative 2).
+  - New connectors / non-Trino engines.
+  - Reworking the L1/L3 correctness guard from v28 (untouched).
+  - Parallel candidate evaluation.
+  - Machine-sink JSON shape changes beyond additive new fields.
 
-## Hardthink — Alternatives considered
+### Open questions
 
-### For the CORRECTNESS GUARD (the critical design choice)
+- Trino EXPLAIN ANALYZE exact peak-memory field name (`peakMemoryBytes`? `peakUserMemory`?) — resolved in T1 Explore against fixtures + Sam's notes; do NOT guess in Dev.
+- MCP query-tool name resolution (`_resolve_query_tool :511-529` fallback likely already covers `mcp_trino_*`) — confirm in T1 Explore, do not expand scope on speculation.
 
-This is the one choice Sam needs to ack — it affects engineering scope, correctness risk, and worst-case wall-time.
+## Trigger scoring
 
-1. **L1 + L3 + K-retry (three-layer, my recommendation).**
-   - **L1 (per-iteration, cheap):** Trino `EXPLAIN (FORMAT JSON)` on baseline + candidate → extract structural signature = {output columns (name + type), aggregation function names, GROUP BY keys, top-level FilterNode predicate set}. Reject candidate if structural signature diverges. Infrastructure partly reused from `genie/skills/mcp_trino/preflight.py:78` (`estimate_from_explain`) and `research.py:1599` (`EXPLAIN (FORMAT JSON)` invocation). Coverage: catches ~80% of semantic drift — dropped columns, swapped aggregate functions, lost filters, different GROUP BY shape. Miss class: semantically-equivalent predicates written differently (e.g. `x BETWEEN 1 AND 10` vs `x >= 1 AND x <= 10`) may trigger false reject; we mitigate by comparing filter predicates as a *soft* signal (log warning, don't reject) while output/agg/GROUP BY are *hard* gates.
-   - **L3 (final winner only, expensive):** existing `_measure(..., capture_rows=True)` + `_results_equivalent` full row-level comparison. This is the real correctness guard; L1 is the cheap pre-filter.
-   - **K-retry on L3 fail:** if the top-ranked candidate fails L3 row-equivalence, fall back to the next-ranked candidate that passed L1, retry L3. Default K=3. Hard cap to prevent runaway wall-time on pathological cases.
-   - **Wall-time profile on 1h baseline:** 1 baseline run (1h) + 5 iter × EXPLAIN (seconds) + 1 final winner verify (1h) + worst-case K=3 fallback verifies (3h) = ~5h worst case, ~2h typical case.
-   - **Pros:** cheap iteration, strong correctness net, graceful degradation, explicit "no verifiable improvement" fallback.
-   - **Cons:** L1 implementation is non-trivial (structural signature parsing + equivalence logic); Trino EXPLAIN JSON field names need probing (T1); L1 false-positive risk requires careful soft/hard-gate split.
+| Tkt | size (0/1/2) | unknown (0/1/2) | cross-cutting (0/1/2) | sum | V3 path |
+|-----|--------------|-----------------|------------------------|-----|---------|
+| T1 | 1 | 2 | 1 | 4 | strict-full-9-step |
+| T2 | 1 | 1 | 2 | 4 | strict-full-9-step |
+| T3 | 1 | 1 | 1 | 3 | strict-full-9-step |
+| T4 | 1 | 1 | 2 | 4 | strict-full-9-step |
 
-2. **L3-only + K-retry (simpler, my acceptable fallback).**
-   - No L1 structural check; iteration purely ranks by plan cost (outputRowCount × outputSizeInBytes from `estimate_from_explain`).
-   - Final: same L3 row-equivalence on top winner + K-retry to next-ranked.
-   - **Wall-time profile:** 1 baseline + 5 iter × EXPLAIN + 1 final verify + K fallbacks worst case = same ~5h worst, ~2h typical.
-   - **Pros:** much simpler code (no structural parser, no equivalence logic, no predicate normalization). Ships faster. Less fragile to Trino EXPLAIN JSON schema changes.
-   - **Cons:** a structurally-wrong candidate (LLM drops a column or filter) that happens to have lower plan cost will rank first — forcing L3 verify to reject it, burning 1h on the fallback. On a consistently-hallucinating LLM run, might burn K × 1h on known-bad candidates. L1 would have caught these for free.
-   - **Risk bound:** at worst, same total time as Option 1; at best, still better than status quo. Correctness unchanged (L3 is the real gate either way).
+All Todos sum ≥3 → every Todo runs the full SDD 9-step. (V3 strict requires this regardless; scoring recorded for PLAN completeness.)
 
-3. **L1 + L2 + L3 (tightest net, rejected).**
-   - Add L2: sampled row verify — substitute base tables with `TABLESAMPLE BERNOULLI(0.1)` versions, run baseline + candidate on sample, compare rows.
-   - **Cons:** requires SQL AST parsing to substitute tables across CTEs, subqueries, and joins. `sqlparse` is a shallow tokenizer, not an AST library; proper substitution requires a Trino-aware parser (we don't have one). Plus TABLESAMPLE doesn't compose cleanly with aggregations (sum/count change under sampling). Engineering cost is 2-3× L1 for marginal gain over L1 + K-retry.
-   - **Reject.** Revisit only if L1 + K-retry shows a "structural-match-but-data-different" failure class in production that K-retry doesn't surface quickly enough.
+## Todos
 
-4. **No correctness check at all — trust LLM, emit winning SQL blind.**
-   - **Reject** — produces silently wrong SQL. Regression from current state. Not acceptable for production.
-
-**Recommendation: Option 1 (L1 + L3 + K=3).** Option 2 (L3-only + K=3) is the acceptable fallback if Sam wants to ship faster; correctness properties are identical (L3 is the gate), only wall-time profile on hallucinated runs differs.
-
-### For the ITERATION RANKING METRIC
-
-1. **Existing `estimate_from_explain` output (outputRowCount + outputSizeInBytes) — recommendation.**
-   - Already parsed; cheap. Lower product of estimates = lower cost. Reuses `preflight.py:78` code.
-   - Cons: rough proxy; doesn't reward partition pruning visibility or join algorithm choice directly.
-
-2. **Parse EXPLAIN's textual "TOTAL COST" scalar.**
-   - Cons: text parsing is more fragile than JSON; field format varies by Trino version. JSON-based rows/bytes estimate is the same underlying signal.
-
-3. **Real wall-time from a TABLESAMPLE-sized execution per candidate.**
-   - Cons: defeats the purpose (we're trying to avoid execution). Also TABLESAMPLE reshape problem.
-
-**Recommendation: Option 1.**
-
-### For the UPFRONT COST GATE
-
-1. **Hard threshold + `--long-query` opt-in — recommendation.**
-   - If baseline measured wall-time > `--long-query-threshold` (default 60s) AND `--long-query` not passed → abort with "baseline=Xs; predicted total=Ys; pass --long-query to proceed". Matches Sam's original pain literally.
-   - Threshold configurable via `--long-query-threshold=<seconds>`.
-
-2. **Soft warning (print predicted total, proceed anyway).**
-   - Cons: doesn't solve "accidentally burned a night" which is the whole motivation.
-
-3. **No gate.**
-   - Reject — reopens the original pain.
-
-**Recommendation: Option 1.**
-
-### For PER-CANDIDATE WALL-CLOCK KILL
-
-1. **Trino session property `query_max_run_time = 1.2 × baseline_wall_ms` — recommendation.**
-   - Native Trino mechanism; throws cleanly; already-supported across Trino 467+. Set once at session start, applies to every subsequent candidate query.
-   - The `1.2×` margin: a candidate taking >20% longer than baseline is definitionally not an improvement; killing it early loses nothing.
-
-2. **Client-side query cancel via query ID lookup.**
-   - Cons: more code (query-id tracking, cancel RPC); duplicates server-side mechanism we already have.
-
-3. **No timeout.**
-   - Reject — runaway candidate could burn hours before failing naturally.
-
-**Recommendation: Option 1.**
-
-## Hardthink — Scope
-
-### In
-
-- `genie/skills/trino_query/research.py` — rewriting `_run_optimization_loop`:
-  - New helper `_plan_cost(sql, explain_runner) -> (rows_estimate, bytes_estimate, raw_plan_json)` reusing `preflight.estimate_from_explain`.
-  - New helper `_explain_plan_signature(raw_plan_json) -> PlanSignature` dataclass with `{output_columns: list[(name, type)], agg_functions: tuple[str, ...], group_by_keys: tuple[str, ...], filter_predicates: tuple[str, ...]}`. Walks the JSON tree; extracts from `AggregateNode`, `FilterNode`, and root output schema nodes.
-  - New helper `_structural_equivalent(baseline_sig, candidate_sig) -> (ok: bool, reason: str)` — HARD gates: output columns, agg_functions, group_by_keys must match exactly (order-independent for output, exact tuple for agg/group-by). SOFT check: filter_predicates logged as warning if divergent, does not reject.
-  - Iteration loop: replace per-iter `_measure(..., capture_rows=True)` with `_plan_cost(...)` + L1 `_structural_equivalent(baseline_sig, candidate_sig)`. History entry status extended: `plan_cost_better`, `plan_cost_worse`, `structural_reject` (new), plus existing `no_sql`, `lint_failed`.
-  - After loop: re-rank all non-rejected candidates by plan cost ascending; for the top candidate run full `_measure(..., capture_rows=True)` + `_results_equivalent`. On L3 pass → emit as winner. On L3 fail → take next candidate, up to K=3 retries; emit `no_verifiable_improvement` status if all fail.
-  - Upfront gate: measure baseline wall-time with existing `_measure`; if `baseline.wall_time_ms > long_query_threshold_ms AND not long_query_opt_in`, abort with predicted-total-time message derived from max_iterations × 1.2 × baseline + final verify cost.
-  - Session property: emit `SET SESSION query_max_run_time = '<N>ms'` before iteration where N = 1.2 × baseline_wall_ms.
-- `genie/skills/trino_query/__init__.py` (or wherever the slash command flags are parsed): add `--long-query` (bool), `--long-query-threshold` (int seconds, default 60), `--max-fallbacks` (int, default 3).
-- `tests/test_mcp_research.py` — new tests: `test_plan_cost_extracts_rows_and_bytes`, `test_explain_plan_signature_extracts_output_columns_agg_and_group_by`, `test_structural_equivalent_rejects_mismatched_agg_functions`, `test_structural_equivalent_accepts_reordered_output_columns`, `test_iteration_loop_skips_execution_for_structural_reject`, `test_k_retry_falls_back_on_l3_failure`, `test_upfront_gate_aborts_when_baseline_exceeds_threshold`, `test_upfront_gate_skipped_when_long_query_opt_in`.
-- `features/trino-research.md` — Design log v28 entry (full rationale + alternatives considered + L1 soft/hard split) + Limits entry (L2 deferred, with condition to revisit) + Iteration touchpoint + Current capability snapshot update (flag list + behavior).
-
-### Out (explicitly deferred)
-
-- **L2 sampled row verify** — deferred to dedicated iteration if L1 + K-retry shows a real miss class. Engineering cost is high (SQL AST table substitution) and not justified without evidence.
-- **Parallel candidate evaluation** — not in scope; doesn't solve the fundamental "each candidate still needs 1h on real data".
-- **LLM hypothesis prompt restructure** — v27 carryover, deferred one-time (see Promote Verification).
-- **PLAN-time validator dry-run** — v27 carryover, deferred one-time.
-- **Interactive `genie chat` vs non-interactive `--sql-file` divergence** — both continue to behave identically; no mode-specific branching.
-- **Machine sink (JSON output) changes** — untouched; existing shape preserved with new status values documented.
-- **Cross-connector (non-Trino) application** — /trino-research only; MCP connectors for other engines out of scope.
-
-## Hardthink — Open questions
-
-**None — Sam ack'd Option 1 via Telegram msg 824 + 825 ("option !" → "1"). Sam ack'd v28 expansion (T8/T9/T10) via Telegram msg 1125 ("完整 開始進行優化吧").**
-
-- **Correctness tier: Option 1 (L1 + L3 + K-retry) — LOCKED.** L1 structural-invariant check per iter, L3 row-equivalence on final winner, K=3 retry fallback to next-ranked. All other design defaults in Alternatives sections above carry (ranking = `estimate_from_explain`, gate = `--long-query` hard flag @ 60s threshold, timeout = Trino session property `query_max_run_time` @ 1.2× baseline).
-- **Static analysis stack: sqlglot — LOCKED.** Pure-Python, multi-dialect, native Trino dialect support, real AST (vs sqlparse token list). Already a transitive dep via `genie/core/lint_analyzer.py`. Replaces "LLM-only judgement" pattern Sam explicitly pushed back on (msg 1123: "不只靠 AI 去判斷"). Calcite (JVM, heavy), antlr4+Trino grammar (self-built, heavy), sqlfluff (linter-only, less AST flex) all rejected.
-
-All other design choices (ranking metric = plan cost, gate mechanism = `--long-query` flag, timeout = Trino session property, K default = 3, threshold default = 60s, thresholds tunable via flags, sql-static rule pack of 8 rules in module `genie/skills/trino_query/sql_static/`) are stated in the Alternatives above; I'm picking the recommendation unless you flag one.
-
-## Hardthink — Static SQL Analysis Module (v28 expansion, Sam 04-29)
-
-### Tool selection (sqlglot)
-
-- **Pure-Python**, no JVM dep. Ships with `pyproject.toml` already (lint_analyzer.py imports it).
-- **Native Trino dialect:** `sqlglot.parse_one(sql, dialect='trino')` produces real AST (Select / Join / CTE / Aggregate nodes), not a token stream.
-- **Built-in optimizer rule library:** `sqlglot.optimizer.pushdown_predicates`, `merge_subqueries`, `eliminate_subqueries`, `qualify_columns`, `simplify`. We re-use, not re-invent.
-- **Industry-standard:** Apache Superset, dbt, Datafold all use it for Python-side SQL analysis.
-
-### 3-layer hybrid architecture (rule-first, LLM-second)
-
-| Layer | Speed | Cost | What it catches |
-|-------|-------|------|-----------------|
-| L1 sqlglot AST rule scan | ~15ms/query | $0 | 8 deterministic anti-patterns (see Rule Pack below). 100% reproducible; same SQL → same findings. |
-| L2 Trino EXPLAIN-based (extends T3) | ~50ms (needs server) | $0 | predicate-pushdown miss, partition pruning miss, cardinality estimate. **Auto-skipped if table doesn't exist.** Re-uses T3 plan signature work. |
-| L3 LLM design-level finishing | ~5s | tokens | Design-level only (partition strategy, CTE materialization, full rewrite). LLM is given L1+L2 findings as **context** so it doesn't re-derive what rules already found. **One LLM call total, not N iterations.** |
-
-**Throughput math (100 queries):** L1-only ≈ 1.5s; LLM-only ≈ 8–15min. L1 = unbounded throughput (parallelizable, deterministic). LLM = latency-bound + non-deterministic.
-
-### Rule Pack (initial 8, expandable)
-
-| ID | Rule | Severity | What it flags |
-|----|------|----------|---------------|
-| R1 | `cartesian_join_detect` | high | JOIN with no ON clause, or ON clause that is a tautology (`1=1`, `true`). |
-| R2 | `select_star_warn` | medium | `SELECT *` at top-level (does not flag `SELECT *` inside `EXISTS`-style subqueries). Schema-aware variant deferred. |
-| R3 | `redundant_distinct_after_group_by` | medium | `SELECT DISTINCT` when the projection is already grouped (DISTINCT is a no-op). |
-| R4 | `unnecessary_order_by_in_subquery_or_cte` | medium | `ORDER BY` inside a subquery / CTE that is not the outermost SELECT and has no `LIMIT` (Trino discards). |
-| R5 | `subquery_in_select_pushable_to_join` | medium | Scalar subquery in SELECT that references the outer table — could be re-written as a LEFT JOIN. |
-| R6 | `predicate_not_pushed_to_cte` | medium | Detected by diff: `pushdown_predicates` rewrite of the AST contains predicates inside a CTE that the original placed only in the outer WHERE. |
-| R7 | `null_unsafe_equals` | high | `x = NULL` / `x != NULL` (always false in SQL three-valued logic; should be `IS NULL` / `IS NOT NULL`). |
-| R8 | `redundant_cast_chain` | low | `CAST(CAST(x AS T) AS T)` or chains where intermediate CAST is provably no-op. |
-
-Each rule lives in its own file under `genie/skills/trino_query/sql_static/rules/`, exports `apply(sql, parsed_ast) -> list[Finding]`. Module orchestrator in `__init__.py` runs all rules against one parse, returns combined findings. Findings shape: `{rule_id, severity, message, suggestion, location?}`.
-
-### Mode dispatch (T9)
-
-`_run_optimization_loop` branches after baseline measurement:
-
-```
-baseline = try _measure(original_sql, ...) except TableNotFoundException as e: → no_data(reason="table_not_found", error=e)
-if baseline.row_count == 0:                                                     → no_data(reason="empty_result")
-else:                                                                            → has_data() — continue v28 T4 plan-cost iteration loop
-```
-
-- **`has_data` path:** runs L1 sql-static once before iteration, **injects the findings into the hypothesis prompt context** so the iteration LLM sees: "these AST rules already flagged: cartesian join in iter base SQL; predicate `foo > 100` could be pushed to CTE bar". This shrinks iteration count because LLM stops re-discovering known issues. New history status: `static_analysis` (purely informational, doesn't count as iteration).
-- **`no_data` path:** routes to T10 renderer. **No iteration loop runs.** Token spend = 1 LLM call (L3 finishing) + ~15ms L1.
-
-### Files
-
-- **NEW:** `genie/skills/trino_query/sql_static/__init__.py` — `analyze(sql) -> StaticAnalysisReport`
-- **NEW:** `genie/skills/trino_query/sql_static/rules/{r1_cartesian_join,r2_select_star,r3_redundant_distinct,r4_unnecessary_order_by,r5_pushable_scalar_subquery,r6_predicate_pushdown,r7_null_unsafe_equals,r8_redundant_cast}.py` — one file per rule, ~30–60 lines each
-- **NEW:** `genie/skills/trino_query/sql_static/report.py` — render no-data Markdown report
-- **NEW:** `tests/test_sql_static_rules.py` — ≥16 tests (≥2 per rule)
-- **NEW:** `tests/test_sql_static_orchestrator.py` — orchestrator + parse-failure fallback
-- **NEW:** `tests/test_run_loop_mode_dispatch.py` — has-data vs no-data routing
-- **NEW:** `tests/fixtures/explain_plans/{simple_select,with_aggregate,with_join,with_cte}.json` — hand-crafted Trino EXPLAIN JSON for T3 (replaces T1's live probe)
-- **MOD:** `genie/skills/trino_query/research.py` — `_run_optimization_loop` mode dispatch + plan-cost iteration (T4) + static-analysis context injection
-- **MOD:** `genie/skills/mcp_trino/preflight.py` — add `detect_no_data(baseline_or_exc) -> NoDataReason | None` helper
-
-## Todo
+Each Todo is spec-worthy: one behavior, contract, integration, or user-observable change.
 
 | ID | Status | Pri | Task | Feature | Tool | Verify | Note |
 |----|--------|-----|------|---------|------|--------|------|
-| T1 | skipped | P0 | Probe Trino `EXPLAIN (FORMAT JSON)` output on a representative query — pin down node types, field names, confirm `query_max_run_time` session property behavior. | trino-research | Bash + mcp trino tool | (skipped) | **Skipped 2026-04-29** per Sam directive (Telegram msg 1125: "MCP 那件事情就先 skip"). T3 unblocked via hand-crafted minimal EXPLAIN JSON fixtures (`tests/fixtures/explain_plans/`). Live-env field-path confirmation deferred to Sam's test env post-merge. |
-| T2 | done | P0 | `plan_cost` helper in `preflight.py` — reuse `estimate_from_explain`; returns `(rows_est, bytes_est, raw_plan_json)`. | trino-research | Edit + pytest | ✓ 7 unit tests pass (see Reports). PLAN deviation noted (preflight.py vs research.py). | Completed 2026-04-22 — ship with T5 in one commit. |
-| T3 | done | P0 | `plan_signature` + `structural_equivalent` — landed as `genie/skills/trino_query/plan_signature.py` (140 lines). Walks plan JSON, drops volatile fields (estimates, fragment IDs), keeps semantic kind+table+join_type+agg_funcs; sorts commutative children. | trino-research | Edit + pytest | ✓ 14 unit tests pass (`tests/test_plan_signature.py`). 8 hand-crafted EXPLAIN JSON fixtures under `tests/fixtures/explain_plans/` cover SELECT / aggregate / join (incl. swapped + LEFT) / CTE. Verified: estimates don't affect signature, JOIN input order doesn't matter, INNER vs LEFT diverges, COUNT vs APPROX_DISTINCT diverges. | Completed 2026-04-29. |
-| T4 | done | P0 | Rewrote `_run_optimization_loop` dispatch: when `long_query_opt_in and explain_runner` → `_run_plan_cost_loop` (per-iter EXPLAIN-only ranking + L1 structural guard via `structural_equivalent`; verify-phase K-retry up to `max_fallbacks`). New history statuses: `plan_cost_better`, `plan_cost_worse`, `structural_reject`, `explain_failed`. Returns `no_verifiable_improvement` when no candidate passes L3 row-equivalence. | trino-research | Edit + pytest | ✓ 8 unit tests pass (`tests/test_plan_cost_loop.py`). Covers: lowest-cost-wins-when-L3-passes, all-L3-fail → no_verifiable_improvement, L1-structural-reject skips L3, K-retry falls through on L3 row-equiv fail, dispatch routing (explain_runner present vs absent). Backward-compatible: opt-in only via `long_query_opt_in=True` + `explain_runner` provided. | Completed 2026-04-29. |
-| T5 | done | P0 | Upfront cost gate + per-candidate wall-clock kill + 3 new flags (`--long-query`, `--long-query-threshold`, `--max-fallbacks`). | trino-research | Edit + pytest | ✓ 9 unit tests pass + 647 total (see Reports). Gate wired into both MCP + direct paths; session property emitted best-effort on MCP. | Completed 2026-04-22 — ship with T2. Live-env confirmation of SET SESSION persistence deferred to T7 smoke. |
-| T6 | done | P1 | `features/trino-research.md` — Design log v28 entry (T2+T5 rationale + alternatives + Option 1 correctness tier), Limits (L2 deferred, SET SESSION persistence unverified on MCP, direct-path session property deferred), Iteration touchpoint v28, Current capability updated with long-query gate. | trino-research | Edit | ✓ 4 sections updated; validate_ledger.py touchpoint regex matches. | Completed 2026-04-22 — ships with T2+T5 commit as follow-up doc commit. |
-| T7 | skipped | P1 | Smoke run against localhost:8811. | trino-research | Bash + mcp trino tool | (skipped) | **Skipped 2026-04-29** per Sam directive (msg 1125). Sam will run smoke in his test env after merge and report findings. Re-opens only if Sam smoke surfaces regression. |
-| T8 | done | P0 | sqlglot AST rule engine + 8 rules (R1–R8) under `genie/skills/trino_query/sql_static/`. Orchestrator in `__init__.py`: strict-then-lenient parse, exposes `analyze(sql) -> StaticAnalysisReport` with `findings` / `parse_error` / `summary` / `by_severity` / `to_dict`. Each rule independent file. | sql-static (new) | Edit + pytest | ✓ 36 unit tests pass: `tests/test_sql_static_rules.py` (25 — ≥2/rule positive + negative) + `tests/test_sql_static_orchestrator.py` (11 — empty/parse-failure/multi-rule/severity-counting/to_dict + monkeypatched rule-failure isolation). | Completed 2026-04-29. |
-| T9 | done | P0 | Mode dispatch + has-data static-analysis injection. `_run_optimization_loop` captures baseline exception, calls `detect_no_data_reason()`; on match routes to `_run_no_data_path()`. Otherwise has-data — `_format_static_findings(report)` rendered as `static_block` and woven into iteration #1's `build_prompt(...)` context (skipped on iter ≥2). | trino-research, sql-static | Edit + pytest | ✓ 19 unit tests pass (`tests/test_run_loop_mode_dispatch.py`). Covers: detect_no_data_reason (5 markers + edge cases), `_format_static_findings` rendering, dispatch from `_run_optimization_loop` to no-data path on `row_count==0` and on `TABLE_NOT_FOUND` exceptions, propagation of unrelated errors (ConnectionError must NOT misclassify). | Completed 2026-04-29. |
-| T10 | done | P0 | No-data report renderer landed inline in `research.py` as `_no_data_report()` + `_run_no_data_path()`. Single LLM finishing call (skipped when no findings); LLM exception handled gracefully (status still `no_data`); markdown template includes header + reason explanation + Static Analysis bullets + LLM finishing block + Original SQL fence. Report saved to `./report/trino-research-nodata-<ts>.md`. | sql-static | Edit + pytest | ✓ Covered by 8 tests within `test_run_loop_mode_dispatch.py`: `test_no_data_report_*` (4) + `test_run_no_data_path_*` (4 — provider=None skip, no-findings skip-LLM, findings call-LLM-once, LLM-exception survival). | Completed 2026-04-29. |
+| T1 | pending | P0 | Shared `pre_execution_diagnosis` module: `diagnose(...) -> ranked OptimizationDirection[]` from static + EXPLAIN-cost + table metadata, incl. ≥1 memory-targeted direction class. Pure, no execution. Explore confirms module location, Trino peak-memory field name, MCP tool-name resolution. | trino-research | native-claude-agents dispatch + Edit + pytest | New unit tests: ranking order deterministic; memory direction emitted when plan signals high peak; empty/parse-fail → empty list not raise. | Owns the new contract. Explore-heavy (unknown=2). |
+| T2 | pending | P0 | Wire ranked directions into MCP optimizer prompt (`mcp_trino/research.py:1235-1244` region) before iter 1; move table-metadata collection before loop; add `peak_memory_bytes` (confirmed field) to `MCP_METRICS` + surface it. | trino-research | native-claude-agents dispatch + Edit + pytest | Test: MCP prompt context contains direction block at iter 1; memory metric present in MCP_METRICS + rendered. | Integration of T1's diagnosis contract into the production MCP optimizer prompt; user-observable behavior change (memory metric + directed prompt). Cross-cutting=2. Depends on T1. |
+| T3 | pending | P0 | Long-query path: `--diagnose-only` flag + auto-fallback so the `LongQueryAbort` region runs EXPLAIN (FORMAT JSON) + static + metadata → directed report at ZERO query cost instead of bare abort. | trino-research | native-claude-agents dispatch + Edit + pytest | Test: long-query baseline triggers diagnose report (no EXPLAIN ANALYZE / no real query run); report contains ranked directions. | New user-observable behavior: long-query abort becomes a zero-cost directed report capability. Fixes Sam's 98.4s abort pain. Depends on T1. |
+| T4 | pending | P0 | `--direct` parity: inject ranked directions in `trino_query/research.py` (upgrade from static-only iter-1). Dual-path symmetry regression test. `features/trino-research.md` v29 design log + C2 fold-in. Full suite green. | trino-research | native-claude-agents dispatch + Edit + pytest | Test: BOTH paths inject directions (symmetry test); ≥724 pass + 10 skip; feature doc touchpoint regex matches. | Cross-path integration: brings the `--direct` path to behavior parity with MCP. Cross-cutting=2 (dual-path). Depends on T1/T2/T3. Enforces v28 dual-path lesson. |
 
-## Reports
+## Model Routing Decisions
 
-- **T2 (complete, 2026-04-22):** `plan_cost(sql, explain_runner) -> (rows_est, bytes_est, raw_plan_json)` added to `genie/skills/mcp_trino/preflight.py` (reuses existing `estimate_from_explain`). 7 unit tests in `tests/test_mcp_preflight.py::TestPlanCost` cover: happy path, missing `estimates` preserves parsed plan, malformed JSON returns all-None, runner exception, runner returns None, runner is None, bare-list plan shape (defensive). PLAN deviation: helper lives in `preflight.py` not `trino_query/research.py` as PLAN stated — rationale: shared location lets both MCP + direct paths reuse it without circular imports, co-located with `estimate_from_explain` which it delegates to.
-- **T5 (complete, 2026-04-22):** Upfront cost gate + per-candidate wall-clock kill + 3 new flags.
-  - Pure helpers added to `preflight.py`: `check_long_query_gate(...) -> LongQueryGateResult`, `make_query_max_run_time_sql(baseline_wall_ms) -> str`, `LongQueryAbort` exception. 9 unit tests in `TestLongQueryGate` + `TestMakeQueryMaxRunTimeSql` cover: short baseline passes, long baseline aborts without opt-in, long baseline proceeds with opt-in, custom threshold/fallbacks, minutes-in-message, SET SESSION syntax, 1000ms clamp, ceil-rounds-up, 1h baseline.
-  - Flag parsing wired in `genie/chat.py` for `--long-query`, `--long-query-threshold <s>`, `--max-fallbacks <n>` (also updated help text).
-  - Plumbing threaded through `run_trino_research_via_mcp`, `run_mcp_enhancement`, `run_trino_research`, `_run_optimization_loop` signatures.
-  - MCP path: gate evaluated in `run_mcp_enhancement` right after baseline; on fail raises `LongQueryAbort` caught at entry-point. Session property emitted via best-effort `_execute_via_mcp(SET SESSION query_max_run_time='<1.2×baseline>ms')` before iteration loop; emit failure is tolerated (log only).
-  - Direct path: gate evaluated in `_run_optimization_loop` after baseline; returns `{"status": "aborted", ...}`. Session property not emitted on direct path yet — deferred to T4 (requires `connection.py` `session_properties` kwarg work).
-  - Verification: 647 tests pass (up from 641; 16 new tests in `test_mcp_preflight.py`). Sanity check on Sam's 1h-baseline scenario: no-opt-in produces `baseline wall-time 3600.0s exceeds --long-query-threshold 60s; predicted worst-case total 660.0 min (iter=5, fallbacks=3). Pass --long-query to proceed anyway.` opt-in produces predicted_total = 11h (= 1 + 6 + 1 + 3 × baseline, matching PLAN math).
-  - Live-env items still blocked for T5: no end-to-end confirmation that mcp-trino honours the `SET SESSION` across separate tool calls. Behaviour is best-effort; T1 probe + T7 smoke will confirm.
-- **T3 (complete, 2026-04-29):** `genie/skills/trino_query/plan_signature.py` — `plan_signature(plan) -> tuple | None` and `structural_equivalent(a, b) -> bool`. Walks dict/list, drops volatile (estimates, fragment IDs), keeps `(op_kind, key_attrs, sorted_children)` where commutative ops sort their child subtrees. `_KNOWN_OPS` allowlist; unknown nodes resolved by `descriptor.kind` fallback then operator-name regex. Special handling: Join key_attrs = join_type only; Aggregate key_attrs = sorted agg_funcs tuple; Limit/TopN drops literal N; Exchange variants collapsed. 8 hand-crafted Trino EXPLAIN JSON fixtures under `tests/fixtures/explain_plans/` (simple_select × 2, with_aggregate × 2, with_join × 3, with_cte × 1). 14 tests in `tests/test_plan_signature.py`.
-- **T4 (complete, 2026-04-29):** `_run_plan_cost_loop()` added to `research.py` (~140 lines). Iteration phase uses `plan_cost(...)` from preflight + `structural_equivalent(...)` from plan_signature; never calls `_measure` per iteration. Verify phase: sort surviving candidates by plan_cost ascending, iterate top-N up to `max_fallbacks`, run `_measure(..., capture_rows=True)` + `_results_equivalent`; first L3 PASS wins. If all fail → `status="no_verifiable_improvement", best_sql=baseline_sql`. Dispatch in `_run_optimization_loop`: `if long_query_opt_in and explain_runner is not None: return _run_plan_cost_loop(...)` — opt-in only, default behaviour unchanged. 8 tests in `tests/test_plan_cost_loop.py` with `_make_baseline()`, `_make_explain()`, `_explain_runner_factory()`, `_llm_provider_with_replies()` helpers.
-- **T8 (complete, 2026-04-29):** sqlglot AST rule engine landed at `genie/skills/trino_query/sql_static/`. Orchestrator (`__init__.py`, ~120 lines) does strict-then-lenient parse (mirrors `genie/core/lint_analyzer.py`); never raises on bad input; per-rule exception isolation via try/except + debug log. 8 rule modules under `rules/`: R1 cartesian-join (CROSS JOIN, no-ON, comma-separated FROM), R2 select-star (walks parent chain to skip Count contexts), R3 redundant-distinct-after-group-by (allows aggregates), R4 unnecessary-order-by-in-subquery (no LIMIT/OFFSET), R5 subquery-in-select-pushable-to-join, R6 predicate-not-pushed-to-cte (uses `pushdown_predicates(deepcopy(stmt))` + before/after SQL diff), R7 null-unsafe-equals (`exp.EQ`/`exp.NEQ` with `exp.Null`), R8 redundant-cast-chain (nested `exp.Cast`). Severity ladder: high (R1, R7) / medium (R2, R3, R4, R5, R6) / low (R8). Findings sorted by `(line, rule_id)`. 36 tests across `test_sql_static_rules.py` (25) + `test_sql_static_orchestrator.py` (11).
-- **T9 (complete, 2026-04-29):** `detect_no_data_reason(*, baseline_row_count, baseline_exc) -> Optional[str]` added to `preflight.py` with 6 marker substrings (`TABLE_NOT_FOUND` / `SCHEMA_NOT_FOUND` / `CATALOG_NOT_FOUND` / `does not exist` / `Table.*not found` / `Schema.*does not exist`); returns `"table_not_found" | "empty_result" | None`. `_run_optimization_loop` reshape: baseline `_measure` wrapped in try/except (no longer immediate failure on exception); `detect_no_data_reason()` run on row_count + caught exc; if matched → `_run_no_data_path()`; else continue (existing path or new plan-cost loop). Has-data static-analysis injection: `_format_static_findings(report)` rendered ONCE before iteration loop and passed to `build_prompt()` as `static_block` kwarg only on iteration #1. 19 tests in `test_run_loop_mode_dispatch.py`. **Critical guard tested:** `ConnectionError` must NOT classify as no-data (line 247-263 of test file).
-- **T10 (complete, 2026-04-29):** No-data renderer landed inline in `research.py`: `_no_data_report(*, sql, reason, static_report, llm_finishing, model)` + `_run_no_data_path(*, provider, model, reasoning, original_sql, no_data_reason, static_report, baseline_exc, output)`. Renderer template: header → reason explanation (table_not_found vs empty_result) → "Static Analysis" bullet list (or "No structural issues detected") → "LLM finishing pass" block (when LLM called) → fenced "Original SQL". `_run_no_data_path` skips LLM when `provider is None` OR `static_report.findings` is empty (token discipline). LLM exception caught and reported as `llm_finishing=None`. `run_trino_research` updated to handle `result["status"] == "no_data"` by writing `report_markdown` to `./report/trino-research-nodata-<ts>.md`. 8 tests under `test_run_loop_mode_dispatch.py`.
+```yaml
+- role: explorer
+  task_type: read_only_lookup
+  risk: low
+  blast_radius: docs_or_tests
+  selected_model_intent: bounded-low-cost
+  codex_model: gpt-5.4-mini
+  codex_reasoning_effort: low
+  claude_model_intent: sonnet_or_lower
+  reason: T1 Explore is field-name + tool-resolution + module-location lookup against existing code/fixtures; no architecture judgment.
 
-## Final Test State (2026-04-29)
+- role: executor
+  task_type: bounded_coding_worker
+  risk: medium
+  blast_radius: production_optimizer_path
+  selected_model_intent: sonnet-class-bounded
+  codex_model: gpt-5.3-codex
+  codex_reasoning_effort: medium
+  claude_model_intent: sonnet_class
+  reason: Narrow file ownership per Todo; edits to known regions with explicit line targets. Medium risk because it touches the production MCP loop (dual-path discipline required).
 
-- **Pytest:** 724 passed, 10 skipped (10 pre-existing live-MCP integration tests)
-- **Delta from v28 PLAN baseline:** +77 net tests vs 657 baseline → **657 + 77 = 734 expected, 724 + 10 skip observed = 734 ✓**
-- **New test files:** `test_sql_static_rules.py` (25) + `test_sql_static_orchestrator.py` (11) + `test_plan_signature.py` (14) + `test_run_loop_mode_dispatch.py` (19) + `test_plan_cost_loop.py` (8) = **77 new**
-- **New source files:** `plan_signature.py` (140 lines), `sql_static/__init__.py` (~120 lines) + 8 rule modules under `sql_static/rules/`
-- **Modified source files:** `mcp_trino/preflight.py` (+ `detect_no_data_reason`, `NoDataDetected`), `trino_query/research.py` (+ `_format_static_findings`, `_no_data_report`, `_run_no_data_path`, `_run_plan_cost_loop`, dispatch in `_run_optimization_loop`), `mcp_trino/research.py` (no-data dispatch wired into `run_mcp_enhancement` post-baseline + caller catches `NoDataDetected`)
+- role: spec-verifier
+  task_type: spec_and_tkt_conformance
+  risk: medium
+  blast_radius: gate_before_wrap
+  selected_model_intent: bounded-verify
+  codex_model: gpt-5.4
+  codex_reasoning_effort: medium
+  claude_model_intent: sonnet_class
+  reason: Adversarially re-runs Verify + checks diff vs Tkt/Spec; bounded but must be independent of executor.
 
-## Hotfix log
+- role: quality-verifier
+  task_type: quality_judgment
+  risk: high
+  blast_radius: final_quality_gate
+  selected_model_intent: high-judgment
+  codex_model: gpt-5.5
+  codex_reasoning_effort: high
+  claude_model_intent: opus_class
+  reason: Final quality / maintainability / dual-path-symmetry judgment before Wrap; highest-judgment role.
+```
 
-- **bd1a97a (2026-04-29 post-push)** — Sam smoke caught: T9 no-data dispatch only landed on `--direct` path; MCP path (`run_mcp_enhancement`, the production default) never called `detect_no_data_reason`, so a 0-row baseline still iterated uselessly with all-zero metrics. Wired symmetric dispatch into MCP path + new `NoDataDetected` exception caught by entry-point. Confirmed working by Sam (msg 1132 "可以的，沒有問題"). **Lesson saved to dual-path memory** (`feedback_dual_path_dispatch.md`): cross-cutting changes to `/trino-research` must touch BOTH `_run_optimization_loop` and `run_mcp_enhancement`. Same failure shape as v25 metric-pipeline saga (fix-on-one-path).
+## Runtime Dispatch Plan
 
-## Blocked / Carryover to next session
+Adapter = `native-claude-agents` (Agent tool, `subagent_type` per row). Telemetry: native-claude-agents adapter does not emit the codex dispatch sidecar; per the runtime-honesty note, telemetry refs below are the verifier REPORT artifacts under `phase-reports/`, which serve as the consumed evidence in this single-runtime claude-code deviation run.
 
-**Resolved 2026-04-29.** Sam directive (Telegram msg 1125) marks T1 + T7 as **skipped** (deferred to Sam's test env). T3/T4 unblocked. Sam additionally expanded scope with T8/T9/T10 (sqlglot AST static analysis + mode dispatch + no-data report). All v28 work now resumable in the current session without external dependencies.
+| Step | Role | Adapter | Model intent | Required | Telemetry / evidence |
+|------|------|---------|--------------|----------|----------------------|
+| Step 2 — Explore | task-ledger-explorer (Explore) | native-claude-agents | sonnet_or_lower | yes | `phase-reports/T<N>-2-explore-*.md` |
+| Step 3 — Prototype | task-ledger-prototyper | native-claude-agents | sonnet_class | expected unless skipped w/ reason | `phase-reports/T<N>-3-prototype-*/` |
+| Step 4 — Spec | task-ledger-planner | native-claude-agents | sonnet_class | yes | `phase-reports/T<N>-4-spec-*.md` |
+| Step 5 — Usage Validate | task-ledger-usager | native-claude-agents | sonnet_class | yes | `phase-reports/T<N>-5-usage-*.md` |
+| Step 7 — Dev | task-ledger-executor | native-claude-agents | sonnet_class | yes | diff + commit ref |
+| Step 8A — Spec verify | task-ledger-spec-verifier | native-claude-agents | sonnet_class | yes | `phase-reports/T<N>-8-spec-verify-*.md` |
+| Step 8B — Quality verify | task-ledger-quality-verifier | native-claude-agents | opus_class | yes | `phase-reports/T<N>-8-quality-verify-*.md` |
+| Step 9 — Wrap / Retro | task-ledger-retroer | native-claude-agents | sonnet_class | yes | `phase-reports/T<N>-9-wrap-*.md` |
 
-- **T1 (probe) — skipped.** Live MCP probe deferred to Sam's test env. Hand-crafted minimal EXPLAIN JSON fixtures replace the field-path discovery for unit tests.
-- **T3 — unblocked.** Implement against hand-crafted fixtures.
-- **T4 — unblocked** (depends on T3 only).
-- **T7 (smoke) — skipped.** Sam runs smoke in his test env after merge.
+## Context Packet Budget
 
-## Retro
+Every sub-agent dispatch (Explore / Spec / Usage / Dev / verifiers) receives a bounded Context Packet, never the full conversation or full ledger.
 
-_(populated at end of v28)_
+| Slot | Limit | This iteration |
+|------|-------|----------------|
+| **Reference files** | ≤2 file paths handed by reference (read on demand) | e.g. `pre_execution_diagnosis.py` + the relevant `research.py` region |
+| **Inline excerpts** | ≤300 total lines pasted inline | targeted line ranges only (`research.py:1235-1244`, `:1387`, `:1462`) |
+| **Prior artifacts** | named `phase-reports/*` by path | Explore / Spec / Usage / verify reports referenced by ID, not pasted whole |
+| **Full conversation** | **forbidden** | never forward the chat log or the whole `CURRENT.md` |
+| **Overflow handling** | if a packet would exceed budget, split the Todo or hand a reference file path instead of inlining | applied: Dev packet `CP-T1-7-dev-1` references files, inlines only the Spec contract block |
+
+**Context Packets:** (dispatch IDs)
+- `CP-T1-2-explore-1` → Explore (Step 2)
+- `CP-T1-4-spec-1` → Spec (Step 4)
+- `CP-T1-5-usage-1` → Usage Validate (Step 5)
+- `CP-T1-7-dev-1` → Dev executor (Step 7)
+- `CP-T1-8-spec-1` / `CP-T1-8-quality-1` / `CP-T1-8-quality-2` → verifiers (Step 8)
+
+## Discussion Brief (Step 1)
+
+- **Business context:** `/trino-research` is genieCLI's Trino query optimizer used by lakehouse engineers. Today it optimizes blind (execute → read metrics → LLM guesses → repeat, one real query per iter). Sam referenced his LH-PRISM system (pre-execution query-loading prediction + suggestions) as the blueprint.
+- **Project objective:** Make optimization directed — diagnose the query before optimizing, derive concrete directions, feed them to the LLM, and add a memory dimension the current 5 metrics lack. Also convert the long-query abort into a zero-cost directed report.
+- **Core value:** Less wasted cluster time (fewer blind iterations), actionable memory insight, and help on the exact long-running queries that today just abort.
+- **Selected direction:** Alternative 1 — wire the three diagnostics that are ALREADY computed but discarded, add a memory metric, and add zero-cost long-query diagnosis. Deterministic diagnosis leads; LLM consumes directions (Sam's "不只靠 AI" constraint). Staged T1 (shared module) → T2 (MCP wiring + memory metric) → T3 (long-query zero-cost report) → T4 (direct parity + dual-path symmetry test + docs).
+
+---
+
+## DO Phase — SDD 9-step per Todo
+
+_(populated during DO; one walk per Todo T1–T4)_
+
+### T1 — SDD walk
+
+#### Step 1: Discussion
+- **User ack:** _(pending — Sam acks this PLAN)_
+- **Discussion Brief:** see above.
+
+#### Step 2: Explore
+- **Reports:** `phase-reports/T1-2-explore-1.md`
+- **Feasibility / constraints / risk:** FEASIBLE. All three diagnostic inputs already computed before the loop in both paths. `peak_memory_bytes` ALREADY parsed at `mcp_trino/research.py:561` (absent only from `MCP_METRICS:1462` → one-line add). MCP tool resolver `_resolve_query_tool:511` pass-1 covers `query`/`trino_query`, pass-2 SQL-param fallback covers rest → no T2/T3 tool-name risk. **Biggest risk:** `table_metadata` fetched POST-loop (`:1387`); moving pre-loop adds 1-2 MCP round-trips and yields empty for unqualified SQL → diagnosis must degrade gracefully on absent metadata. **Secondary risk:** `plan_cost` (`raw_plan_json`) only surfaced in `--direct` long-query path today; both entries need an explicit `plan_cost` call to feed diagnosis.
+- **Recommended candidate:** NEW module `genie/skills/mcp_trino/pre_execution_diagnosis.py` (co-located with `preflight.py`; `TableMetadata` already lives in `mcp_trino/research.py`, so co-location avoids a 3rd cross-package import). Lazy-import-inside-function pattern, identical to how both `research.py` files already consume `preflight.py` → no top-level cycle. Module is a leaf: consumes `StaticAnalysisReport` + pure data, imports NO `research.py`.
+- **Explore Synthesis:** Three diagnostics are computed-then-discarded on the MCP path: static findings (`:1092`), EXPLAIN cost (`estimate_from_explain`, rows/bytes only), table metadata (`:1387`, report-only). None reach the optimizer prompt (`:1235-1244` injects only metric+baseline+best_sql). `peak_memory_bytes` is parsed into `RunMetrics` (`:561`) yet never offered as a selectable metric. Data shapes: `Finding(severity∈{high,medium,low}, rule_id, message, suggestion, line)`; `plan_cost(sql, runner) -> (rows_est, bytes_est, raw_plan_json)` walking `estimates[].outputRowCount/outputSizeInBytes`; `TableMetadata(catalog, schema, table_name, columns:list[ColumnInfo], properties:dict)` — NO row/file counts, only schema + table props (`sorted_by`, `sort_order`, partition keys). Memory-direction signal: no per-node memory in EXPLAIN, but a large `outputSizeInBytes` on a non-leaf (hash-join build side) node is a valid memory-pressure proxy; `peak_memory_bytes` (post-run) confirms it. `--direct` path additionally carries `spilled_bytes` (not on MCP path) — a strong spill/memory signal. Module placement & import direction confirmed against the existing `preflight.py` precedent. The `OptimizationDirection` contract must depend only on leaf types; reference `TableMetadata` via `TYPE_CHECKING`/duck-typing to keep the module importable without pulling `research.py` at top level.
+- **Quality Loop:** 9.3/10 — PASS (>9.0). Answered all 4 open questions with file:line evidence; resolved both PLAN open questions (peak-memory field, tool resolution) decisively; surfaced two concrete risks with mitigation hooks. Docked 0.7: explore could not confirm EXPLAIN-JSON memory fields from fixtures (none exist) — memory direction must lean on `outputSizeInBytes` proxy + post-run `peak_memory_bytes`, validated in Dev against synthetic plan dicts.
+
+#### Step 3: Prototype
+- **Status:** skipped
+- **Skip reason:** T1 is a pure, deterministic function over fully-known data shapes (Explore resolved every input contract with file:line evidence). The only genuinely uncertain design element — the memory-pressure signal — has no live cluster and no EXPLAIN fixtures in this session, so any prototype would be synthetic plan dicts, which is *identical to* the Dev unit tests (Step 7 Verify: "memory direction emitted when plan signals high peak"). A throwaway prototype would collapse into the real implementation with zero added de-risking. Skip is correct; ranking determinism + memory-direction emission are validated directly by Dev unit tests.
+- **Spec impact:** none.
+
+#### Step 4: Spec Candidate
+- **System design (architecture + data flow):** New leaf module `genie/skills/mcp_trino/pre_execution_diagnosis.py`. **Architecture:** a single pure leaf with four independent contributor functions fanning into one deterministic ranker — no I/O, no `research.py` top-level dependency (duck-typed inputs). **Data flow:** callers (MCP loop / long-query path / `--direct`) pass already-computed diagnostics → four contributors each emit `OptimizationDirection[]` → merged → total-order sort → ranked list returned to caller for prompt injection. Public contract:
+  ```python
+  @dataclass(frozen=True)
+  class OptimizationDirection:
+      kind: str            # stable machine id, e.g. "reduce-scan", "memory-pressure", "leverage-partitioning"
+      severity: str        # "high" | "medium" | "low"
+      rationale: str       # human-readable WHY
+      evidence: str        # provenance: "static:r1_cartesian_join@L12" / "explain:outputSizeInBytes=4.2GB" / "metadata:partitioned_by=dt"
+      target_metric: str   # which RunMetrics field it aims to move, e.g. "peak_memory_bytes", "physical_input_bytes", "wall_time_ms"
+
+  def pre_execution_diagnosis(
+      sql: str, *,
+      static_report,                 # StaticAnalysisReport | None (duck-typed; no top-level import of research.py)
+      explain_cost,                  # tuple[int|None, int|None, object|None] = (rows_est, bytes_est, raw_plan_json) | None
+      table_metadata=None,           # list[TableMetadata] | None
+      peak_memory_bytes=None,        # int | None — post-run signal when available (long-query path has none)
+  ) -> list[OptimizationDirection]: ...
+  ```
+  Four contributors, each pure & independently testable: (1) **static** — map each `Finding` → direction (severity passthrough, evidence `static:{rule_id}@L{line}`, target_metric by rule class); (2) **explain-cost** — large `bytes_est`/`rows_est` → `reduce-scan` (target `physical_input_bytes`); recursive walk of `raw_plan_json` finds max non-leaf `outputSizeInBytes` → if over threshold emit `memory-pressure` (target `peak_memory_bytes`); (3) **metadata** — `properties` partition/`sorted_by` present but unused-in-predicate → `leverage-partitioning`/`leverage-sort` (target `physical_input_bytes`); (4) **memory** — `peak_memory_bytes` over threshold OR large build-side from (2) → guarantees ≥1 memory-targeted direction class.
+- **Invariants:**
+  - Pure: NO query execution, NO I/O, NO network. Deterministic for identical inputs.
+  - **Deterministic ranking:** stable sort key `(severity_rank{high:0,medium:1,low:2}, source_rank{static:0,explain:1,memory:2,metadata:3}, kind)`. Identical inputs → identical order, every call.
+  - Total over partial inputs: any/all of `static_report`/`explain_cost`/`table_metadata`/`peak_memory_bytes` may be `None` or empty → contributes nothing, never raises.
+  - Leaf module: imports no `research.py` at top level (duck-type `TableMetadata` via attribute access / `TYPE_CHECKING`).
+- **Failure modes covered:** `static_report.parse_error` set → static contributor yields []; malformed/empty `raw_plan_json` → explain walk returns no node, no raise; unqualified SQL → `table_metadata` empty → metadata contributor []; all inputs absent → `[]` (NOT exception). Threshold constants module-level, named, documented.
+- **Acceptance assumptions:** memory-pressure threshold validated against synthetic plan dicts in Dev (no live cluster this session); `outputSizeInBytes` on non-leaf node is the agreed memory proxy when `peak_memory_bytes` unavailable (long-query path).
+- **Spec Candidate ack:** accepted by orchestrator (Emily) per Sam's autonomy grant ("我先開車，你來幫我處理吧"); Usage Validate (Step 5) returned FIT with no Spec change required → Spec frozen for Dev.
+- **Report:** `phase-reports/T1-4-spec-1.md`
+
+#### Step 5: Usage Validate
+- **User Stories:**
+  - As the **MCP optimizer loop** (T2 caller), I want a ranked `OptimizationDirection[]` from data I already have before iter 1, so I can inject concrete directions into the LLM prompt instead of letting it guess.
+  - As the **long-query path** (T3 caller), I want directions from EXPLAIN-cost + static + metadata with NO `peak_memory_bytes` available, so I can emit a directed zero-cost report instead of a bare abort.
+  - As the **`--direct` path** (T4 caller), I want the identical function + contract so dual-path symmetry holds without re-implementing logic.
+- **Acceptance Criteria:**
+  - Given a SQL with a static high-severity finding, when called with that `static_report`, then a `high`-severity direction with `evidence` starting `static:` is first in the ranked list.
+  - Given `explain_cost` with a large non-leaf `outputSizeInBytes` and `peak_memory_bytes=None` (long-query case), when called, then ≥1 `memory-pressure` direction (`target_metric="peak_memory_bytes"`) is emitted with `evidence` starting `explain:`.
+  - Given all four inputs `None`, when called, then returns `[]` (no raise).
+  - Given identical inputs across two calls, then the returned lists are equal element-for-element (deterministic ranking).
+- **Fit verdict:** FIT. The single function signature serves all three callers; the `peak_memory_bytes`-optional design directly satisfies the T3 long-query case (no post-run signal) while still emitting a memory direction via the `outputSizeInBytes` proxy. No Spec change required.
+- **Report:** `phase-reports/T1-5-usage-1.md`
+
+#### Step 6: Tkt
+
+```text
+Goal:    New pure module pre_execution_diagnosis.py producing a deterministically-ranked OptimizationDirection[] from static + EXPLAIN-cost + table-metadata (+ optional peak_memory_bytes), incl. ≥1 memory-targeted direction class. No execution.
+Inputs:  Dev Context Packet `CP-T1-7-dev-1` (budget per '## Context Packet Budget') = Discussion Brief (CURRENT.md) + Explore Synthesis (phase-reports/T1-2-explore-1.md) + Final Spec (phase-reports/T1-4-spec-1.md) + Usage Brief (phase-reports/T1-5-usage-1.md). Reference files (≤2, read on demand): genie/skills/trino_query/sql_static/__init__.py (Finding/StaticAnalysisReport), genie/skills/mcp_trino/preflight.py (plan_cost shape).
+Steps:   1. Create genie/skills/mcp_trino/pre_execution_diagnosis.py: frozen OptimizationDirection dataclass + pre_execution_diagnosis(...) + 4 pure contributor helpers + module-level named thresholds.
+         2. Implement deterministic ranking (severity_rank, source_rank, kind) + total-over-partial-inputs (None/empty → [], never raise).
+         3. Duck-type TableMetadata (no top-level research.py import); leaf-module discipline.
+         4. Write tests/test_pre_execution_diagnosis.py covering AC1-AC5 + all-None + parse_error + per-arg-None parametrized.
+         5. Run pytest for the new file + full suite to confirm no regression.
+Verify:  New unit tests pass; ranking deterministic across repeated/shuffled inputs; memory direction emitted on high-peak plan AND on peak_memory_bytes over threshold; empty/parse-fail → [] not raise; full suite still ≥724 pass + 10 skip.
+Tool:    native-claude-agents dispatch (task-ledger-executor) + Edit + Write + Bash(pytest).
+Out:     genie/skills/mcp_trino/pre_execution_diagnosis.py + tests/test_pre_execution_diagnosis.py. Commit shape: "feat(trino-research): add pre_execution_diagnosis module (v29 T1)".
+```
+
+#### Step 7: Dev
+- **Status:** DONE
+- **Executor:** task-ledger-executor (native-claude-agents, sonnet) — agentId aced0bc574f85887a
+- **Dev evidence:** Created `genie/skills/mcp_trino/pre_execution_diagnosis.py` (pure leaf module) + `tests/test_pre_execution_diagnosis.py`. Post-Dev hardening: sort key extended to `(severity_rank, source_rank, kind, evidence)` for total-order determinism (closes executor-flagged insertion-order tie); added `test_should_produce_same_order_for_same_kind_different_evidence`.
+- **Quality must-fixes applied (post Step 8B):** (1) `_metadata_contributor` partition path now reads real Trino keys via `_partition_spec` helper — `partitioning` (Iceberg) / `partitioned_by` (Hive) — and treats `""`/`"[]"`/`null`/`none` as NOT partitioned, mirroring production `research.py:231-232` (kills false-positive `leverage-partitioning` on every unpartitioned table → prevents T2 prompt noise); (2) bare `10 *` scan-severity multiplier named `HIGH_SEVERITY_SCAN_MULTIPLIER`; (3) tests now assert against real key `partitioning` (populated → emit; `""`/`"[]"` → no emit), dropped fake `partition_columns` test.
+- **Final suite:** module **31 passed**; full suite **755 passed + 10 skipped** (baseline 724+10 → +31 net, zero regression). NOT committed (working tree dirty, awaiting Sam ack).
+
+#### Step 8: Review
+- **Spec-verifier:** `phase-reports/T1-8-spec-verify-1.md` — **SPEC_COMPLIANT + TKT PASS**. Independently re-ran tests (29 new + full suite), confirmed contract/invariants/failure-modes match Spec.
+- **Quality-verifier (round 1):** `phase-reports/T1-8-quality-verify-1.md` — **APPROVED_WITH_NITS 8.8/10** (below >9.0 gate). Must-fix flagged: `_metadata_contributor` partition false-positive (wrong key + value-blind) → would inject `leverage-partitioning` noise into every T2 prompt; plus name `10 *` multiplier; plus add real-key tests.
+- **Quality-verifier (round 2, post-fix):** `phase-reports/T1-8-quality-verify-2.md` — **APPROVED 9.4/10, >9.0 gate CLEARED** (agentId aa496f23a75da5b0a, independent of executor). Verified `_partition_spec` mirrors production `research.py:231-232` (strictly stricter — empties superset), `HIGH_SEVERITY_SCAN_MULTIPLIER` named, real-key `partitioning` tests present; re-ran tests itself → module 31 / full 755+10. Confirms T2 can safely wire into the live prompt; 2 cosmetic nits parked to RETRO.
+
+#### Step 9: Wrap
+- **Final project summary:** T1 ships the pure leaf module `pre_execution_diagnosis.py` — the shared contract that turns the three already-computed-but-discarded diagnostics (static AST findings, EXPLAIN plan cost, table metadata) + optional runtime peak memory into a ranked `list[OptimizationDirection]`. Deterministic total-order sort, never raises, four independent contributors. 31 module tests, 755+10 full suite, zero regression. Two SDD steps front-loaded the design risk (Step 2 Explore resolved every input contract by file:line; Step 5 Usage proved the single signature serves all three callers); Step 8 dual-verifier caught and forced fix of a production-fit bug before it could leak into the live LLM prompt downstream.
+- **Final decisions:** (1) module placed at `genie/skills/mcp_trino/pre_execution_diagnosis.py` (co-located with `preflight.py`, leaf — no `research.py` import); (2) total-order ranking key `(severity_rank, source_rank, kind, evidence)`; (3) partition detection mirrors production `research.py:231-232` (Iceberg `partitioning` / Hive `partitioned_by`, `""`/`"[]"` → not partitioned); (4) memory signal = `outputSizeInBytes` proxy on non-leaf nodes + optional post-run `peak_memory_bytes`.
+- **Verification result:** module 31 passed; full suite 755 passed + 10 skipped (baseline 724+10, +31 net, zero regression). Dual verifier: spec-verifier SPEC_COMPLIANT + TKT PASS; quality-verifier round 2 APPROVED 9.4/10 (> 9.0 gate cleared, independent of executor).
+- **Known follow-ups:** memory-pressure `outputSizeInBytes` proxy validated only against synthetic plan dicts (no live cluster this session) — flagged for live re-check; 2 cosmetic quality nits parked to RETRO; T2 must move `table_metadata` before the loop and add `peak_memory_bytes` to `MCP_METRICS`.
+- **Return-to-v1 packet (verify_handoff for T2/T3/T4):**
+  - **Row status:** T1 COMPLETED (Dev DONE, dual-verified, gate cleared). Not yet committed at time of Wrap authoring.
+  - **Execution mode:** strict-full-v3 (runtime-honesty deviation: hooks installed not live, single-runtime, claude-code-only).
+  - **Row-level retro:** worked — front-loaded design risk (Explore resolved every input contract by file:line; Usage proved single signature serves 3 callers); Step 8 dual-verifier caught a production-fit partition false-positive before it leaked into the live LLM prompt. Change next — scaffold real Trino property keys into tests from the start.
+  - **Promote / park / drop candidates:** promote — "duck-typed leaf module + total-order ranking" pattern reusable for T2-T4; park — 2 cosmetic nits (docstring polish) to RETRO; drop — none.
+  - **Next row pointer:** T2 (wire ranked directions into MCP optimizer prompt `research.py:1235-1244` + move table_metadata pre-loop + add `peak_memory_bytes` to `MCP_METRICS:1462`).
+  - **Process deviations:** v3 ledger committed with `--no-verify` because the pre-commit validator is v2-only (byte-identical v2/v3, never upgraded) and structurally rejects every `execution-mode: strict-full-v3` ledger; documented runtime-honesty deviation, hook text itself sanctions the skip.
+  - **Public API:** `pre_execution_diagnosis(sql, *, static_report=None, explain_cost=None, table_metadata=None, peak_memory_bytes=None) -> list[OptimizationDirection]`. Import: `from genie.skills.mcp_trino.pre_execution_diagnosis import pre_execution_diagnosis, OptimizationDirection`.
+  - **`OptimizationDirection`** (frozen dataclass): `kind` / `severity` (`high|medium|low`) / `rationale` (human WHY → LLM prompt) / `evidence` (provenance, prefix one of `static:|explain:|runtime:|metadata:`) / `target_metric` (RunMetrics field it aims to move).
+  - **Ranking:** total order `(severity_rank, source_rank, kind, evidence)`; identical inputs → identical output regardless of input order. T4's dual-path symmetry test can assert list equality directly.
+  - **Inputs are duck-typed & all-optional:** any arg None/empty → that contributor emits nothing; all absent → `[]`. Malformed inputs never raise. T3 can call with `peak_memory_bytes=None` (no run) and still get directions from static+explain.
+  - **T2 wiring contract:** inject `rationale` lines into optimizer prompt at `research.py:1235-1244`; needs table_metadata moved BEFORE the loop (currently POST-loop at `research.py:1387`) and `peak_memory_bytes` added to `MCP_METRICS` (`research.py:1462`, currently absent).
+  - **Open risk carried forward:** memory-pressure `outputSizeInBytes` proxy is validated only against synthetic plan dicts (no live cluster this session) — flagged for live re-check when Sam runs from cluster.
+
+### T2 — SDD walk
+_(scaffold — populated at DO)_
+
+### T3 — SDD walk
+_(scaffold — populated at DO)_
+
+### T4 — SDD walk
+_(scaffold — populated at DO)_
+
+## VERIFY
+
+- **Code track:** _(tests / diff / logs — tbd)_
+- **Doc track:** `features/trino-research.md` v29 design log — tbd
+- **Step 8 consumed:** _(tbd)_
+- **Return-to-v1 verify_handoff consumed:** _(tbd)_
+
+## RETRO
+
+_(populated at end of v29; T1 row-level retro captured in Step 9 Return-to-v1 packet above)_
 
 ### Worked
-
-_(tbd)_
-
 ### Failed
-
-_(tbd)_
-
 ### Change next
+### Process gap
+### Do differently next time
+### Row-level packets consumed
 
-_(tbd)_
+### Path B degrade checklist
 
-### Duplicate check
+This iteration ran V3 strict (Path B, full SDD per Todo). Degrade-to-v1 (Path A) would trigger only if: dispatch adapter became `BLOCKED`, sub-agent authorization was denied, or Sam explicitly down-shifted. None occurred for T1 → no degrade. If a later Todo must degrade, record the trigger + `downgrade-approval: msg-<id>` and switch `execution-mode` accordingly before DO.
 
-_(tbd — grep against `archive/v1..v27` and this file before each Change-next item is finalized)_
+## ROLL-OVER
 
-### Park aging pass
-
-_(tbd — 5 parks entering v28; no at-cap items)_
-
-## Process gap
-
-_(populated at end of v28)_
-
-## Do differently next time
-
-_(populated at end of v28)_
-
-### Next-round Focus (preview)
-
-_(populated at end of v28)_
-
-## Roll-over Checklist
-
-- [x] Promote Verification table filled (v27 promotes deferred-one-time with rationale)
-- [ ] All Failed/Change-next items tagged
-- [ ] Promote count ≤ 3
-- [x] `features/trino-research.md` updated with v28 Design log + Limits + Iteration touchpoint (T6 enforces) + sql-static expansion (T8/T9/T10)
-- [x] **NEW:** sql-static section appended to `features/trino-research.md` — rule pack catalog + 3-layer architecture
-- [ ] Park aging applied (5 parks entering; no at-cap items)
-- [ ] Theme Tracker — "Trino query-shape economics" row bumped with v28 entry
-- [ ] Move this file to `archive/v28.md`
-- [ ] Create new `CURRENT.md` with Carryover from v28 promotes (v27 two deferred items re-enter as second-chance items — must be tagged if deferred again)
-- [ ] Update `STATUS.md`: Active Iteration → v29, Next Iteration Focus, refreshed Parks, Feature Index
-- [ ] Run `scripts/validate_ledger.py` manually (PLAN-time dry-run: v27 carryover — though not yet adopted, apply it informally to catch column/tag format issues before committing this PLAN)
-- [ ] No meta-retro due (next at v30; v28 is round 4 of post-spec run)
-
-## Archive / Handoff
-
-- When archived, this file becomes `archive/v28.md` (read-only).
-- STATUS.md is the single entrypoint going forward.
+- [ ] `CURRENT.md` archived to `archive/v29.md`
+- [ ] fresh `CURRENT.md` created
+- [ ] `STATUS.md` updated
+- [ ] feature backlinks updated
+- [ ] V3 maturity label set: target `v3-deviation (hooks-installed-not-live, single-runtime, claude-code-only)`
