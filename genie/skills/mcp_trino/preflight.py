@@ -226,10 +226,19 @@ class LongQueryAbort(RuntimeError):
     without re-deriving the prediction math.
     """
 
-    def __init__(self, message: str, baseline_s: float, predicted_total_s: float):
+    def __init__(
+        self,
+        message: str,
+        baseline_s: float,
+        predicted_total_s: float,
+        report_markdown: str | None = None,
+    ):
         super().__init__(message)
         self.baseline_s = baseline_s
         self.predicted_total_s = predicted_total_s
+        # When the gate trips we still emit a zero-cost directed report instead
+        # of a bare abort; the entry-point writes this to disk if present.
+        self.report_markdown = report_markdown
 
 
 class NoDataDetected(RuntimeError):

@@ -336,6 +336,89 @@ def format_directions_for_prompt(
 
 
 # ---------------------------------------------------------------------------
+# Report rendering — standalone Markdown directed report (zero query cost)
+# ---------------------------------------------------------------------------
+
+
+def format_directions_report(
+    directions: list[OptimizationDirection],
+    *,
+    sql: str,
+    reason: str,
+    model: str = "",
+) -> str:
+    """Render ranked directions as a standalone Markdown report.
+
+    Used by the long-query / `--diagnose-only` path: when the iteration loop is
+    skipped (no real query, no EXPLAIN ANALYZE), the diagnosis is still emitted
+    as a directed report so the user gets actionable directions at zero query
+    cost instead of a bare abort. Pure and deterministic; never raises.
+    """
+    from datetime import datetime
+
+    lines = [
+        "# Trino Query Pre-execution Diagnosis Report (zero-cost directed)",
+        "",
+        f"**Date:** {datetime.now().strftime('%Y-%m-%d %H:%M')}",
+    ]
+    if model:
+        lines.append(f"**Model:** {model}")
+    lines += [
+        f"**Mode:** diagnosis-only — iteration loop skipped: {reason}",
+        "",
+        "## Why this report instead of an iteration run",
+        "",
+        f"- {reason}",
+        "- The optimizer would burn one real query per iteration; for a slow "
+        "baseline that is prohibitively expensive.",
+        "- Static analysis + EXPLAIN (FORMAT JSON) plan cost + table metadata "
+        "still surface ranked optimization directions at **zero query cost**.",
+        "",
+        "## Original SQL",
+        "",
+        "```sql",
+        sql.rstrip(),
+        "```",
+        "",
+        "## Ranked optimization directions",
+        "",
+    ]
+
+    if not directions:
+        lines += [
+            "_No directions surfaced. The static analyzer found no structural "
+            "issues, EXPLAIN cost was unavailable or below threshold, and no "
+            "partition/sort metadata was present._",
+            "",
+            "Next step: confirm an EXPLAIN runner is reachable, or pass "
+            "`--long-query` to run the full iteration loop anyway.",
+            "",
+        ]
+        return "\n".join(lines)
+
+    lines += ["| # | Severity | Kind | Target metric | Rationale | Evidence |",
+              "|---|---|---|---|---|---|"]
+    for i, d in enumerate(directions, 1):
+        rationale = d.rationale.replace("|", "\\|")
+        lines.append(
+            f"| {i} | {d.severity} | {d.kind} | {d.target_metric} | "
+            f"{rationale} | {d.evidence} |"
+        )
+    lines += [
+        "",
+        "## Next steps",
+        "",
+        "1. Apply the highest-severity direction first (the table above is ranked by severity).",
+        "2. Re-run `/trino-research` on the rewritten query; if the baseline is "
+        "now under the long-query threshold the full iteration loop runs.",
+        "3. To force the iteration loop on the original slow query, pass "
+        "`--long-query`.",
+        "",
+    ]
+    return "\n".join(lines)
+
+
+# ---------------------------------------------------------------------------
 # Public API
 # ---------------------------------------------------------------------------
 
@@ -385,6 +468,7 @@ __all__ = [
     "OptimizationDirection",
     "pre_execution_diagnosis",
     "format_directions_for_prompt",
+    "format_directions_report",
     "LARGE_SCAN_BYTES",
     "HIGH_PEAK_MEMORY_BYTES",
 ]

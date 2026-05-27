@@ -643,6 +643,40 @@ def _run_plan_cost_loop(
 # Core iteration loop (no RunManager / file_patch / git dependency)
 # ---------------------------------------------------------------------------
 
+def _assemble_direct_directions(
+    original_sql: str,
+    static_report,
+    explain_runner: Optional[Callable[[str], Optional[str]]],
+    *,
+    peak_memory_bytes: Optional[int] = None,
+):
+    """Assemble ranked optimization directions for the --direct path.
+
+    Mirrors the MCP path's `_assemble_mcp_directions` but with no table-metadata
+    fetcher (the direct path has none). Diagnosis is driven by static findings +
+    EXPLAIN (FORMAT JSON) plan cost (zero query) + the baseline's real peak
+    memory when available. Never raises; a failing EXPLAIN runner yields no
+    plan-cost contribution.
+    """
+    from genie.skills.mcp_trino.pre_execution_diagnosis import pre_execution_diagnosis
+    from genie.skills.mcp_trino.preflight import plan_cost as _plan_cost
+
+    explain_cost = None
+    if explain_runner is not None:
+        try:
+            explain_cost = _plan_cost(original_sql, explain_runner)
+        except Exception:
+            explain_cost = None
+
+    return pre_execution_diagnosis(
+        original_sql,
+        static_report=static_report,
+        explain_cost=explain_cost,
+        table_metadata=None,
+        peak_memory_bytes=peak_memory_bytes,
+    )
+
+
 def _run_optimization_loop(
     provider,
     model: str,
@@ -658,6 +692,7 @@ def _run_optimization_loop(
     long_query_threshold_s: Optional[int] = None,
     max_fallbacks: Optional[int] = None,
     explain_runner: Optional[Callable[[str], Optional[str]]] = None,
+    diagnose_only: bool = False,
 ) -> dict:
     """Run the optimization loop. Returns summary dict.
 
@@ -678,6 +713,23 @@ def _run_optimization_loop(
     except Exception as exc:
         output.progress(f"  [warn] static analysis skipped: {exc}")
         static_report = None
+
+    # ── --diagnose-only short-circuit (v29 T3): zero query cost ──
+    # No baseline, no iteration loop, no EXPLAIN ANALYZE. EXPLAIN (FORMAT JSON)
+    # plans the query without running it; static analysis is cheap. Emit a
+    # directed report and stop. peak_memory_bytes is None (no run happened).
+    if diagnose_only:
+        from genie.skills.mcp_trino.pre_execution_diagnosis import format_directions_report
+        output.progress("  --diagnose-only: EXPLAIN-cost + static, no query execution")
+        directions = _assemble_direct_directions(
+            original_sql, static_report, explain_runner, peak_memory_bytes=None
+        )
+        report_md = format_directions_report(
+            directions, sql=original_sql,
+            reason="--diagnose-only requested (no baseline, no iteration)",
+            model=model,
+        )
+        return {"status": "diagnosed", "report_markdown": report_md}
 
     # ── Baseline ──
     output.progress("  Measuring baseline...")
@@ -740,8 +792,26 @@ def _run_optimization_loop(
         max_fallbacks=fallbacks,
     )
     if not gate.ok:
+        # v29 T3: instead of a bare abort, emit a zero-cost directed report.
+        # The baseline already ran (one query) so its real peak memory feeds the
+        # diagnosis; EXPLAIN (FORMAT JSON) + static add the rest. No further
+        # query / no EXPLAIN ANALYZE / no iteration loop.
+        from genie.skills.mcp_trino.pre_execution_diagnosis import format_directions_report
         output.error(f"  [abort] {gate.message}")
-        return {"status": "aborted", "reason": "long_query_gate", "message": gate.message}
+        output.progress("  Emitting zero-cost directed report instead of iterating")
+        directions = _assemble_direct_directions(
+            original_sql, static_report, explain_runner,
+            peak_memory_bytes=getattr(baseline["metrics"], "peak_memory_bytes", 0) or None,
+        )
+        report_md = format_directions_report(
+            directions, sql=original_sql, reason=gate.message, model=model,
+        )
+        return {
+            "status": "diagnosed",
+            "reason": "long_query_gate",
+            "message": gate.message,
+            "report_markdown": report_md,
+        }
 
     # ── v28 T4 dispatch: long-query plan-cost loop ──
     # When the user opts into long-query mode AND we have an EXPLAIN runner,
@@ -768,25 +838,10 @@ def _run_optimization_loop(
     # ── Pre-execution diagnosis (v29 T2 — dual-path parity with MCP path) ──
     # The --direct path has no table-metadata fetcher, so diagnosis is driven by
     # static findings + plan-cost estimates + the baseline's actual peak memory.
-    # table_metadata=None contributes nothing; the module handles it gracefully.
-    from genie.skills.mcp_trino.pre_execution_diagnosis import (
-        format_directions_for_prompt,
-        pre_execution_diagnosis,
-    )
-    from genie.skills.mcp_trino.preflight import plan_cost as _plan_cost
+    from genie.skills.mcp_trino.pre_execution_diagnosis import format_directions_for_prompt
 
-    explain_cost = None
-    if explain_runner is not None:
-        try:
-            explain_cost = _plan_cost(original_sql, explain_runner)
-        except Exception:
-            explain_cost = None
-
-    directions = pre_execution_diagnosis(
-        original_sql,
-        static_report=static_report,
-        explain_cost=explain_cost,
-        table_metadata=None,
+    directions = _assemble_direct_directions(
+        original_sql, static_report, explain_runner,
         peak_memory_bytes=getattr(baseline["metrics"], "peak_memory_bytes", 0) or None,
     )
     directions_block = format_directions_for_prompt(directions)
@@ -1140,6 +1195,7 @@ def run_trino_research(
     long_query_opt_in: bool = False,
     long_query_threshold_s: Optional[int] = None,
     max_fallbacks: Optional[int] = None,
+    diagnose_only: bool = False,
 ) -> None:
     """Entry point for /trino-research command.
 
@@ -1208,6 +1264,18 @@ def run_trino_research(
     output.progress(f"  Verify:     median of {runs} runs")
     output.print("")
 
+    # ── EXPLAIN (FORMAT JSON) runner — zero query cost, feeds plan diagnosis ──
+    def _direct_explain_runner(s: str) -> Optional[str]:
+        try:
+            _, _, rows = _execute_sql(f"EXPLAIN (FORMAT JSON) {s}", capture_rows=True)
+        except Exception:
+            return None
+        if not rows:
+            return None
+        first = rows[0]
+        cell = first[0] if isinstance(first, (list, tuple)) and first else first
+        return cell if isinstance(cell, str) else None
+
     # ── Run ──
     result = _run_optimization_loop(
         provider=provider,
@@ -1222,6 +1290,8 @@ def run_trino_research(
         long_query_opt_in=long_query_opt_in,
         long_query_threshold_s=long_query_threshold_s,
         max_fallbacks=max_fallbacks,
+        explain_runner=_direct_explain_runner,
+        diagnose_only=diagnose_only,
     )
 
     # ── Print summary ──
@@ -1229,8 +1299,19 @@ def run_trino_research(
     if result["status"] == "failed":
         output.error(f"  Run failed: {result.get('error', 'unknown')}")
         return
-    if result["status"] == "aborted":
-        # Gate message already surfaced by _run_optimization_loop.
+    if result["status"] == "diagnosed":
+        # Zero-cost directed report (gate-trip fallback or --diagnose-only).
+        from datetime import datetime
+        report_md = result.get("report_markdown") or ""
+        report_dir = Path.cwd() / "report"
+        report_dir.mkdir(parents=True, exist_ok=True)
+        report_name = f"trino-research-diagnose-{datetime.now().strftime('%Y%m%d-%H%M%S')}.md"
+        report_path = report_dir / report_name
+        try:
+            report_path.write_text(report_md)
+            output.progress(f"\n  Directed report saved: {report_path}")
+        except Exception as e:
+            output.error(f"  Failed to save directed report: {e}")
         return
     if result["status"] == "no_data":
         # Static-analysis-only report — save it and exit early.

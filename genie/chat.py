@@ -288,7 +288,7 @@ def _print_trino_research_help(output) -> None:
     output.print("    /trino-research [--file <path>] [--metric <m>] [--iterations <n>] [--runs <n>]")
     output.print("                    [--safe-limit <n>] [--query-timeout <sec>]")
     output.print("                    [--long-query] [--long-query-threshold <sec>] [--max-fallbacks <n>]")
-    output.print("                    [--direct]")
+    output.print("                    [--diagnose-only] [--direct]")
     output.print("")
     output.print("  [dim]Flags[/dim]")
     output.print("    --file <path>             SQL file; prompts interactively if omitted")
@@ -301,11 +301,13 @@ def _print_trino_research_help(output) -> None:
     output.print("    --long-query             opt-in acknowledgement that the baseline is slow")
     output.print("    --long-query-threshold <s> abort without --long-query when baseline exceeds this (default 60s)")
     output.print("    --max-fallbacks <n>       K-retry cap for final L3 row-equivalence verify (default 3)")
+    output.print("    --diagnose-only           zero-cost directed report: static + EXPLAIN plan, no query run")
     output.print("    --direct                  bypass MCP, use trino driver directly")
     output.print("")
     output.print("  [dim]Examples[/dim]")
     output.print("    /trino-research --file query.sql --metric query_time_ms --iterations 5")
     output.print("    /trino-research --file q.sql --safe-limit 10000")
+    output.print("    /trino-research --file q.sql --diagnose-only   [dim](no query executed)[/dim]")
     output.print("    /trino-research --direct   [dim](skip MCP)[/dim]")
     output.print("")
 
@@ -846,6 +848,9 @@ def _chat_loop(
                 elif args[i] == "--max-fallbacks" and i + 1 < len(args):
                     kwargs["max_fallbacks"] = int(args[i + 1])
                     i += 2
+                elif args[i] == "--diagnose-only":
+                    kwargs["diagnose_only"] = True
+                    i += 1
                 elif args[i] == "--direct":
                     force_direct = True
                     i += 1

@@ -625,6 +625,43 @@ def _build_mcp_explain_runner(client: McpClient):
     return _runner
 
 
+def _assemble_mcp_directions(client, sql, static_report, *, peak_memory_bytes=None):
+    """Gather diagnostics → ranked directions at zero query-execution cost.
+
+    Single source of truth for the three MCP call sites that need a diagnosis:
+    the optimizer-prompt injection (has-data success path), the long-query
+    gate-trip directed report, and the ``--diagnose-only`` short-circuit.
+    EXPLAIN (FORMAT JSON) plans the query without running it; metadata is a
+    cheap catalog round-trip. Returns ``(directions, table_metadata)`` so the
+    success path can reuse the fetched metadata for its post-loop block.
+    """
+    from genie.skills.mcp_trino.pre_execution_diagnosis import pre_execution_diagnosis
+    from .preflight import plan_cost
+
+    pre_table_metadata: list[TableMetadata] = []
+    diag_refs = [(c, s, t) for (c, s, t) in _extract_table_names(sql) if c and s]
+    if diag_refs:
+        try:
+            pre_table_metadata = _fetch_table_metadata(client, diag_refs)
+        except Exception:
+            pre_table_metadata = []
+
+    explain_cost = None
+    try:
+        explain_cost = plan_cost(sql, _build_mcp_explain_runner(client))
+    except Exception:
+        explain_cost = None
+
+    directions = pre_execution_diagnosis(
+        sql,
+        static_report=static_report,
+        explain_cost=explain_cost,
+        table_metadata=pre_table_metadata or None,
+        peak_memory_bytes=peak_memory_bytes,
+    )
+    return directions, pre_table_metadata
+
+
 def _measure_mcp(client: McpClient, sql: str, metric_key: str,
                   runs: int, capture_rows: bool = False,
                   max_capture_rows: int = 100_000,
@@ -1093,6 +1130,7 @@ def run_mcp_enhancement(
     long_query_opt_in: bool = False,
     long_query_threshold_s: Optional[int] = None,
     max_fallbacks: Optional[int] = None,
+    diagnose_only: bool = False,
 ) -> EnhancementReport:
     """Run the MCP-based query enhancement loop.
 
@@ -1128,10 +1166,6 @@ def run_mcp_enhancement(
             output.progress(f"  [warn] static analysis skipped: {exc}")
         static_report = None
 
-    # ── Baseline ──
-    if output:
-        output.progress("  Measuring baseline...")
-
     from .preflight import (
         DEFAULT_LONG_QUERY_THRESHOLD_S,
         DEFAULT_MAX_FALLBACKS,
@@ -1142,6 +1176,31 @@ def run_mcp_enhancement(
         make_query_max_run_time_sql,
         plan_cost,
     )
+
+    # ── --diagnose-only short-circuit (v29 T3): zero query cost ──
+    # No baseline, no iteration loop, no EXPLAIN ANALYZE. EXPLAIN (FORMAT JSON)
+    # plans the query without running it; static + metadata are cheap. Emit a
+    # directed report and stop. peak_memory_bytes is None (no run happened).
+    if diagnose_only:
+        from genie.skills.mcp_trino.pre_execution_diagnosis import format_directions_report
+        if output:
+            output.progress("  [cyan]--diagnose-only:[/cyan] EXPLAIN-cost + static + metadata, no query execution")
+        directions, _ = _assemble_mcp_directions(
+            client, sql, static_report, peak_memory_bytes=None
+        )
+        report_md = format_directions_report(
+            directions, sql=sql,
+            reason="--diagnose-only requested (no baseline, no iteration)",
+            model=model,
+        )
+        raise LongQueryAbort(
+            "diagnose-only: directed report emitted (no query executed)",
+            0.0, 0.0, report_markdown=report_md,
+        )
+
+    # ── Baseline ──
+    if output:
+        output.progress("  Measuring baseline...")
 
     baseline = None
     baseline_exc: BaseException | None = None
@@ -1200,9 +1259,27 @@ def run_mcp_enhancement(
         max_fallbacks=fallbacks,
     )
     if not gate.ok:
+        # v29 T3: instead of a bare abort, emit a zero-cost directed report.
+        # The baseline already ran (one query) so its real peak memory feeds
+        # the diagnosis; EXPLAIN (FORMAT JSON) + static + metadata add the rest.
+        # No further query / no EXPLAIN ANALYZE / no iteration loop.
+        from genie.skills.mcp_trino.pre_execution_diagnosis import format_directions_report
         if output:
             output.error(f"  [abort] {gate.message}")
-        raise LongQueryAbort(gate.message, gate.baseline_s, gate.predicted_total_s)
+            output.progress("  [cyan]Emitting zero-cost directed report instead of iterating[/cyan]")
+        directions, _ = _assemble_mcp_directions(
+            client, sql, static_report,
+            peak_memory_bytes=getattr(baseline.metrics, "peak_memory_bytes", 0) or None,
+        )
+        report_md = format_directions_report(
+            directions, sql=sql,
+            reason=gate.message,
+            model=model,
+        )
+        raise LongQueryAbort(
+            gate.message, gate.baseline_s, gate.predicted_total_s,
+            report_markdown=report_md,
+        )
 
     # ── Per-candidate wall-clock kill (best-effort) ──
     # mcp-trino may or may not persist SET SESSION across separate tool calls.
@@ -1239,28 +1316,10 @@ def run_mcp_enhancement(
     # here is reused by the post-loop suggestions block (single fetch).
     from genie.skills.mcp_trino.pre_execution_diagnosis import (
         format_directions_for_prompt,
-        pre_execution_diagnosis,
     )
 
-    pre_table_metadata: list[TableMetadata] = []
-    diag_refs = [(c, s, t) for (c, s, t) in _extract_table_names(sql) if c and s]
-    if diag_refs:
-        try:
-            pre_table_metadata = _fetch_table_metadata(client, diag_refs)
-        except Exception:
-            pre_table_metadata = []
-
-    explain_cost = None
-    try:
-        explain_cost = plan_cost(sql, _build_mcp_explain_runner(client))
-    except Exception:
-        explain_cost = None
-
-    directions = pre_execution_diagnosis(
-        sql,
-        static_report=static_report,
-        explain_cost=explain_cost,
-        table_metadata=pre_table_metadata or None,
+    directions, pre_table_metadata = _assemble_mcp_directions(
+        client, sql, static_report,
         peak_memory_bytes=getattr(baseline.metrics, "peak_memory_bytes", 0) or None,
     )
     directions_block = format_directions_for_prompt(directions)
@@ -1713,6 +1772,7 @@ def run_trino_research_via_mcp(
     long_query_opt_in: bool = False,
     long_query_threshold_s: Optional[int] = None,
     max_fallbacks: Optional[int] = None,
+    diagnose_only: bool = False,
 ) -> None:
     """MCP-routed entry point for /trino-research.
 
@@ -1863,9 +1923,21 @@ def run_trino_research_via_mcp(
             long_query_opt_in=long_query_opt_in,
             long_query_threshold_s=long_query_threshold_s,
             max_fallbacks=max_fallbacks,
+            diagnose_only=diagnose_only,
         )
-    except LongQueryAbort:
+    except LongQueryAbort as lqa:
         # Message already printed by run_mcp_enhancement via output.error.
+        # If a zero-cost directed report rode along, write it to disk.
+        if getattr(lqa, "report_markdown", None):
+            try:
+                report_dir = Path.cwd() / "report"
+                report_dir.mkdir(parents=True, exist_ok=True)
+                report_name = f"trino-research-diagnose-{datetime.now().strftime('%Y%m%d-%H%M%S')}.md"
+                report_path = report_dir / report_name
+                report_path.write_text(lqa.report_markdown)
+                output.progress(f"\n  Directed report saved: {report_path}")
+            except Exception as exc:
+                output.error(f"  Failed to save directed report: {exc}")
         return
     except NoDataDetected as nd:
         # No-data dispatch fired: write static-analysis report instead of EnhancementReport.
