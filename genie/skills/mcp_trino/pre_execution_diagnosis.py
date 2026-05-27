@@ -304,6 +304,38 @@ def _memory_contributor(peak_memory_bytes: Any) -> list[OptimizationDirection]:
 
 
 # ---------------------------------------------------------------------------
+# Prompt formatting — turn ranked directions into an LLM-ready block
+# ---------------------------------------------------------------------------
+
+
+def format_directions_for_prompt(
+    directions: list[OptimizationDirection],
+    *,
+    limit: int = 6,
+) -> str:
+    """Render ranked directions as a numbered prompt block, or "" if none.
+
+    Pure and deterministic: the input list is already total-ordered by
+    ``pre_execution_diagnosis``, so the output depends only on the input.
+    Returns an empty string when there are no directions, so callers can
+    cheaply gate prompt injection on truthiness.
+    """
+    if not directions:
+        return ""
+
+    lines = [
+        "Pre-execution diagnosis (ranked optimization directions — "
+        "apply highest-severity first):",
+    ]
+    for i, d in enumerate(directions[:limit], 1):
+        lines.append(
+            f"{i}. [{d.severity}] {d.kind} (target: {d.target_metric}) — "
+            f"{d.rationale} [{d.evidence}]"
+        )
+    return "\n".join(lines)
+
+
+# ---------------------------------------------------------------------------
 # Public API
 # ---------------------------------------------------------------------------
 
@@ -352,6 +384,7 @@ def pre_execution_diagnosis(
 __all__ = [
     "OptimizationDirection",
     "pre_execution_diagnosis",
+    "format_directions_for_prompt",
     "LARGE_SCAN_BYTES",
     "HIGH_PEAK_MEMORY_BYTES",
 ]

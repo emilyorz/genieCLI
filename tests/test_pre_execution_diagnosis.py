@@ -14,6 +14,7 @@ from genie.skills.mcp_trino.pre_execution_diagnosis import (
     HIGH_PEAK_MEMORY_BYTES,
     LARGE_SCAN_BYTES,
     OptimizationDirection,
+    format_directions_for_prompt,
     pre_execution_diagnosis,
 )
 
@@ -459,3 +460,52 @@ def test_should_not_raise_when_plan_json_is_deeply_nested_garbage():
         explain_cost=(None, None, garbage_plan),
     )
     assert isinstance(result, list)
+
+
+# ---------------------------------------------------------------------------
+# format_directions_for_prompt — pure prompt rendering
+# ---------------------------------------------------------------------------
+
+def test_should_return_empty_string_when_no_directions():
+    assert format_directions_for_prompt([]) == ""
+
+
+def test_should_render_one_numbered_line_per_direction():
+    finding = _make_finding(severity="high", rule_id="cartesian-join", line=4)
+    report = _make_static_report(findings=[finding])
+    directions = pre_execution_diagnosis("SELECT 1", static_report=report)
+
+    block = format_directions_for_prompt(directions)
+
+    assert block.startswith("Pre-execution diagnosis")
+    # one numbered entry per direction
+    numbered = [ln for ln in block.splitlines() if ln[:2] in ("1.", "2.", "3.")]
+    assert len(numbered) == len(directions)
+    assert "fix-cartesian-join" in block
+    assert "[high]" in block
+    assert "static:cartesian-join@L4" in block
+
+
+def test_should_cap_rendered_lines_at_limit():
+    findings = [
+        _make_finding(severity="low", rule_id="select-star", line=i)
+        for i in range(1, 11)
+    ]
+    report = _make_static_report(findings=findings)
+    directions = pre_execution_diagnosis("SELECT 1", static_report=report)
+
+    block = format_directions_for_prompt(directions, limit=3)
+
+    numbered = [ln for ln in block.splitlines() if ln and ln[0].isdigit()]
+    assert len(numbered) == 3
+
+
+def test_should_be_deterministic_for_same_directions():
+    findings = [
+        _make_finding(severity="high", rule_id="cartesian-join", line=1),
+        _make_finding(severity="medium", rule_id="select-star", line=5),
+    ]
+    report = _make_static_report(findings=findings)
+    directions = pre_execution_diagnosis("SELECT 1", static_report=report)
+
+    assert format_directions_for_prompt(directions) == format_directions_for_prompt(directions)

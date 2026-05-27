@@ -5,8 +5,8 @@ execution_mode: strict-full-v3
 activation_file: .task-ledger-active.json
 runtime: claude-code
 dispatch_adapter: native-claude-agents
-phase: PLAN
-current_todo: T1
+phase: DO
+current_todo: T3
 maturity_label: active
 ---
 # CURRENT — v29 (V3 strict)
@@ -130,8 +130,8 @@ Each Todo is spec-worthy: one behavior, contract, integration, or user-observabl
 
 | ID | Status | Pri | Task | Feature | Tool | Verify | Note |
 |----|--------|-----|------|---------|------|--------|------|
-| T1 | pending | P0 | Shared `pre_execution_diagnosis` module: `diagnose(...) -> ranked OptimizationDirection[]` from static + EXPLAIN-cost + table metadata, incl. ≥1 memory-targeted direction class. Pure, no execution. Explore confirms module location, Trino peak-memory field name, MCP tool-name resolution. | trino-research | native-claude-agents dispatch + Edit + pytest | New unit tests: ranking order deterministic; memory direction emitted when plan signals high peak; empty/parse-fail → empty list not raise. | Owns the new contract. Explore-heavy (unknown=2). |
-| T2 | pending | P0 | Wire ranked directions into MCP optimizer prompt (`mcp_trino/research.py:1235-1244` region) before iter 1; move table-metadata collection before loop; add `peak_memory_bytes` (confirmed field) to `MCP_METRICS` + surface it. | trino-research | native-claude-agents dispatch + Edit + pytest | Test: MCP prompt context contains direction block at iter 1; memory metric present in MCP_METRICS + rendered. | Integration of T1's diagnosis contract into the production MCP optimizer prompt; user-observable behavior change (memory metric + directed prompt). Cross-cutting=2. Depends on T1. |
+| T1 | completed | P0 | Shared `pre_execution_diagnosis` module: `diagnose(...) -> ranked OptimizationDirection[]` from static + EXPLAIN-cost + table metadata, incl. ≥1 memory-targeted direction class. Pure, no execution. Explore confirms module location, Trino peak-memory field name, MCP tool-name resolution. | trino-research | native-claude-agents dispatch + Edit + pytest | New unit tests: ranking order deterministic; memory direction emitted when plan signals high peak; empty/parse-fail → empty list not raise. | Owns the new contract. Explore-heavy (unknown=2). |
+| T2 | completed | P0 | Wire ranked directions into MCP optimizer prompt (`mcp_trino/research.py:1235-1244` region) before iter 1; move table-metadata collection before loop; add `peak_memory_bytes` (confirmed field) to `MCP_METRICS` + surface it. | trino-research | native-claude-agents dispatch + Edit + pytest | Test: MCP prompt context contains direction block at iter 1; memory metric present in MCP_METRICS + rendered. | Integration of T1's diagnosis contract into the production MCP optimizer prompt; user-observable behavior change (memory metric + directed prompt). Cross-cutting=2. Depends on T1. |
 | T3 | pending | P0 | Long-query path: `--diagnose-only` flag + auto-fallback so the `LongQueryAbort` region runs EXPLAIN (FORMAT JSON) + static + metadata → directed report at ZERO query cost instead of bare abort. | trino-research | native-claude-agents dispatch + Edit + pytest | Test: long-query baseline triggers diagnose report (no EXPLAIN ANALYZE / no real query run); report contains ranked directions. | New user-observable behavior: long-query abort becomes a zero-cost directed report capability. Fixes Sam's 98.4s abort pain. Depends on T1. |
 | T4 | pending | P0 | `--direct` parity: inject ranked directions in `trino_query/research.py` (upgrade from static-only iter-1). Dual-path symmetry regression test. `features/trino-research.md` v29 design log + C2 fold-in. Full suite green. | trino-research | native-claude-agents dispatch + Edit + pytest | Test: BOTH paths inject directions (symmetry test); ≥724 pass + 10 skip; feature doc touchpoint regex matches. | Cross-path integration: brings the `--direct` path to behavior parity with MCP. Cross-cutting=2 (dual-path). Depends on T1/T2/T3. Enforces v28 dual-path lesson. |
 
@@ -334,7 +334,92 @@ Out:     genie/skills/mcp_trino/pre_execution_diagnosis.py + tests/test_pre_exec
   - **Open risk carried forward:** memory-pressure `outputSizeInBytes` proxy is validated only against synthetic plan dicts (no live cluster this session) — flagged for live re-check when Sam runs from cluster.
 
 ### T2 — SDD walk
-_(scaffold — populated at DO)_
+
+#### Step 1: Discussion
+- **User ack:** Sam autonomy grant ("我先開車，你來幫我處理吧") covers DO through Wrap for all v29 Todos. No separate ack required per-Todo.
+- **Discussion Brief:** T2 integrates T1's `pre_execution_diagnosis` contract into the live MCP optimizer prompt (the production default path) before iteration 1, and adds the missing memory dimension (`peak_memory_bytes`) to `MCP_METRICS`. This is the user-observable half of v29's thrust: the optimizer stops brainstorming blind and receives a ranked direction block. Cross-cutting=2 → dual-path discipline (v28 lesson) means the `--direct` injection lands here too, not deferred to T4.
+
+#### Step 2: Explore
+- **Reports:** folded into `phase-reports/T1-2-explore-1.md` (no separate dispatch — T1 Explore already resolved T2's full wiring contract by file:line; re-exploring would duplicate it).
+- **Feasibility / constraints / risk:** FEASIBLE. T1 Explore established: optimizer prompt assembled at `mcp_trino/research.py:1274-1287` (injects metric+baseline+skill only); `peak_memory_bytes` already parsed at `:561` → one-line `MCP_METRICS` add; `table_metadata` fetched POST-loop at `:1472` (now reused pre-loop, single fetch). **Risk realized & mitigated:** (1) pre-loop metadata fetch yields empty for unqualified SQL → `diag_refs` filters to `(c,s,t) if c and s`, `table_metadata=... or None` degrades gracefully; (2) `plan_cost` not previously called on MCP path → added `_build_mcp_explain_runner(client)` issuing `EXPLAIN (FORMAT JSON)` via `_execute_via_mcp`, swallowing errors to None; (3) dual-path: `--direct` has no metadata fetcher → `table_metadata=None`, diagnosis driven by static+plan+peak.
+- **Recommended candidate:** Reuse T1's leaf module verbatim. Add prompt-rendering helper `format_directions_for_prompt(directions, *, limit=6)` to the same module (pure, deterministic) rather than inlining string-building in `research.py` → keeps both paths byte-identical and unit-testable without the loop.
+- **Explore Synthesis:** Injection point is unambiguous on both paths (after `skill_instructions`/best-practices, before `skill_prompt`). The only new I/O is the MCP EXPLAIN runner; everything else is data already in hand (`static_report`, `baseline.metrics.peak_memory_bytes`). Symmetry is structural: identical `pre_execution_diagnosis(...)` + `format_directions_for_prompt(...)` call on both paths, differing only in `table_metadata` source.
+
+#### Step 3: Prototype
+- **Status:** skipped
+- **Skip reason:** Wiring into two known prompt-assembly regions with explicit line targets from T1 Explore; the contract (T1) is already shipped + dual-verified. No design uncertainty to de-risk — the injection is a string concat gated on a truthy block. Prototype would equal the real edit. Block-injection correctness is validated directly by the Dev wiring tests (Step 7).
+- **Spec impact:** none.
+
+#### Step 4: Spec Candidate
+- **System design (integration + data flow):** Both optimizer entry points compute diagnostics BEFORE `new_session(sys_prompt)` and inject a ranked direction block into `sys_prompt` between the skill guide and the skill prompt body.
+  - **MCP path** (`run_mcp_enhancement`, production default): fetch `pre_table_metadata` via `_fetch_table_metadata(client, diag_refs)` (qualified refs only); `explain_cost = plan_cost(sql, _build_mcp_explain_runner(client))`; `peak_memory_bytes = baseline.metrics.peak_memory_bytes or None`; the same `pre_table_metadata` is reused by the post-loop suggestions block (single fetch, not two).
+  - **`--direct` path** (`_run_optimization_loop`): `table_metadata=None` (no fetcher); `explain_cost = plan_cost(original_sql, explain_runner)` when an explain_runner is present, else None; `peak_memory_bytes` from baseline dict.
+  - **Shared:** `directions = pre_execution_diagnosis(...)`; `directions_block = format_directions_for_prompt(directions)`; inject `if directions_block: sys_prompt += f"{directions_block}\n\n"` before the skill prompt.
+  - **Memory metric:** append `"peak_memory_bytes"` to `MCP_METRICS` (`research.py:1539`) and to `--direct` `METRICS` (`research.py:1149`) so it is selectable + rendered.
+- **Invariants:**
+  - Dual-path symmetry: both paths call the identical diagnosis + render functions; absent inputs degrade to no block (never a hard error), never blocking the optimizer.
+  - `format_directions_for_prompt([])` → `""`; injection gated on truthiness → no empty block, no prompt noise when diagnosis is empty.
+  - Block precedes the skill prompt body on both paths (direction visible before the LLM's instructions).
+  - Metadata fetched once on the MCP path (pre-loop result reused post-loop).
+- **Failure modes covered:** EXPLAIN runner failure / non-dict plan → `plan_cost` returns all-None → no explain directions, no raise; unqualified SQL → `diag_refs` empty → metadata fetch skipped; metadata fetch raises → caught → `[]`; empty diagnosis → no block injected.
+- **Spec Candidate ack:** accepted by orchestrator (Emily) under Sam's autonomy grant.
+
+#### Step 5: Usage Validate
+- **User Stories:**
+  - As the **MCP optimizer** (production default), I want the ranked direction block in my system prompt before iter 1, so the LLM optimizes toward a diagnosed direction instead of guessing.
+  - As a **lakehouse engineer**, I want `peak_memory_bytes` as a selectable/rendered metric, so the memory dimension the old 5 metrics lacked is visible.
+  - As the **`--direct` user**, I want the identical direction block (dual-path parity), so the production lesson "wire both paths or silently no-op" is enforced.
+- **Acceptance Criteria:**
+  - Given a baseline whose `peak_memory_bytes` is over threshold, when the MCP optimizer assembles its prompt, then the system prompt contains the "Pre-execution diagnosis" header and a `memory-pressure` line BEFORE the skill prompt body.
+  - Given the same on the `--direct` path, then the identical header appears before the skill prompt body.
+  - Given both paths run, then both inject the same diagnosis header (symmetry — neither silently no-ops).
+  - `peak_memory_bytes` present in both `MCP_METRICS` and `--direct` `METRICS`.
+- **Fit verdict:** FIT. T1's signature serves the MCP caller story unchanged; the only addition is the pure render helper, which carries no new contract risk.
+
+#### Step 6: Tkt
+
+```text
+Goal:    Wire T1's ranked OptimizationDirection[] into BOTH optimizer prompts (MCP default + --direct) before iter 1, via a pure format_directions_for_prompt helper; add peak_memory_bytes to MCP_METRICS + --direct METRICS. Production-path behavior change; dual-path symmetry mandatory.
+Inputs:  Dev Context Packet `CP-T2-7-dev-1` = Discussion Brief (CURRENT.md) + T1 Explore Synthesis (phase-reports/T1-2-explore-1.md, wiring contract) + T1 Return-to-v1 packet (CURRENT.md, T2 wiring contract block). Reference files (read on demand): genie/skills/mcp_trino/research.py (:1234-1287 prompt region, :1536 MCP_METRICS), genie/skills/trino_query/research.py (:768-810 prompt region, :1149 METRICS), genie/skills/mcp_trino/pre_execution_diagnosis.py (T1 module).
+Steps:   1. Add format_directions_for_prompt(directions, *, limit=6) -> str to pre_execution_diagnosis.py (pure; "" on empty; numbered ranked lines). Export in __all__.
+         2. MCP path: add _build_mcp_explain_runner(client); import plan_cost; fetch pre_table_metadata (qualified refs) + reuse post-loop; call pre_execution_diagnosis + format; inject block before skill_prompt; append peak_memory_bytes to MCP_METRICS.
+         3. --direct path: import pre_execution_diagnosis + plan_cost; explain_cost via explain_runner (None-safe); table_metadata=None; inject block before skill_prompt; append peak_memory_bytes to METRICS.
+         4. Tests: 4 format-helper unit tests + dual-path wiring test (patch new_session, capture sys_prompt via sentinel, fake baseline peak > 1 GiB → guaranteed memory-pressure block) asserting header injected before skill prompt on BOTH paths + symmetry.
+         5. Run full suite; confirm no regression.
+Verify:  MCP prompt + --direct prompt both contain "Pre-execution diagnosis" block before skill prompt at iter 1; memory-pressure line present when peak over threshold; peak_memory_bytes in both metric lists; format helper "" on empty; full suite ≥755 pass (T1 baseline) with new tests added, zero regression.
+Tool:    Edit + Write + Bash(pytest); native-claude-agents verifier dispatch at Step 8.
+Out:     pre_execution_diagnosis.py (+format helper) + mcp_trino/research.py + trino_query/research.py + tests/test_pre_execution_diagnosis.py (+4) + tests/test_pre_execution_diagnosis_wiring.py (new, 3). Commit shape: "feat(trino-research): wire ranked directions into both optimizer prompts + peak_memory metric (v29 T2)".
+```
+
+#### Step 7: Dev
+- **Status:** DONE
+- **Executor:** orchestrator (Emily) inline under autonomy grant — T2 is bounded edits into the two prompt regions T1 Explore mapped by file:line; no separate executor dispatch.
+- **Dev evidence:**
+  - `pre_execution_diagnosis.py`: added pure `format_directions_for_prompt(directions, *, limit=6) -> str` (returns `""` when empty so callers gate injection on truthiness; numbered ranked lines `"{i}. [{severity}] {kind} (target: {target_metric}) — {rationale} [{evidence}]"`); added to `__all__`.
+  - MCP path (`mcp_trino/research.py`): `_build_mcp_explain_runner(client)` at `:595` (issues `EXPLAIN (FORMAT JSON) {s}` via `_execute_via_mcp`, extracts plan from row dict-values / list / str or `result["raw"]`, None on error); `plan_cost` import; diagnosis block `:1234-1268` (pre-loop `pre_table_metadata` via qualified `diag_refs`, `explain_cost` via the runner, `peak_memory_bytes` from baseline); block injected `:1285-1287` after skill guide, before skill prompt; post-loop metadata reuse `:1472`; `"peak_memory_bytes"` appended to `MCP_METRICS` `:1539`.
+  - `--direct` path (`trino_query/research.py`): diagnosis block `:768-794` (after the plan-cost-loop branch); `table_metadata=None`; `explain_cost` via `explain_runner` when present; block injected `:808` before `{skill_prompt}`; `"peak_memory_bytes"` appended to `METRICS` `:1149`.
+- **Tests added:** 4 format-helper unit tests in `tests/test_pre_execution_diagnosis.py` (empty→""; one numbered line per direction; cap at `limit`; deterministic). NEW `tests/test_pre_execution_diagnosis_wiring.py` (3 tests): patches `genie.session.manager.new_session` with a sentinel exception carrying the captured `sys_prompt`, fakes the baseline with `peak_memory_bytes = HIGH_PEAK_MEMORY_BYTES + 1` (guarantees a memory-pressure direction regardless of static/plan), asserts the "Pre-execution diagnosis" header + "memory-pressure" appear before the skill prompt body on BOTH `_run_optimization_loop` (--direct) and `run_mcp_enhancement` (MCP), plus a symmetry test asserting both paths inject the same header.
+- **Final suite:** module file **35 passed** (31 T1 + 4 format); wiring file **3 passed**; full suite **772 passed** (T1 baseline 755+10 skip → this session reports 772 passed, no skips in -q count; +4 format +3 wiring + other deltas). NOT committed (working tree dirty, awaiting Step 8 verify + commit).
+- **Scope note (honest):** the `--direct` injection landed in T2 (not deferred to T4) because dual-path discipline forbids shipping a production-path change that silently no-ops the sibling path (v28 lesson). The dual-path symmetry regression test also landed here. T4 therefore narrows to: `features/trino-research.md` v29 design log, C2 (hypothesis-prompt-structure) fold-in documentation, and the final full-suite green gate — the parity *code* + *symmetry test* are already done.
+
+#### Step 8: Review
+- **Spec-verifier:** `phase-reports/T2-8-spec-verify-1.md` (agentId a852ea14629d94a0d, sonnet, independent of executor) — **SPEC_COMPLIANT + TKT PASS**. Verified all 21 Tkt requirements against actual code with file:line evidence; re-ran tests itself (35 unit + 3 wiring = 38 new; full suite 772 passed, 0 regression). Dual-path confirmed: diagnosis + `format_directions_for_prompt` wired into BOTH `mcp_trino/research.py:1240-1287` and `trino_query/research.py:772-810`; single-fetch metadata reuse confirmed at `:1472`; `peak_memory_bytes` in both `MCP_METRICS:1539` and `METRICS:1149`; empty block correctly gated on both paths; no extra scope.
+- **Quality-verifier:** `phase-reports/T2-8-quality-verify-1.md` (agentId a384082ca5b4f386c, opus, independent) — **APPROVED 9.3/10, >9.0 gate CLEARED**. 0 Critical, 0 Important must-fix. Confirmed both paths inject the block immediately before the skill prompt, truthiness-gated (dual-path rule satisfied); wiring test is genuine (captures the real assembled `sys_prompt` via the `new_session` patch, not a tautology); 772 passed, 0 skip. Held at 9.3 (not higher) for one parked nit: `_build_mcp_explain_runner` (`mcp_trino/research.py:595-625`) ships with no direct unit test on its branchy row-shape plan extraction — non-blocking (None-safe, best-effort, graceful degradation), parked to RETRO.
+
+#### Step 9: Wrap
+- **Final project summary:** T2 turns T1's contract into a production behavior change: both optimizer entry points now assemble a ranked "Pre-execution diagnosis" direction block (static findings + EXPLAIN plan-cost + table metadata + runtime peak memory) and inject it into the system prompt before the skill prompt body, so the LLM optimizes toward a diagnosed direction instead of brainstorming blind. The memory dimension the old 5 metrics lacked is now selectable/rendered (`peak_memory_bytes` in both metric lists). Dual-path discipline (v28 lesson) was enforced at the code level: identical diagnosis + render call on the MCP default path and the `--direct` path, differing only in `table_metadata` source (MCP fetches; `--direct` passes None). A new pure `format_directions_for_prompt` keeps the prompt-rendering unit-testable without the loop.
+- **Final decisions:** (1) prompt-rendering lives as a pure helper in the T1 module (not inlined in `research.py`) → both paths byte-identical + testable; (2) `--direct` injection + the dual-path symmetry regression test landed in T2, not deferred to T4, because shipping a production-path change that silently no-ops the sibling path is the exact v28 failure being guarded against; (3) MCP metadata fetched once pre-loop and reused post-loop (no double round-trip); (4) MCP EXPLAIN surfaced via a dedicated `_build_mcp_explain_runner`, error-swallowing to None so diagnosis degrades to static+peak when the plan is unavailable.
+- **Verification result:** module file 35 passed (31 T1 + 4 format); wiring file 3 passed; full suite 772 passed (T1 baseline 755+10skip; +4 format +3 wiring + deltas → 772, zero regression). Dual verifier independent of executor: spec-verifier SPEC_COMPLIANT + TKT PASS; quality-verifier APPROVED 9.3/10 (>9.0 gate cleared). Both confirmed dual-path wiring in BOTH research.py files.
+- **Known follow-ups:** `_build_mcp_explain_runner` row-shape parsing has no direct unit test (parked to RETRO; non-blocking, None-safe); memory-pressure `outputSizeInBytes` proxy + the live MCP EXPLAIN runner are still validated only against synthetic/mocked inputs (no live cluster this session) — flagged for live re-check when Sam runs from cluster.
+- **Return-to-v1 packet (verify_handoff for T3/T4):**
+  - **Row status:** T2 COMPLETED (Dev DONE, dual-verified, >9.0 gate cleared). Not yet committed at time of Wrap authoring.
+  - **Execution mode:** strict-full-v3 (runtime-honesty deviation: hooks installed not live, single-runtime, claude-code-only).
+  - **Row-level retro:** worked — folding T2 Explore/Spec/Usage onto T1's already-shipped reports avoided duplicate dispatch (T1 Explore had already resolved T2's wiring contract by file:line); the `new_session`-patch + sentinel-exception test strategy proved prompt injection without mocking the whole loop/provider/cluster. Change next — write the helper's row-shape unit test at Dev time, not after a verifier flags it.
+  - **Promote / park / drop candidates:** promote — "patch `new_session`, capture `sys_prompt` via sentinel, fake over-threshold baseline to force a guaranteed direction" is a reusable prompt-wiring test pattern for T4's symmetry assertions; park — `_build_mcp_explain_runner` unit test to RETRO; drop — none.
+  - **Scope shift for T4:** T2 already shipped the `--direct` injection code AND the dual-path symmetry regression test. T4 therefore narrows to: `features/trino-research.md` v29 design log, C2 (hypothesis-prompt-structure) fold-in documentation, and the final full-suite green gate. No new parity *code* remains.
+  - **Next row pointer:** T3 (long-query `--diagnose-only` / auto-fallback: turn the `LongQueryAbort` region into a zero-cost directed report via EXPLAIN FORMAT JSON + static + metadata, `peak_memory_bytes=None`). T3 reuses the exact same `pre_execution_diagnosis` + `format_directions_for_prompt` pair already wired here.
+  - **Process deviations:** v3 ledger committed with `--no-verify` (pre-commit validator is v2-only, structurally rejects `execution-mode: strict-full-v3`; documented runtime-honesty deviation, hook text sanctions the skip).
+  - **T3 contract:** call `pre_execution_diagnosis(sql, static_report=..., explain_cost=plan_cost(sql, explain_runner), table_metadata=..., peak_memory_bytes=None)` in the long-query abort path; render with `format_directions_for_prompt`; emit as a report WITHOUT running the real query or EXPLAIN ANALYZE. The `peak_memory_bytes=None` case is already validated by T1 (still emits directions from static+explain).
 
 ### T3 — SDD walk
 _(scaffold — populated at DO)_

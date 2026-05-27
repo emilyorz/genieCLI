@@ -592,6 +592,39 @@ def _execute_via_mcp(client: McpClient, sql: str) -> dict:
     }
 
 
+def _build_mcp_explain_runner(client: McpClient):
+    """Return an `(sql) -> str | None` callable that runs EXPLAIN (FORMAT JSON).
+
+    Reuses the resolved query tool — most mcp-trino servers do not expose a
+    dedicated explain tool, so EXPLAIN is issued as an ordinary statement and
+    the raw plan text is pulled from the response. Returns None on any failure
+    so callers can treat plan-cost as best-effort.
+    """
+    def _runner(s: str) -> Optional[str]:
+        try:
+            result = _execute_via_mcp(client, f"EXPLAIN (FORMAT JSON) {s}")
+        except Exception:
+            return None
+        if result.get("error"):
+            return None
+        rows = result.get("rows") or []
+        # EXPLAIN (FORMAT JSON) returns a single-cell row holding the plan text.
+        if rows:
+            first = rows[0]
+            if isinstance(first, dict):
+                for val in first.values():
+                    if isinstance(val, str) and val.strip():
+                        return val
+            elif isinstance(first, (list, tuple)) and first:
+                if isinstance(first[0], str):
+                    return first[0]
+            elif isinstance(first, str):
+                return first
+        raw = result.get("raw")
+        return raw if isinstance(raw, str) else None
+    return _runner
+
+
 def _measure_mcp(client: McpClient, sql: str, metric_key: str,
                   runs: int, capture_rows: bool = False,
                   max_capture_rows: int = 100_000,
@@ -1107,6 +1140,7 @@ def run_mcp_enhancement(
         check_long_query_gate,
         detect_no_data_reason,
         make_query_max_run_time_sql,
+        plan_cost,
     )
 
     baseline = None
@@ -1197,6 +1231,42 @@ def run_mcp_enhancement(
         else:
             output.progress("  EXPLAIN ANALYZE: unavailable (fallback to MCP metrics)")
 
+    # ── Pre-execution diagnosis (v29 T2) ──
+    # Combine static findings + plan-cost estimates + table metadata + the
+    # baseline's actual peak memory into a ranked list of optimization
+    # directions, then feed the top ones into the optimizer prompt so the LLM
+    # works with a direction instead of brainstorming blind. Metadata fetched
+    # here is reused by the post-loop suggestions block (single fetch).
+    from genie.skills.mcp_trino.pre_execution_diagnosis import (
+        format_directions_for_prompt,
+        pre_execution_diagnosis,
+    )
+
+    pre_table_metadata: list[TableMetadata] = []
+    diag_refs = [(c, s, t) for (c, s, t) in _extract_table_names(sql) if c and s]
+    if diag_refs:
+        try:
+            pre_table_metadata = _fetch_table_metadata(client, diag_refs)
+        except Exception:
+            pre_table_metadata = []
+
+    explain_cost = None
+    try:
+        explain_cost = plan_cost(sql, _build_mcp_explain_runner(client))
+    except Exception:
+        explain_cost = None
+
+    directions = pre_execution_diagnosis(
+        sql,
+        static_report=static_report,
+        explain_cost=explain_cost,
+        table_metadata=pre_table_metadata or None,
+        peak_memory_bytes=getattr(baseline.metrics, "peak_memory_bytes", 0) or None,
+    )
+    directions_block = format_directions_for_prompt(directions)
+    if output and directions:
+        output.progress(f"  Pre-execution diagnosis: {len(directions)} ranked direction(s) → prompt")
+
     # ── Session setup ──
     skill_prompt = build_prompt(True, model) if build_prompt else ""
     from genie.core.registry import SkillRegistry
@@ -1212,6 +1282,8 @@ def run_mcp_enhancement(
     )
     if skill_instructions:
         sys_prompt += f"## Trino Optimization Guide\n\n{skill_instructions}\n\n"
+    if directions_block:
+        sys_prompt += f"{directions_block}\n\n"
     sys_prompt += skill_prompt
     session = new_session(sys_prompt)
 
@@ -1395,7 +1467,9 @@ def run_mcp_enhancement(
         output.progress(f"  Skipping table metadata — no fully-qualified tables (use catalog.schema.table).")
     if qualified_refs:
         try:
-            metadata = _fetch_table_metadata(client, qualified_refs)
+            # Reuse metadata fetched for the pre-execution diagnosis when present
+            # (same refs, same query) to avoid a second round-trip.
+            metadata = pre_table_metadata if pre_table_metadata else _fetch_table_metadata(client, qualified_refs)
             table_suggestions = _generate_table_suggestions(metadata)
             if output and table_suggestions:
                 output.progress(f"  Found {len(table_suggestions)} table suggestion(s).")
@@ -1462,6 +1536,7 @@ def run_mcp_enhancement(
 MCP_METRICS = [
     "query_time_ms", "cpu_time_ms", "wall_time_ms",
     "physical_input_bytes", "processed_rows", "total_splits",
+    "peak_memory_bytes",
 ]
 
 

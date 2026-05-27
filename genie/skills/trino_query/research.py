@@ -765,6 +765,34 @@ def _run_optimization_loop(
             max_fallbacks=fallbacks,
         )
 
+    # ── Pre-execution diagnosis (v29 T2 — dual-path parity with MCP path) ──
+    # The --direct path has no table-metadata fetcher, so diagnosis is driven by
+    # static findings + plan-cost estimates + the baseline's actual peak memory.
+    # table_metadata=None contributes nothing; the module handles it gracefully.
+    from genie.skills.mcp_trino.pre_execution_diagnosis import (
+        format_directions_for_prompt,
+        pre_execution_diagnosis,
+    )
+    from genie.skills.mcp_trino.preflight import plan_cost as _plan_cost
+
+    explain_cost = None
+    if explain_runner is not None:
+        try:
+            explain_cost = _plan_cost(original_sql, explain_runner)
+        except Exception:
+            explain_cost = None
+
+    directions = pre_execution_diagnosis(
+        original_sql,
+        static_report=static_report,
+        explain_cost=explain_cost,
+        table_metadata=None,
+        peak_memory_bytes=getattr(baseline["metrics"], "peak_memory_bytes", 0) or None,
+    )
+    directions_block = format_directions_for_prompt(directions)
+    if directions:
+        output.progress(f"  Pre-execution diagnosis: {len(directions)} ranked direction(s) → prompt")
+
     # ── Session setup ──
     skill_prompt = build_prompt(True, model)
     sys_prompt = (
@@ -777,6 +805,7 @@ def _run_optimization_loop(
         f"- Make ONE focused change per iteration\n"
         f"- Trino best practices: partition filters, named columns, CTEs over subqueries, "
         f"APPROX_DISTINCT over COUNT(DISTINCT), COALESCE instead of NVL\n\n"
+        f"{(directions_block + chr(10) + chr(10)) if directions_block else ''}"
         f"{skill_prompt}"
     )
     session = new_session(sys_prompt)
@@ -1117,7 +1146,7 @@ def run_trino_research(
     Supports both interactive mode (no kwargs) and non-interactive mode
     (all params passed in via kwargs).
     """
-    METRICS = ["cpu_time_ms", "wall_time_ms", "physical_input_bytes", "processed_rows", "total_splits"]
+    METRICS = ["cpu_time_ms", "wall_time_ms", "physical_input_bytes", "processed_rows", "total_splits", "peak_memory_bytes"]
 
     output.print("\n  [yellow]== Trino Query Optimization (v2) ==[/yellow]")
 
