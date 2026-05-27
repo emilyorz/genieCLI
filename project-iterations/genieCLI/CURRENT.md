@@ -49,10 +49,10 @@ This session runs from `~/.openclaw/workspace-emily/`, NOT from the genieCLI rep
 - **Project:** genieCLI
 - **Iteration:** 29
 - **Mode:** v3-strict
-- **Status:** active (PLAN — awaiting Sam ack before DO)
+- **Status:** active (DO complete — all 4 Todos shipped + dual-verified; awaiting ROLL-OVER)
 - **Owner:** Emily (orchestrator + executor); Sam picks direction / acks
 - **Started:** 2026-05-27
-- **Updated:** 2026-05-27T00:00+0800
+- **Updated:** 2026-05-27T00:00+0800 (T4 dual-verified, all Todos complete)
 - **Focus:** Directed pre-execution diagnosis for `/trino-research` — wire existing diagnostics + a memory-pressure metric into the optimizer prompt, and turn the long-query abort into a zero-cost directed diagnosis report.
 - **Touched features:** [trino-research](features/trino-research.md)
 
@@ -133,7 +133,7 @@ Each Todo is spec-worthy: one behavior, contract, integration, or user-observabl
 | T1 | completed | P0 | Shared `pre_execution_diagnosis` module: `diagnose(...) -> ranked OptimizationDirection[]` from static + EXPLAIN-cost + table metadata, incl. ≥1 memory-targeted direction class. Pure, no execution. Explore confirms module location, Trino peak-memory field name, MCP tool-name resolution. | trino-research | native-claude-agents dispatch + Edit + pytest | New unit tests: ranking order deterministic; memory direction emitted when plan signals high peak; empty/parse-fail → empty list not raise. | Owns the new contract. Explore-heavy (unknown=2). |
 | T2 | completed | P0 | Wire ranked directions into MCP optimizer prompt (`mcp_trino/research.py:1235-1244` region) before iter 1; move table-metadata collection before loop; add `peak_memory_bytes` (confirmed field) to `MCP_METRICS` + surface it. | trino-research | native-claude-agents dispatch + Edit + pytest | Test: MCP prompt context contains direction block at iter 1; memory metric present in MCP_METRICS + rendered. | Integration of T1's diagnosis contract into the production MCP optimizer prompt; user-observable behavior change (memory metric + directed prompt). Cross-cutting=2. Depends on T1. |
 | T3 | completed | P0 | Long-query path: `--diagnose-only` flag + auto-fallback so the `LongQueryAbort` region runs EXPLAIN (FORMAT JSON) + static + metadata → directed report at ZERO query cost instead of bare abort. | trino-research | native-claude-agents dispatch + Edit + pytest | Test: long-query baseline triggers diagnose report (no EXPLAIN ANALYZE / no real query run); report contains ranked directions. | New user-observable behavior: long-query abort becomes a zero-cost directed report capability. Fixes Sam's 98.4s abort pain. Depends on T1. |
-| T4 | pending | P0 | `--direct` parity: inject ranked directions in `trino_query/research.py` (upgrade from static-only iter-1). Dual-path symmetry regression test. `features/trino-research.md` v29 design log + C2 fold-in. Full suite green. | trino-research | native-claude-agents dispatch + Edit + pytest | Test: BOTH paths inject directions (symmetry test); ≥724 pass + 10 skip; feature doc touchpoint regex matches. | Cross-path integration: brings the `--direct` path to behavior parity with MCP. Cross-cutting=2 (dual-path). Depends on T1/T2/T3. Enforces v28 dual-path lesson. |
+| T4 | completed | P0 | `--direct` parity: inject ranked directions in `trino_query/research.py` (upgrade from static-only iter-1). Dual-path symmetry regression test. `features/trino-research.md` v29 design log + C2 fold-in. Full suite green. | trino-research | native-claude-agents dispatch + Edit + pytest | Test: BOTH paths inject directions (symmetry test); ≥724 pass (actual 781 pass, 0 skip); feature doc touchpoint regex matches. | Cross-path integration: brings the `--direct` path to behavior parity with MCP. Cross-cutting=2 (dual-path). Depends on T1/T2/T3. Enforces v28 dual-path lesson. Dual-verified: spec SPEC_COMPLIANT, quality 9.4 APPROVED. |
 
 ## Model Routing Decisions
 
@@ -493,14 +493,73 @@ Verify:  diagnose-only → no _measure/_measure_mcp; gate-trip → no EXPLAIN AN
   - **Process deviations:** v3 ledger will commit with `--no-verify` (pre-commit validator is v2-only, structurally rejects `execution-mode: strict-full-v3`; documented runtime-honesty deviation, hook text sanctions the skip).
 
 ### T4 — SDD walk
-_(scaffold — populated at DO)_
+
+#### Step 1: Explore
+- **Status:** DONE (folded onto T2/T3 — no separate dispatch).
+- **Findings:** the two things T4's Tkt named as code (`--direct` direction injection + dual-path symmetry regression test) already exist and are dual-verified:
+  - `--direct` injection: `trino_query/research.py:843-865` assembles `_assemble_direct_directions(...)` → `format_directions_for_prompt(...)` → `directions_block` and injects it into `sys_prompt` before `{skill_prompt}` (mirror of the MCP path's `:1285-1287`). Landed in T2 under the dual-path rule (shipping an MCP-only change would silently no-op the production sibling — v28 lesson).
+  - Symmetry test: `tests/test_zero_cost_directed_report.py::test_both_assemblers_produce_identical_directions_for_same_inputs` drives BOTH assemblers UNMOCKED and asserts the non-explain-sourced direction tuples are equal. Landed in T3 (round-1 quality fix).
+- **Conclusion:** T4 carries NO new production code. It narrows to: (a) `features/trino-research.md` v29 design log + Current-capability + iteration-touchpoint update; (b) C2 (hypothesis-prompt-structure) fold-in into that design log; (c) the final full-suite green gate (≥724 pass + 10 skip).
+
+#### Step 2: Spec
+- **Behavior (user-observable):** none new at runtime — T4 is the documentation + gate row that closes v29. The feature doc must accurately describe: the `--direct` ↔ MCP parity (both inject ranked directions), the `--diagnose-only` flag, the long-query→zero-cost-report conversion, and resolve the v28 "hypothesis extraction brittleness" open question via C2.
+- **Contract:** `features/trino-research.md` gains a v29 T1-T4 design log entry, an updated Current-capability bullet set (diagnose-only flag + directed diagnosis + zero-cost report), an updated v29 iteration touchpoint (T1-only "in progress" → T1-T4 "complete", 781 pass), and the answered open question struck through with a pointer to C2. Full suite stays green.
+
+#### Step 3: (prototype) — N/A
+- No prototype. Docs-only row; no algorithmic risk. The behavior being documented is already shipped + dual-verified across T1-T3.
+
+#### Step 5: Usage Validate
+- **Story:** as a future maintainer (or Sam re-reading the design log months later), I want the feature doc to explain *why* the optimizer now leads with deterministic directions, *that* both paths are wired symmetrically (and tested), and *how* the long-query abort became a zero-cost report — without re-reading the diff.
+- **Fit verdict:** FIT. The design log entry ties each Tkt (T1 contract / T2 MCP wiring + memory metric / T3 zero-cost report / T4 parity) to its file-level evidence and folds in C2 as the structural answer to the hypothesis-brittleness question. No Spec change.
+
+#### Step 6: Tkt
+```
+Tkt T4: v29 docs + C2 fold-in + full-suite green gate (NO production code).
+In:      features/trino-research.md (Current capability, Design log, Open questions, Iteration touchpoints).
+Do:      add --diagnose-only to invocation line; rewrite long-query-gate capability bullet to zero-cost-report;
+         add pre-execution-diagnosis capability bullet (both paths, symmetry-tested); append v29 T1-T4 design log
+         entry with C2 (hypothesis-prompt-structure → directed directions) fold-in; strike through the answered
+         hypothesis-extraction open question; promote the v29 iteration touchpoint from "T1 in progress" to
+         "T1-T4 complete, 781 pass".
+Out:     features/trino-research.md only. No code, no test changes (parity code + symmetry test already landed T2/T3).
+Tool:    Edit + Bash(pytest); native-claude-agents verifier dispatch at Step 8.
+Verify:  feature doc names both paths + --diagnose-only + zero-cost report + C2; open question struck through;
+         full suite ≥724 pass (actual: 781 pass, 0 skip), zero regression.
+```
+
+#### Step 7: Dev
+- **Status:** DONE
+- **Executor:** orchestrator (Emily) inline under autonomy grant — docs-only edits to `features/trino-research.md`; no separate executor dispatch, no production code touched.
+- **Dev evidence (all in `features/trino-research.md`):**
+  - Invocation line: added `[--diagnose-only]` to the `/trino-research` flag list.
+  - Current capability: rewrote the long-query-gate bullet — bare abort → **zero-cost directed report** (baseline peak + EXPLAIN FORMAT JSON + static, no EXPLAIN ANALYZE, no iteration, `./report/trino-research-diagnose-<ts>.md`); added a new **Pre-execution diagnosis (v29 T1-T4)** bullet describing the ranked `OptimizationDirection[]` injected into the optimizer prompt on BOTH paths (symmetry-tested) + `--diagnose-only` short-circuit.
+  - Design log: appended **v29 T1-T4** entry — LH-PRISM blueprint, the four contributors + ranker, T1 module / T2 single-source-of-truth `_assemble_mcp_directions` + memory metric / T3 `LongQueryAbort`→report + orphaned-branch deletion / T4 `_assemble_direct_directions` mirror + symmetry test, **C2 fold-in** (hypothesis prompt structure answered structurally: AI elaborates a seeded ranked direction instead of inventing a blind hypothesis), 781 pass, v3-strict deviation note, dual-path discipline.
+  - Open questions: struck through the "hypothesis extraction brittleness" question with an **Addressed in v29 (C2)** pointer.
+  - Iteration touchpoints: promoted the v29 entry from "(T1, in progress) … 755 pass" to "(T1-T4 complete) … 781 pass, 0 skip" with per-Tkt evidence.
+- **Suite:** full suite **781 passed** (unchanged from T3 — docs-only row adds no tests, regresses nothing). NOT committed (awaiting Step 8 verify + commit).
+- **Scope note (honest):** T4 is the only v29 row with NO production code — the parity injection (T2) and the dual-path symmetry test (T3) already shipped under the dual-path rule. T4 is the docs + gate close-out, exactly as the T2/T3 Return-to-v1 packets predicted.
+
+#### Step 8: Review
+- **Spec-verifier:** **SPEC_COMPLIANT + TKT PASS** (native-claude-agents, sonnet, agentId `afa0633396847b469`; report `phase-reports/T4-8-spec-verify-1.md`). Independently re-ran suite → **781 passed, 0 failed**. Confirmed: feature doc names both paths + `--diagnose-only` + zero-cost report + C2; open question struck through; parity code + symmetry test already landed (T4 docs-only, as predicted). Flagged one minor non-blocking inaccuracy: doc claimed "10 skip" but actual run shows 0 skips — **fixed** in this commit (features/trino-research.md + this ledger now read "781 pass, 0 skip"). Recommendation: pass to quality-verifier.
+- **Quality-verifier:** **APPROVED — 9.4/10, >9.0 strict gate CLEARED** (native-claude-agents, opus, agentId `aa55df597bfa81031`; report `phase-reports/T4-8-quality-verify-1.md`). Independently re-ran suite → **781 passed, 0 skipped, 1.64s**. Every v29-final doc claim verified against shipped code by file:line (`--diagnose-only` in chat.py; `_assemble_mcp_directions` single-source 3 call sites; `_assemble_direct_directions` mirror; `peak_memory_bytes` in both metric lists; `LongQueryAbort`→report both paths; orphaned `"aborted"` branch deletion = zero grep hits; UNMOCKED symmetry test present, not overclaimed; C2 strike-through present). No stale skip/count claims remain in v29-final content; v28-era figures correctly left untouched. No feature-doc↔ledger↔code drift. Two cosmetic Minor nits only (prose overlap, paragraph density — match house style). No Critical, no Important.
+
+#### Step 9: Wrap
+- **Outcome:** T4 COMPLETE. Docs + close-out row landed; dual-verified (spec SPEC_COMPLIANT + TKT PASS; quality 9.4 APPROVED > 9.0 gate).
+- **Shipped:** `features/trino-research.md` v29 T1-T4 design-log entry + Current-capability bullets (`--diagnose-only`, directed diagnosis, zero-cost report) + C2 fold-in + struck-through open question + promoted iteration touchpoint. Ledger Step 6/7/8 populated. NO production code (parity injection + symmetry test already shipped T2/T3, per the dual-path rule).
+- **Suite:** 781 passed, 0 skipped (independently re-run by both verifiers).
+- **Honesty correction:** spec-verifier flagged a stale "10 skip" doc claim; confirmed actual = 0 skips via `pytest -rs`; corrected feature doc + ledger to "781 pass, 0 skip" before quality dispatch.
+- **Return-to-v1 packet (T4):**
+  - *Worked:* anchoring T4 to "docs + gate close-out" matched reality — the Return-to-v1 packets from T2/T3 correctly predicted T4 would carry no new production code; the dual-path symmetry test (T3) is the standing regression guard for the v28 silent-drift lesson.
+  - *Failed:* I authored a stale "10 skip" figure in new content (carried mentally from the v28 baseline 724+10); spec-verifier caught it. Lesson: re-run pytest and quote the *current* run's exact figure when writing test-count claims — never carry a remembered baseline forward.
+  - *Carryover:* none. C2 (hypothesis-prompt-structure) folded into v29 design log + answered open question — closed, not parked. Two cosmetic doc nits accepted as house-style, not carried.
+  - *Verify handoff consumed:* T4-8-spec-verify-1.md + T4-8-quality-verify-1.md.
 
 ## VERIFY
 
-- **Code track:** _(tests / diff / logs — tbd)_
-- **Doc track:** `features/trino-research.md` v29 design log — tbd
-- **Step 8 consumed:** _(tbd)_
-- **Return-to-v1 verify_handoff consumed:** _(tbd)_
+- **Code track:** full suite **781 passed, 0 skipped** (`.venv/bin/python -m pytest -q`), independently re-run by both T4 verifiers. Zero regression across T1-T4. No production code changed in T4 (diff = docs + ledger only).
+- **Doc track:** `features/trino-research.md` v29 T1-T4 design-log entry + Current-capability bullets + C2 fold-in + struck-through open question + promoted touchpoint — all claims cross-checked against shipped code by the quality-verifier (file:line evidence).
+- **Step 8 consumed:** T4-8-spec-verify-1.md (SPEC_COMPLIANT + TKT PASS, agentId afa0633396847b469); T4-8-quality-verify-1.md (APPROVED 9.4/10, agentId aa55df597bfa81031).
+- **Return-to-v1 verify_handoff consumed:** T2 + T3 Return-to-v1 packets (predicted T4 = docs-only, no new production code — confirmed).
 
 ## RETRO
 
