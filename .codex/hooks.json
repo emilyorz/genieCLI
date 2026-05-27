@@ -1,0 +1,80 @@
+{
+  "hooks": {
+    "PermissionRequest": [
+      {
+        "hooks": [
+          {
+            "command": "TASK_LEDGER_SKILL_DIR=/Users/leeabc/skill-vault/software-development/task-ledger-cycle python3 /Users/leeabc/skill-vault/software-development/task-ledger-cycle/hooks/codex/task_ledger_codex_hook.py",
+            "statusMessage": "Task Ledger V3 permission gate",
+            "timeout": 10,
+            "type": "command"
+          }
+        ],
+        "matcher": "Bash|apply_patch|Edit|Write|mcp__.*"
+      }
+    ],
+    "PostToolUse": [
+      {
+        "hooks": [
+          {
+            "command": "TASK_LEDGER_SKILL_DIR=/Users/leeabc/skill-vault/software-development/task-ledger-cycle python3 /Users/leeabc/skill-vault/software-development/task-ledger-cycle/hooks/codex/task_ledger_codex_hook.py",
+            "statusMessage": "Task Ledger V3 ledger validator",
+            "timeout": 10,
+            "type": "command"
+          }
+        ],
+        "matcher": "Bash|apply_patch|Edit|Write|mcp__.*"
+      }
+    ],
+    "PreToolUse": [
+      {
+        "hooks": [
+          {
+            "command": "TASK_LEDGER_SKILL_DIR=/Users/leeabc/skill-vault/software-development/task-ledger-cycle python3 /Users/leeabc/skill-vault/software-development/task-ledger-cycle/hooks/codex/task_ledger_codex_hook.py",
+            "statusMessage": "Task Ledger V3 phase gate",
+            "timeout": 10,
+            "type": "command"
+          }
+        ],
+        "matcher": "Bash|apply_patch|Edit|Write|mcp__.*"
+      }
+    ],
+    "SessionStart": [
+      {
+        "hooks": [
+          {
+            "command": "TASK_LEDGER_SKILL_DIR=/Users/leeabc/skill-vault/software-development/task-ledger-cycle python3 /Users/leeabc/skill-vault/software-development/task-ledger-cycle/hooks/codex/task_ledger_codex_hook.py",
+            "statusMessage": "Task Ledger V3 dashboard",
+            "timeout": 10,
+            "type": "command"
+          }
+        ],
+        "matcher": "startup|resume|clear"
+      }
+    ],
+    "Stop": [
+      {
+        "hooks": [
+          {
+            "command": "TASK_LEDGER_SKILL_DIR=/Users/leeabc/skill-vault/software-development/task-ledger-cycle python3 /Users/leeabc/skill-vault/software-development/task-ledger-cycle/hooks/codex/task_ledger_codex_hook.py",
+            "statusMessage": "Task Ledger V3 final gate",
+            "timeout": 10,
+            "type": "command"
+          }
+        ]
+      }
+    ],
+    "UserPromptSubmit": [
+      {
+        "hooks": [
+          {
+            "command": "TASK_LEDGER_SKILL_DIR=/Users/leeabc/skill-vault/software-development/task-ledger-cycle python3 /Users/leeabc/skill-vault/software-development/task-ledger-cycle/hooks/codex/task_ledger_codex_hook.py",
+            "statusMessage": "Task Ledger V3 prompt gate",
+            "timeout": 10,
+            "type": "command"
+          }
+        ]
+      }
+    ]
+  }
+}

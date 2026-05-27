@@ -1,7 +1,12 @@
 ---
-ledger_version: v2
+ledger_version: v3
+ledger_hooks: enabled
+execution_mode: strict-full-v3
+activation_file: .task-ledger-active.json
+runtime: claude-code
+dispatch_adapter: native-claude-agents
 phase: PLAN
-current_todo: none
+current_todo: T1
 maturity_label: not-started
 ---
 # CURRENT — v30 (PLAN pending)
