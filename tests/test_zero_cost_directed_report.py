@@ -203,6 +203,32 @@ def test_mcp_gate_trip_emits_report_after_baseline_no_explain_analyze():
     assert all("[cyan]" not in msg and "[/cyan]" not in msg for msg in output.progress_messages)
 
 
+def test_mcp_slow_baseline_tunes_by_default():
+    from genie.skills.mcp_trino import research as mcp_research
+
+    output = RecordingOutput()
+    explain_analyze = MagicMock(return_value=ExplainAnalyzeResult(raw_text="", available=False))
+    with patch.object(mcp_research, "_measure_mcp", return_value=_fake_mcp_baseline()), \
+         patch.object(mcp_research, "_fetch_explain_analyze", explain_analyze), \
+         patch.object(mcp_research, "_assemble_mcp_directions", return_value=([], [])):
+        report = mcp_research.run_mcp_enhancement(
+            client=MagicMock(),
+            sql="SELECT 1",
+            metric_key="wall_time_ms",
+            max_iterations=0,
+            verify_runs=1,
+            provider=MagicMock(),
+            model="m",
+            reasoning="disable",
+            output=output,
+            build_prompt=lambda *a, **k: "SKILL",
+        )
+
+    assert report.baseline_value == 100.0
+    assert explain_analyze.called
+    assert not any("Long-query gate:" in msg for msg in output.progress_messages)
+
+
 # ---------------------------------------------------------------------------
 # --direct path
 # ---------------------------------------------------------------------------

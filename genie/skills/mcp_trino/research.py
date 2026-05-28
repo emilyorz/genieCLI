@@ -1127,7 +1127,7 @@ def run_mcp_enhancement(
     output=None,
     build_prompt: Callable[..., str] | None = None,
     *,
-    long_query_opt_in: bool = False,
+    long_query_opt_in: bool = True,
     long_query_threshold_s: Optional[int] = None,
     max_fallbacks: Optional[int] = None,
     diagnose_only: bool = False,
@@ -1301,7 +1301,11 @@ def run_mcp_enhancement(
     original_explain: ExplainAnalyzeResult | None = None
     if output:
         output.progress("  Running EXPLAIN ANALYZE on baseline...")
-    original_explain = _fetch_explain_analyze(client, sql)
+    if output and hasattr(output, "status"):
+        with output.status("baseline: explain analyze"):
+            original_explain = _fetch_explain_analyze(client, sql)
+    else:
+        original_explain = _fetch_explain_analyze(client, sql)
     if output:
         if original_explain.available:
             output.progress(f"  EXPLAIN ANALYZE: {len(original_explain.stages)} stage(s), "
@@ -1511,7 +1515,11 @@ def run_mcp_enhancement(
     if best_sql != sql:
         if output:
             output.progress("  Running EXPLAIN ANALYZE on enhanced SQL...")
-        enhanced_explain = _fetch_explain_analyze(client, best_sql)
+        if output and hasattr(output, "status"):
+            with output.status("enhanced: explain analyze"):
+                enhanced_explain = _fetch_explain_analyze(client, best_sql)
+        else:
+            enhanced_explain = _fetch_explain_analyze(client, best_sql)
         if output and enhanced_explain.available:
             output.progress(f"  Enhanced EXPLAIN: {len(enhanced_explain.stages)} stage(s), "
                           f"CPU={enhanced_explain.total_cpu_ms:.0f}ms")
@@ -1770,7 +1778,7 @@ def run_trino_research_via_mcp(
     runs: Optional[int] = None,
     safe_limit: Optional[int] = None,
     query_timeout: Optional[int] = None,
-    long_query_opt_in: bool = False,
+    long_query_opt_in: bool = True,
     long_query_threshold_s: Optional[int] = None,
     max_fallbacks: Optional[int] = None,
     diagnose_only: bool = False,

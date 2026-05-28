@@ -11,6 +11,9 @@ Design principles:
 """
 from __future__ import annotations
 
+from contextlib import contextmanager
+import threading
+import time
 from typing import Any
 
 from rich.console import Console
@@ -132,4 +135,34 @@ class HumanSink:
         On exit, the spinner is cleared automatically. The message uses
         the muted style so it doesn't compete with iteration output.
         """
-        return _console.status(f"{GUTTER}[{MUTED}]{escape(message)}[/{MUTED}]", spinner="dots")
+        @contextmanager
+        def _elapsed_status():
+            start = time.monotonic()
+            stop = threading.Event()
+
+            def render() -> str:
+                elapsed = time.monotonic() - start
+                return (
+                    f"{GUTTER}[{MUTED}]{escape(message)} "
+                    f"elapsed={elapsed:.1f}s[/{MUTED}]"
+                )
+
+            status = _console.status(render(), spinner="dots")
+
+            def ticker() -> None:
+                while not stop.wait(0.5):
+                    try:
+                        status.update(render())
+                    except Exception:
+                        return
+
+            with status:
+                thread = threading.Thread(target=ticker, daemon=True)
+                thread.start()
+                try:
+                    yield
+                finally:
+                    stop.set()
+                    thread.join(timeout=0.2)
+
+        return _elapsed_status()

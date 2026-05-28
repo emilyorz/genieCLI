@@ -291,6 +291,29 @@ def test_loop_dispatches_to_plan_cost_when_long_query_and_explain_provided():
     assert result["mode"] == "plan_cost"
 
 
+def test_loop_dispatches_to_plan_cost_by_default_for_slow_query_with_explain():
+    """Slow-query tuning is the default when an EXPLAIN runner is available."""
+    output = MagicMock()
+    baseline = _make_baseline(rows=100, wall_ms=80_000)  # > threshold
+    runner = _explain_runner_factory({"SELECT * FROM t": _make_explain(rows_est=100, bytes_est=10)})
+    provider = _llm_provider_with_replies([])
+
+    with patch("genie.skills.trino_query.research._measure", return_value=baseline), \
+         patch("genie.skills.trino_query.research._run_plan_cost_loop") as mock_loop:
+        mock_loop.return_value = {"status": "completed", "mode": "plan_cost"}
+        result = _run_optimization_loop(
+            provider=provider, model="m", reasoning="default",
+            original_sql="SELECT * FROM t",
+            metric_key="cpu_time_ms",
+            max_iterations=2, verify_runs=1,
+            output=output,
+            build_prompt=lambda *a, **kw: "",
+            explain_runner=runner,
+        )
+    mock_loop.assert_called_once()
+    assert result["mode"] == "plan_cost"
+
+
 def test_loop_uses_legacy_path_when_explain_runner_absent():
     """explain_runner=None → legacy per-iteration measurement path."""
     output = MagicMock()

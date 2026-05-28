@@ -5,22 +5,41 @@ execution_mode: strict-full-v3
 activation_file: .task-ledger-active.json
 runtime: claude-code
 dispatch_adapter: native-claude-agents
-phase: PLAN
-current_todo: T1
-maturity_label: not-started
+phase: VERIFY
+current_todo: none (T1 complete)
+maturity_label: light-ledger-complete
 ---
-# CURRENT — v30 (PLAN pending)
+# CURRENT — v30 (light ledger)
 
 ## Basic Info
 
-- **Status:** not started — awaiting Sam direction / PLAN
-- **Started:** —
-- **Updated:** 2026-05-27T00:00+0800 (opened at v29 roll-over)
+- **Status:** complete — light ledger T1 for long-query default + elapsed timer
+- **Started:** 2026-05-28
+- **Updated:** 2026-05-28T00:00+0800
 - **Predecessor:** [archive/v29.md](archive/v29.md) — directed pre-execution diagnosis (LH-PRISM) on both paths + zero-cost long-query report; 781 pass 0 skip; v3-deviation label
 
 ## PLAN
 
-_Awaiting Sam direction. The v29 retro promoted 3 items (cap 3) into this PLAN's seed — confirm scope with Sam before opening Todos._
+> Prioritize responding quickly — this is a light-weight ledger entry for a small user-facing tuning UX fix, not a full V3 strict run.
+
+### Light Ledger T1 — Long-query default + elapsed timer
+
+**Goal:** `/trino-research` should keep tuning long queries by default, because the normal use case is expensive SQL tuning.
+
+**Scope:**
+
+- Default long-query behavior to proceed with tuning.
+- Keep an explicit opt-out (`--no-long-query`) for diagnosis-only behavior after a slow baseline.
+- Show elapsed time while long-running baseline / candidate / verify runs are active.
+- Update README + feature doc to match behavior.
+
+**Done criteria:**
+
+- CLI help documents `--long-query` as default and `--no-long-query` as opt-out.
+- Direct path and MCP path both default `long_query_opt_in=True`.
+- Existing directed-report gate still works when `long_query_opt_in=False`.
+- Human terminal status includes elapsed seconds.
+- Full pytest passes.
 
 ### Carried promotes from v29 retro (seed, not yet scheduled)
 
@@ -44,12 +63,18 @@ v30 is the 5th iteration under the task-ledger-cycle v2 spec (v25→v30) — **f
 
 ## Todos
 
-_None yet — opened at PLAN ack._
+| ID | Todo | Status | Tool | Verify |
+| -- | ---- | ------ | ---- | ------ |
+| T1 | Long-query default + elapsed timer | done | Codex patch + pytest | `py_compile`; 151 targeted tests; 785 full tests |
 
 ## VERIFY
 
-_Pending._
+- `python -m py_compile genie/output/human.py genie/skills/trino_query/research.py genie/skills/mcp_trino/research.py genie/chat.py` — pass.
+- `.venv/bin/python -m pytest tests/test_mcp_research.py tests/test_mcp_preflight.py tests/test_plan_cost_loop.py tests/test_output_human.py tests/test_zero_cost_directed_report.py -q` — 151 passed.
+- `.venv/bin/python -m pytest -q` — 785 passed.
+- `python3 ~/.claude/skills/task-ledger-cycle/templates/validate_ledger.py project-iterations/genieCLI` — pass.
 
 ## RETRO
 
-_Pending._
+- Old long-query gate did abort follow-up tuning unless `--long-query` was passed. New default is tuning-on; `--no-long-query` preserves the directed-report stop path.
+- Existing HumanSink status became the single timer surface, so direct path, MCP baseline/candidates/verifies, AI thinking, and MCP EXPLAIN ANALYZE waits all show elapsed seconds without changing machine output.

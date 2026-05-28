@@ -287,7 +287,7 @@ def _print_trino_research_help(output) -> None:
     output.print("  [dim]Usage[/dim]")
     output.print("    /trino-research [--file <path>] [--metric <m>] [--iterations <n>] [--runs <n>]")
     output.print("                    [--safe-limit <n>] [--query-timeout <sec>]")
-    output.print("                    [--long-query] [--long-query-threshold <sec>] [--max-fallbacks <n>]")
+    output.print("                    [--long-query] [--no-long-query] [--long-query-threshold <sec>] [--max-fallbacks <n>]")
     output.print("                    [--diagnose-only] [--direct]")
     output.print("")
     output.print("  [dim]Flags[/dim]")
@@ -298,8 +298,9 @@ def _print_trino_research_help(output) -> None:
     output.print("    --runs <n>                runs per candidate for median (default 3)")
     output.print("    --safe-limit <n>          wrap SQL with outer LIMIT n (changes semantics!)")
     output.print("    --query-timeout <s>       per-query timeout (default 300s)")
-    output.print("    --long-query             opt-in acknowledgement that the baseline is slow")
-    output.print("    --long-query-threshold <s> abort without --long-query when baseline exceeds this (default 60s)")
+    output.print("    --long-query             allow slow baselines to keep tuning (default)")
+    output.print("    --no-long-query          emit a directed report instead of iterating when baseline exceeds threshold")
+    output.print("    --long-query-threshold <s> slow-baseline threshold for --no-long-query mode (default 60s)")
     output.print("    --max-fallbacks <n>       K-retry cap for final L3 row-equivalence verify (default 3)")
     output.print("    --diagnose-only           zero-cost directed report: static + EXPLAIN plan, no query run")
     output.print("    --direct                  bypass MCP, use trino driver directly")
@@ -817,7 +818,7 @@ def _chat_loop(
                 _print_trino_research_help(output)
                 continue
             # Parse optional flags
-            kwargs = {}
+            kwargs = {"long_query_opt_in": True}
             force_direct = False
             i = 0
             while i < len(args):
@@ -841,6 +842,9 @@ def _chat_loop(
                     i += 2
                 elif args[i] == "--long-query":
                     kwargs["long_query_opt_in"] = True
+                    i += 1
+                elif args[i] == "--no-long-query":
+                    kwargs["long_query_opt_in"] = False
                     i += 1
                 elif args[i] == "--long-query-threshold" and i + 1 < len(args):
                     kwargs["long_query_threshold_s"] = int(args[i + 1])
@@ -1026,4 +1030,3 @@ def _chat_loop(
 
         else:
             _do_send(provider, session, model, current_reasoning, user_input, output, ctx)
-

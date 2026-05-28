@@ -50,7 +50,14 @@ def _execute_sql(sql: str, capture_rows: bool = False) -> tuple[int, QueryMetric
     return row_count, metrics, rows if capture_rows else []
 
 
-def _measure(sql: str, metric_key: str, runs: int, capture_rows: bool = False) -> dict:
+def _measure(
+    sql: str,
+    metric_key: str,
+    runs: int,
+    capture_rows: bool = False,
+    output=None,
+    label: str = "query",
+) -> dict:
     """Run SQL `runs` times, return median metric + row_count + all samples.
 
     When capture_rows=True, the rows from the LAST run are included for
@@ -64,7 +71,12 @@ def _measure(sql: str, metric_key: str, runs: int, capture_rows: bool = False) -
     for i in range(runs):
         # Capture rows only on last run to avoid memory waste
         capture = capture_rows and (i == runs - 1)
-        rc, m, rows = _execute_sql(sql, capture_rows=capture)
+        run_label = f"{label}: run {i + 1}/{runs}"
+        if output and hasattr(output, "status"):
+            with output.status(run_label):
+                rc, m, rows = _execute_sql(sql, capture_rows=capture)
+        else:
+            rc, m, rows = _execute_sql(sql, capture_rows=capture)
         row_count = rc
         if capture:
             last_rows = rows
@@ -561,7 +573,10 @@ def _run_plan_cost_loop(
             f"(plan_cost={ranked['plan_cost']:.2e})"
         )
         try:
-            measured = _measure(ranked["sql"], metric_key, verify_runs, capture_rows=True)
+            measured = _measure(
+                ranked["sql"], metric_key, verify_runs, capture_rows=True,
+                output=output, label=f"verify iter {ranked['iteration']}",
+            )
         except Exception as exc:
             output.progress(f"  [verify] _measure failed: {exc}")
             verify_log.append({"iter": ranked["iteration"], "result": "exec_failed", "reason": str(exc)})
@@ -688,7 +703,7 @@ def _run_optimization_loop(
     output,
     build_prompt: Callable[..., str],
     *,
-    long_query_opt_in: bool = False,
+    long_query_opt_in: bool = True,
     long_query_threshold_s: Optional[int] = None,
     max_fallbacks: Optional[int] = None,
     explain_runner: Optional[Callable[[str], Optional[str]]] = None,
@@ -736,7 +751,10 @@ def _run_optimization_loop(
     baseline = None
     baseline_exc: Optional[BaseException] = None
     try:
-        baseline = _measure(original_sql, metric_key, verify_runs, capture_rows=True)
+        baseline = _measure(
+            original_sql, metric_key, verify_runs, capture_rows=True,
+            output=output, label="baseline",
+        )
     except Exception as e:
         baseline_exc = e
 
@@ -964,7 +982,10 @@ def _run_optimization_loop(
 
         # Guard 2: Execute and measure
         try:
-            candidate = _measure(candidate_sql, metric_key, verify_runs, capture_rows=True)
+            candidate = _measure(
+                candidate_sql, metric_key, verify_runs, capture_rows=True,
+                output=output, label=f"iter {iteration} candidate",
+            )
         except Exception as e:
             output.progress(f"  [REVERT] Execution failed: {e}")
             session["history"].append(new_msg("user", f"SQL execution failed: {e}. Change REVERTED."))
@@ -1193,7 +1214,7 @@ def run_trino_research(
     runs: Optional[int] = None,
     safe_limit: Optional[int] = None,
     query_timeout: Optional[int] = None,
-    long_query_opt_in: bool = False,
+    long_query_opt_in: bool = True,
     long_query_threshold_s: Optional[int] = None,
     max_fallbacks: Optional[int] = None,
     diagnose_only: bool = False,

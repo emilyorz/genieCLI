@@ -190,7 +190,7 @@ genie --skills
 
 ```bash
 > /trino-research --file query.sql --metric cpu_time_ms --iterations 5 --runs 3
-> /trino-research --file slow.sql --long-query --max-fallbacks 3
+> /trino-research --file slow.sql --max-fallbacks 3
 ```
 
 **MCP 路徑（選配）：** 如果 Step 2 有開 `[mcp.trino] enabled=true`，`/trino-research` 走 MCP 優化路徑（EXPLAIN ANALYZE + table metadata）。MCP 未設定或不可達時會明確報錯，不做 silent fallback；想走直連 driver：`/trino-research --direct`。
@@ -277,15 +277,15 @@ AI 驅動的 Trino SQL 自動優化。流程不是讓 AI 盲猜改法，而是�
 
 ### Long-query handling
 
-如果 baseline wall time 超過 `--long-query-threshold`（預設 60s），而你沒有明確加 `--long-query`，工具不會盲目進入 N 輪高成本迭代；它會輸出 directed report，告訴你應該先往哪幾個方向改。這個模式下 baseline 已經量測完成，report 省掉的是後續 candidate execution 與 EXPLAIN ANALYZE。
+`/trino-research` 預設把慢查詢當正常 tuning 對象：baseline wall time 超過 `--long-query-threshold`（預設 60s）時，仍會繼續進入長查詢優化流程。
 
-要明確允許長查詢進入 plan-cost loop：
+如果你只想在慢 baseline 後拿 directed report、不跑後續 candidate execution / EXPLAIN ANALYZE，可以明確關掉 long-query tuning：
 
 ```bash
-> /trino-research --file slow.sql --long-query --max-fallbacks 3
+> /trino-research --file slow.sql --no-long-query
 ```
 
-長查詢模式會用 EXPLAIN plan cost 排序 candidate，最後再用 row-equivalence 做 L3 驗證；`--max-fallbacks` 控制候選失敗時最多重試幾個 fallback。
+長查詢模式會用 EXPLAIN plan cost 排序 candidate，最後再用 row-equivalence 做 L3 驗證；`--max-fallbacks` 控制候選失敗時最多重試幾個 fallback。長時間執行 baseline、candidate、verify 或 EXPLAIN ANALYZE 時，終端 status 會顯示 `elapsed=<秒數>s`，方便判斷目前已跑多久。
 
 | 參數           | 說明               | 預設        |
 | -------------- | ------------------ | ----------- |
@@ -295,7 +295,8 @@ AI 驅動的 Trino SQL 自動優化。流程不是讓 AI 盲猜改法，而是�
 | `--runs`       | 每次驗證重複跑幾次 | 3           |
 | `--safe-limit` | 外層包一層 `LIMIT n` | off |
 | `--query-timeout` | 單次 query timeout 秒數 | 300 |
-| `--long-query` | 明確允許慢 baseline 進入迭代 | off |
+| `--long-query` | 允許慢 baseline 進入 tuning（相容旗標） | on |
+| `--no-long-query` | 慢 baseline 後只產 directed report，不跑後續迭代 | off |
 | `--long-query-threshold` | 超過幾秒視為長查詢 | 60 |
 | `--max-fallbacks` | row-equivalence fallback 重試上限 | 3 |
 | `--diagnose-only` | 只產 directed report，不執行原 SQL | off |

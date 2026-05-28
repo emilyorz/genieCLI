@@ -213,7 +213,7 @@ class TestLongQueryGate:
         )
         assert not r.ok
         assert "exceeds --long-query-threshold 60s" in r.message
-        assert "Pass --long-query" in r.message
+        assert "Remove --no-long-query" in r.message
         assert r.baseline_s == 90.0
 
     def test_long_baseline_proceeds_with_opt_in(self):

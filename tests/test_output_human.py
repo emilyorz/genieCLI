@@ -19,6 +19,33 @@ def test_progress_calls_console_print():
     assert "loading..." in printed
 
 
+def test_status_includes_elapsed_timer():
+    sink = HumanSink()
+
+    class FakeStatus:
+        def __init__(self) -> None:
+            self.updates: list[str] = []
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, exc_type, exc, tb):
+            return False
+
+        def update(self, msg: str) -> None:
+            self.updates.append(msg)
+
+    fake_status = FakeStatus()
+    with patch("genie.output.human._console") as mock_console:
+        mock_console.status.return_value = fake_status
+        with sink.status("baseline: run 1/3"):
+            pass
+
+    initial = mock_console.status.call_args[0][0]
+    assert "baseline: run 1/3" in initial
+    assert "elapsed=" in initial
+
+
 # ── result ────────────────────────────────────────────────────────────────────
 
 def test_result_string():

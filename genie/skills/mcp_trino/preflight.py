@@ -304,7 +304,7 @@ def check_long_query_gate(
         f"{threshold_s}s; predicted worst-case total "
         f"{predicted_total_s / 60:.1f} min "
         f"(iter={max_iterations}, fallbacks={max_fallbacks}). "
-        f"Pass --long-query to proceed anyway."
+        f"Remove --no-long-query to proceed anyway."
     )
     return LongQueryGateResult(
         ok=False, message=message,
