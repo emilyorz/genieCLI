@@ -43,10 +43,10 @@ reasoning-tier: available
 - **Project:** genieCLI
 - **Iteration:** v31
 - **Mode:** v3-strict
-- **Status:** complete pending push
+- **Status:** complete and pushed
 - **Owner:** Emily project shadow / Codex runtime
 - **Started:** 2026-05-28
-- **Updated:** 2026-05-28T21:28+0800
+- **Updated:** 2026-05-28T22:05+0800
 - **Focus:** Add an effective rule-first filter/gate before AI with readable TUI and shared MCP/direct behavior.
 - **Touched features:** [trino-research](features/trino-research.md)
 
@@ -320,6 +320,14 @@ commit_or_diff_ref: v31 close-out commit; see git log
 - **Step 8 consumed:** yes — controller-local spec/quality review recorded in Step 8.
 - **Return-to-v1:** yes — Return-to-v1 packet above consumed by this VERIFY section.
 - **Return-to-v1 verify_handoff consumed:** yes — full pytest, diff check, validator, and doctor were run before commit.
+
+## Post-closeout README / Guard Follow-up
+
+Sam asked to re-run the final checks, then update README and push. Follow-up scope:
+
+- README now documents Task Ledger V3 doctor/validator commands, pre-commit verification expectations, focused/full pytest rules, and the strict `Quality Loop: score X/10 -> pass only if > 9.0` requirement for Step 2 / Step 3 / Step 5.
+- STATUS now reflects that v31 is complete and pushed, not pending push.
+- Runtime `task-ledger-cycle` guard/validator were rechecked after the earlier patch: positive path passed and negative control fails when Quality Loop lines are removed.
 
 ## RETRO
 

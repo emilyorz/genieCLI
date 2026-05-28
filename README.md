@@ -485,6 +485,39 @@ genieCLI/
 
 ---
 
+## 開發與驗證流程
+
+這個 repo 的非 trivial 變更走 Task Ledger V3。Ledger 在 `project-iterations/genieCLI/`，repo-local hooks 設定在 `.codex/hooks.json` 和 `.claude/settings.json`；目前 runtime guard 會同時支援 Codex / Claude Code hook probe。
+
+開發前先確認 hook/activation 狀態：
+
+```bash
+TL_SKILL="${TASK_LEDGER_SKILL:-$HOME/.claude/skills/task-ledger-cycle}"
+python3 "$TL_SKILL/scripts/task_ledger_cli.py" doctor \
+  --repo-root . \
+  --runtimes codex,claude-code \
+  --json
+```
+
+提交前至少跑：
+
+```bash
+TL_SKILL="${TASK_LEDGER_SKILL:-$HOME/.claude/skills/task-ledger-cycle}"
+python3 "$TL_SKILL/templates/validate_ledger.py" project-iterations/genieCLI
+git diff --check
+```
+
+若有程式碼變更，再加上對應的 focused pytest 和 full suite：
+
+```bash
+.venv/bin/python -m pytest <focused-test-file-or-slice> -q
+.venv/bin/python -m pytest -q
+```
+
+Strict V3 的 SDD 流程要求 Step 2 / Step 3 / Step 5 都必須有 `Quality Loop: score X/10 -> pass only if > 9.0`。缺行、非數字分數、或分數 `<= 9.0` 都應被 guard / validator 擋下；驗證摘要也只能引用同一輪實際重跑的測試數字，不可沿用記憶中的舊 baseline。
+
+---
+
 ## 限制與已知問題
 
 1. **Python 3.9+**：已移除 `match/case`，但部分依賴可能需要較新版本

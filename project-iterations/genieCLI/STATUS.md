@@ -6,12 +6,12 @@
 ## Active Iteration
 
 - **Ledger:** [CURRENT.md](CURRENT.md) (v31 — strict V3 active)
-- **Status:** v31 complete pending push. Rule-first pre-AI gate for `/trino-research` implemented with compact TUI and shared MCP/direct/plan-cost behavior.
+- **Status:** v31 complete and pushed. Rule-first pre-AI gate for `/trino-research` implemented with compact TUI and shared MCP/direct/plan-cost behavior; post-closeout README now documents Task Ledger V3 verification and Quality Loop guard expectations.
 - **Focus (v31, complete):** RuleGate framework classifies deterministic findings as BLOCK / REWRITE / ADVISE / PASS, feeds a capped prompt block into AI, and renders a readable rule-gate summary before iteration.
 - **Touched features:** [trino-research](features/trino-research.md) + `mcp_trino/rule_gate.py` + `mcp_trino/research.py` + `trino_query/research.py`
 - **Started:** 2026-05-28
-- **Last commit:** v31 close-out commit; see git log
-- **Resume action:** If interrupted before push, run `git status`, re-run validator/doctor if files changed, commit v31 RuleGate work, and push `main`.
+- **Last commit:** v31 close-out + README/process follow-up; see git log
+- **Resume action:** Start the next product change as v32; before any non-trivial edit, run Task Ledger doctor and validate the active ledger.
 
 ## Next Iteration Focus (promotes from v29 retro)
 
