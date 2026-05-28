@@ -1,4 +1,4 @@
-"""v29 T3 — zero-cost directed report on both execution paths.
+"""v29 T3 — directed diagnosis report on both execution paths.
 
 Two triggers emit a directed Markdown report instead of running the
 iteration loop:
@@ -30,9 +30,26 @@ from genie.skills.mcp_trino.preflight import LongQueryAbort
 from genie.skills.mcp_trino.research import MeasureResult, RunMetrics, ExplainAnalyzeResult
 from genie.skills.trino_query import QueryMetrics
 
-_REPORT_HEADER = "# Trino Query Pre-execution Diagnosis Report (zero-cost directed)"
+_ZERO_COST_REPORT_HEADER = "# Trino Query Pre-execution Diagnosis Report (zero-cost directed)"
+_ITERATION_SKIPPED_REPORT_HEADER = "# Trino Query Pre-execution Diagnosis Report (iteration skipped)"
 _HIGH_PEAK = HIGH_PEAK_MEMORY_BYTES + 1  # guarantees a memory-pressure direction
 _SLOW_WALL_MS = 98_400.0  # 98.4s > 60s default long-query threshold
+
+
+class RecordingOutput:
+    def __init__(self) -> None:
+        self.print_messages: list[str] = []
+        self.progress_messages: list[str] = []
+        self.error_messages: list[str] = []
+
+    def print(self, msg: str) -> None:
+        self.print_messages.append(msg)
+
+    def progress(self, msg: str) -> None:
+        self.progress_messages.append(msg)
+
+    def error(self, msg: str, code: int = 1) -> None:
+        self.error_messages.append(msg)
 
 
 # ---------------------------------------------------------------------------
@@ -66,7 +83,7 @@ def test_should_render_report_header_and_sql_and_table():
         reason="baseline too slow",
         model="test-model",
     )
-    assert report.startswith(_REPORT_HEADER)
+    assert report.startswith(_ZERO_COST_REPORT_HEADER)
     assert "SELECT * FROM t" in report
     assert "**Model:** test-model" in report
     assert "baseline too slow" in report
@@ -81,7 +98,7 @@ def test_should_render_empty_case_when_no_directions():
     report = format_directions_report(
         [], sql="SELECT 1", reason="nothing found",
     )
-    assert report.startswith(_REPORT_HEADER)
+    assert report.startswith(_ZERO_COST_REPORT_HEADER)
     assert "No directions surfaced" in report
     # no markdown table when empty
     assert "| # | Severity |" not in report
@@ -90,6 +107,18 @@ def test_should_render_empty_case_when_no_directions():
 def test_should_omit_model_line_when_model_blank():
     report = format_directions_report([], sql="SELECT 1", reason="r")
     assert "**Model:**" not in report
+
+
+def test_should_render_iteration_skipped_header_when_baseline_already_ran():
+    report = format_directions_report(
+        _sample_directions(),
+        sql="SELECT * FROM t",
+        reason="baseline too slow",
+        baseline_already_ran=True,
+    )
+    assert report.startswith(_ITERATION_SKIPPED_REPORT_HEADER)
+    assert "baseline measured, iteration loop skipped" in report
+    assert "avoids additional candidate executions" in report
 
 
 # ---------------------------------------------------------------------------
@@ -136,7 +165,7 @@ def test_mcp_diagnose_only_emits_report_without_running_any_query():
     # zero query cost: neither baseline nor EXPLAIN ANALYZE ran
     measure.assert_not_called()
     explain_analyze.assert_not_called()
-    assert exc.value.report_markdown.startswith(_REPORT_HEADER)
+    assert exc.value.report_markdown.startswith(_ZERO_COST_REPORT_HEADER)
     assert "memory-pressure" in exc.value.report_markdown
 
 
@@ -145,6 +174,7 @@ def test_mcp_gate_trip_emits_report_after_baseline_no_explain_analyze():
 
     explain_analyze = MagicMock()
 
+    output = RecordingOutput()
     with patch.object(mcp_research, "_measure_mcp", return_value=_fake_mcp_baseline()), \
          patch.object(mcp_research, "_fetch_explain_analyze", explain_analyze), \
          patch.object(mcp_research, "_assemble_mcp_directions",
@@ -159,15 +189,18 @@ def test_mcp_gate_trip_emits_report_after_baseline_no_explain_analyze():
                 provider=MagicMock(),
                 model="m",
                 reasoning="disable",
-                output=MagicMock(),
+                output=output,
                 build_prompt=lambda *a, **k: "SKILL",
                 long_query_opt_in=False,  # gate trips on the slow baseline
             )
 
     # iteration was skipped → no EXPLAIN ANALYZE on the baseline
     explain_analyze.assert_not_called()
-    assert exc.value.report_markdown.startswith(_REPORT_HEADER)
+    assert exc.value.report_markdown.startswith(_ITERATION_SKIPPED_REPORT_HEADER)
     assert exc.value.baseline_s > 60.0
+    assert output.error_messages == []
+    assert any("Long-query gate:" in msg for msg in output.progress_messages)
+    assert all("[cyan]" not in msg and "[/cyan]" not in msg for msg in output.progress_messages)
 
 
 # ---------------------------------------------------------------------------
@@ -209,13 +242,14 @@ def test_direct_diagnose_only_returns_diagnosed_without_baseline():
 
     measure.assert_not_called()
     assert result["status"] == "diagnosed"
-    assert result["report_markdown"].startswith(_REPORT_HEADER)
+    assert result["report_markdown"].startswith(_ZERO_COST_REPORT_HEADER)
     assert "memory-pressure" in result["report_markdown"]
 
 
 def test_direct_gate_trip_returns_diagnosed_with_report():
     from genie.skills.trino_query import research as direct_research
 
+    output = RecordingOutput()
     with patch.object(direct_research, "_measure", return_value=_fake_direct_baseline()), \
          patch.object(direct_research, "_assemble_direct_directions",
                       return_value=_sample_directions()):
@@ -227,7 +261,7 @@ def test_direct_gate_trip_returns_diagnosed_with_report():
             metric_key="wall_time_ms",
             max_iterations=5,
             verify_runs=1,
-            output=MagicMock(),
+            output=output,
             build_prompt=lambda *a, **k: "SKILL",
             explain_runner=None,
             long_query_opt_in=False,
@@ -236,7 +270,10 @@ def test_direct_gate_trip_returns_diagnosed_with_report():
 
     assert result["status"] == "diagnosed"
     assert result["reason"] == "long_query_gate"
-    assert result["report_markdown"].startswith(_REPORT_HEADER)
+    assert result["report_markdown"].startswith(_ITERATION_SKIPPED_REPORT_HEADER)
+    assert output.error_messages == []
+    assert any("Long-query gate:" in msg for msg in output.progress_messages)
+    assert all("[cyan]" not in msg and "[/cyan]" not in msg for msg in output.progress_messages)
 
 
 # ---------------------------------------------------------------------------
@@ -272,8 +309,8 @@ def test_both_paths_emit_same_report_header_on_gate_trip():
             long_query_opt_in=False,
         )
 
-    assert mcp_report.startswith(_REPORT_HEADER)
-    assert direct_result["report_markdown"].startswith(_REPORT_HEADER)
+    assert mcp_report.startswith(_ITERATION_SKIPPED_REPORT_HEADER)
+    assert direct_result["report_markdown"].startswith(_ITERATION_SKIPPED_REPORT_HEADER)
 
 
 # ---------------------------------------------------------------------------

@@ -4,7 +4,7 @@ AI-powered Trino query tuning CLI. 用 LLM 自動優化 Trino SQL，結合靜態
 
 支援三種 AI 後端：TGenie gateway（公司內部）、**OpenAI-compatible API**（OpenAI、Groq、Ollama、LM Studio）、**Anthropic**。
 
-**核心功能：** Trino query 自動優化（autoresearch）、pre-execution directed diagnosis、長查詢零成本診斷報告、Oracle → Trino SQL 遷移、Trino SQL 靜態分析、MCP Trino 整合。
+**核心功能：** Trino query 自動優化（autoresearch）、pre-execution directed diagnosis、長查詢迭代跳過診斷報告、Oracle → Trino SQL 遷移、Trino SQL 靜態分析、MCP Trino 整合。
 
 **v5.0.0** — 聚焦 Trino query tuning，移除無關功能（browser automation、deepwiki），共用 pattern catalog 移至 core。
 
@@ -277,7 +277,7 @@ AI 驅動的 Trino SQL 自動優化。流程不是讓 AI 盲猜改法，而是�
 
 ### Long-query handling
 
-如果 baseline wall time 超過 `--long-query-threshold`（預設 60s），而你沒有明確加 `--long-query`，工具不會盲目進入 N 輪高成本迭代；它會輸出 zero-cost directed report，告訴你應該先往哪幾個方向改。
+如果 baseline wall time 超過 `--long-query-threshold`（預設 60s），而你沒有明確加 `--long-query`，工具不會盲目進入 N 輪高成本迭代；它會輸出 directed report，告訴你應該先往哪幾個方向改。這個模式下 baseline 已經量測完成，report 省掉的是後續 candidate execution 與 EXPLAIN ANALYZE。
 
 要明確允許長查詢進入 plan-cost loop：
 

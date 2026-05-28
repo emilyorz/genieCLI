@@ -792,19 +792,20 @@ def _run_optimization_loop(
         max_fallbacks=fallbacks,
     )
     if not gate.ok:
-        # v29 T3: instead of a bare abort, emit a zero-cost directed report.
+        # v29 T3: instead of a bare abort, emit a directed report.
         # The baseline already ran (one query) so its real peak memory feeds the
         # diagnosis; EXPLAIN (FORMAT JSON) + static add the rest. No further
         # query / no EXPLAIN ANALYZE / no iteration loop.
         from genie.skills.mcp_trino.pre_execution_diagnosis import format_directions_report
-        output.error(f"  [abort] {gate.message}")
-        output.progress("  Emitting zero-cost directed report instead of iterating")
+        output.progress(f"  Long-query gate: {gate.message}")
+        output.progress("  Writing directed report and skipping further query executions")
         directions = _assemble_direct_directions(
             original_sql, static_report, explain_runner,
             peak_memory_bytes=getattr(baseline["metrics"], "peak_memory_bytes", 0) or None,
         )
         report_md = format_directions_report(
             directions, sql=original_sql, reason=gate.message, model=model,
+            baseline_already_ran=True,
         )
         return {
             "status": "diagnosed",
@@ -1300,7 +1301,7 @@ def run_trino_research(
         output.error(f"  Run failed: {result.get('error', 'unknown')}")
         return
     if result["status"] == "diagnosed":
-        # Zero-cost directed report (gate-trip fallback or --diagnose-only).
+        # Directed report (gate-trip fallback or --diagnose-only).
         from datetime import datetime
         report_md = result.get("report_markdown") or ""
         report_dir = Path.cwd() / "report"

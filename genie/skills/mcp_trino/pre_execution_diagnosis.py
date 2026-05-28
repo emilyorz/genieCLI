@@ -336,7 +336,7 @@ def format_directions_for_prompt(
 
 
 # ---------------------------------------------------------------------------
-# Report rendering — standalone Markdown directed report (zero query cost)
+# Report rendering — standalone Markdown directed report
 # ---------------------------------------------------------------------------
 
 
@@ -346,33 +346,55 @@ def format_directions_report(
     sql: str,
     reason: str,
     model: str = "",
+    baseline_already_ran: bool = False,
 ) -> str:
     """Render ranked directions as a standalone Markdown report.
 
     Used by the long-query / `--diagnose-only` path: when the iteration loop is
-    skipped (no real query, no EXPLAIN ANALYZE), the diagnosis is still emitted
-    as a directed report so the user gets actionable directions at zero query
-    cost instead of a bare abort. Pure and deterministic; never raises.
+    skipped, the diagnosis is still emitted as a directed report so the user
+    gets actionable directions instead of a bare abort. In `--diagnose-only`
+    mode no baseline query ran; in long-query gate-trip mode the baseline
+    already ran and this report avoids additional candidate executions and
+    EXPLAIN ANALYZE. Pure and deterministic; never raises.
     """
     from datetime import datetime
+    if baseline_already_ran:
+        title = "# Trino Query Pre-execution Diagnosis Report (iteration skipped)"
+        mode = "long-query gate — baseline measured, iteration loop skipped"
+        cost_note = (
+            "The baseline has already been measured. This report avoids "
+            "additional candidate executions and EXPLAIN ANALYZE."
+        )
+        signal_note = (
+            "Static analysis + EXPLAIN (FORMAT JSON) plan cost + table metadata "
+            "still surface ranked optimization directions without further query executions."
+        )
+    else:
+        title = "# Trino Query Pre-execution Diagnosis Report (zero-cost directed)"
+        mode = "diagnosis-only — no baseline query, no iteration loop"
+        cost_note = "No baseline query or candidate execution was run."
+        signal_note = (
+            "Static analysis + EXPLAIN (FORMAT JSON) plan cost + table metadata "
+            "still surface ranked optimization directions at **zero query cost**."
+        )
 
     lines = [
-        "# Trino Query Pre-execution Diagnosis Report (zero-cost directed)",
+        title,
         "",
         f"**Date:** {datetime.now().strftime('%Y-%m-%d %H:%M')}",
     ]
     if model:
         lines.append(f"**Model:** {model}")
     lines += [
-        f"**Mode:** diagnosis-only — iteration loop skipped: {reason}",
+        f"**Mode:** {mode}: {reason}",
         "",
         "## Why this report instead of an iteration run",
         "",
         f"- {reason}",
         "- The optimizer would burn one real query per iteration; for a slow "
         "baseline that is prohibitively expensive.",
-        "- Static analysis + EXPLAIN (FORMAT JSON) plan cost + table metadata "
-        "still surface ranked optimization directions at **zero query cost**.",
+        f"- {cost_note}",
+        f"- {signal_note}",
         "",
         "## Original SQL",
         "",

@@ -1184,7 +1184,7 @@ def run_mcp_enhancement(
     if diagnose_only:
         from genie.skills.mcp_trino.pre_execution_diagnosis import format_directions_report
         if output:
-            output.progress("  [cyan]--diagnose-only:[/cyan] EXPLAIN-cost + static + metadata, no query execution")
+            output.progress("  Diagnose only: EXPLAIN-cost + static + metadata, no query execution")
         directions, _ = _assemble_mcp_directions(
             client, sql, static_report, peak_memory_bytes=None
         )
@@ -1259,14 +1259,14 @@ def run_mcp_enhancement(
         max_fallbacks=fallbacks,
     )
     if not gate.ok:
-        # v29 T3: instead of a bare abort, emit a zero-cost directed report.
+        # v29 T3: instead of a bare abort, emit a directed report.
         # The baseline already ran (one query) so its real peak memory feeds
         # the diagnosis; EXPLAIN (FORMAT JSON) + static + metadata add the rest.
         # No further query / no EXPLAIN ANALYZE / no iteration loop.
         from genie.skills.mcp_trino.pre_execution_diagnosis import format_directions_report
         if output:
-            output.error(f"  [abort] {gate.message}")
-            output.progress("  [cyan]Emitting zero-cost directed report instead of iterating[/cyan]")
+            output.progress(f"  Long-query gate: {gate.message}")
+            output.progress("  Writing directed report and skipping further query executions")
         directions, _ = _assemble_mcp_directions(
             client, sql, static_report,
             peak_memory_bytes=getattr(baseline.metrics, "peak_memory_bytes", 0) or None,
@@ -1275,6 +1275,7 @@ def run_mcp_enhancement(
             directions, sql=sql,
             reason=gate.message,
             model=model,
+            baseline_already_ran=True,
         )
         raise LongQueryAbort(
             gate.message, gate.baseline_s, gate.predicted_total_s,
@@ -1926,8 +1927,8 @@ def run_trino_research_via_mcp(
             diagnose_only=diagnose_only,
         )
     except LongQueryAbort as lqa:
-        # Message already printed by run_mcp_enhancement via output.error.
-        # If a zero-cost directed report rode along, write it to disk.
+        # Message already printed by run_mcp_enhancement.
+        # If a directed report rode along, write it to disk.
         if getattr(lqa, "report_markdown", None):
             try:
                 report_dir = Path.cwd() / "report"
