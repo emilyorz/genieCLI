@@ -10,8 +10,8 @@
 - **Focus (v30, shipped):** `/trino-research` long-query UX + model input quality. Deterministic diagnosis now includes SQL-shape directions (`materialize-cte-steps`, `reduce-raw-rescan`) and the model prompt now carries Trino-specific guidance for CTE inlining, step materialization, raw-vs-curated scans, skew, spill, CBO stats, dynamic filtering, and worker-count limits.
 - **Touched features:** [trino-research](features/trino-research.md) + `mcp_trino/SKILL.md` + `mcp_trino/pre_execution_diagnosis.py`
 - **Started:** 2026-05-28
-- **Last commit:** pending — v30 T5 local changes after `bcb40b5`.
-- **Resume action:** Commit/push v30 T5 after final ledger validation; Sam can pull and test the updated Trino model input.
+- **Last commit:** `7ff24d7` feat(trino-research): deepen Trino optimization guidance
+- **Resume action:** Sam can pull `origin/main` and test the updated Trino model input.
 
 ## Next Iteration Focus (promotes from v29 retro)
 
