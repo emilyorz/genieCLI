@@ -6,14 +6,14 @@ activation_file: .task-ledger-active.json
 runtime: claude-code
 dispatch_adapter: native-claude-agents
 phase: VERIFY
-current_todo: none (T1-T3 complete)
+current_todo: none (T1-T4 complete)
 maturity_label: light-ledger-complete
 ---
 # CURRENT — v30 (light ledger)
 
 ## Basic Info
 
-- **Status:** complete — light ledger T1/T2/T3 for long-query default, elapsed timer, candidate timeout, and inline reject reasons
+- **Status:** complete — light ledger T1-T4 for long-query default, elapsed timer, candidate timeout, inline reject reasons, and readable TUI layout
 - **Started:** 2026-05-28
 - **Updated:** 2026-05-28T00:00+0800
 - **Predecessor:** [archive/v29.md](archive/v29.md) — directed pre-execution diagnosis (LH-PRISM) on both paths + zero-cost long-query report; 781 pass 0 skip; v3-deviation label
@@ -75,6 +75,23 @@ maturity_label: light-ledger-complete
 - Unit test covers reason rendering.
 - README + feature doc match behavior.
 
+### Light Ledger T4 — Readable iteration result layout
+
+**Goal:** MCP iteration summaries should be scan-friendly TUI blocks, not overloaded single rows.
+
+**Scope:**
+
+- Split iteration result into verdict, metric/delta/elapsed, reason, and note lines.
+- Keep the style consistent with HumanSink: whitespace hierarchy, no boxes, color not required for meaning.
+- Preserve compact output: one small block per iteration outcome.
+
+**Done criteria:**
+
+- KEPT / REVERT output remains easy to identify.
+- Metric, delta, elapsed, reason, and note have stable labels.
+- Unit tests cover the block layout.
+- README + feature doc match behavior.
+
 ### Carried promotes from v29 retro (seed, not yet scheduled)
 
 1. ⭐ **P0 S — Test-count honesty rule** → SKILL.md / feature-doc process. Re-run pytest in-turn and quote the literal current figure for every test-count / pass-skip claim; never carry a remembered baseline. (Origin: v29 top Failed — a stale `781+10 skip` vs actual `781+0` was caught by the spec-verifier.)
@@ -102,6 +119,7 @@ v30 is the 5th iteration under the task-ledger-cycle v2 spec (v25→v30) — **f
 | T1 | Long-query default + elapsed timer | done | Codex patch + pytest | `py_compile`; 151 targeted tests; 785 full tests |
 | T2 | Candidate timeout at baseline wall-time | done | Codex patch + pytest | `py_compile`; 128 targeted tests; 788 full tests |
 | T3 | Inline reject reason | done | Codex patch + pytest | `py_compile`; 77 targeted tests; 788 full tests |
+| T4 | Readable iteration result layout | done | Codex patch + pytest | `py_compile`; 77 targeted tests; 788 full tests |
 
 ## VERIFY
 
@@ -115,6 +133,9 @@ v30 is the 5th iteration under the task-ledger-cycle v2 spec (v25→v30) — **f
 - `python -m py_compile genie/skills/mcp_trino/research.py` — pass.
 - `.venv/bin/python -m pytest tests/test_mcp_research.py tests/test_zero_cost_directed_report.py -q` — 77 passed.
 - `.venv/bin/python -m pytest -q` — 788 passed.
+- `python -m py_compile genie/skills/mcp_trino/research.py` — pass.
+- `.venv/bin/python -m pytest tests/test_mcp_research.py tests/test_zero_cost_directed_report.py -q` — 77 passed.
+- `.venv/bin/python -m pytest -q` — 788 passed.
 
 ## RETRO
 
@@ -122,3 +143,4 @@ v30 is the 5th iteration under the task-ledger-cycle v2 spec (v25→v30) — **f
 - Existing HumanSink status became the single timer surface, so direct path, MCP baseline/candidates/verifies, AI thinking, and MCP EXPLAIN ANALYZE waits all show elapsed seconds without changing machine output.
 - T2 tightens the cost guard from 1.2x baseline to 1.0x baseline for candidates. This matches Sam's tuning intent: a slower candidate is already a failed candidate.
 - T3 fixes an output ambiguity Sam caught: a candidate can be much faster by metric but still be invalid. `REVERT` now carries the rejection reason inline.
+- T4 keeps the same information but makes it scan-friendly: verdict first, numbers second, reason third.

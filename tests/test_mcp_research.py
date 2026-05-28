@@ -178,7 +178,9 @@ class TestUxHelpers:
         rendered = "\n".join(out._lines)
         assert "KEPT" in rendered
         assert "green" in rendered
-        assert "1/5" in rendered
+        assert "iteration[/dim] 1/5" in rendered
+        assert "metric [/dim] query_time_ms" in rendered
+        assert "elapsed[/dim]     1.2s" in rendered
         assert "0.053" in rendered
 
     def test_render_iteration_result_revert_status(self):
@@ -192,7 +194,8 @@ class TestUxHelpers:
         rendered = "\n".join(out._lines)
         assert "REVERT" in rendered
         assert "red" in rendered
-        assert 'reason="semantic_drift: row count differs: 5 vs 0"' in rendered
+        assert "reason [/dim] semantic_drift: row count differs: 5 vs 0" in rendered
+        assert "note   [/dim] drop WHERE clause" in rendered
 
     def test_render_plan_card_shows_sql_stats(self):
         out = self._mock_output()

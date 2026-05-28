@@ -1780,22 +1780,30 @@ def _render_iteration_result(
     }
     color = color_by_status.get(status, "white")
     label = label_by_status.get(status, status.upper())
-    reason_text = ""
-    if reason:
-        clean_reason = " ".join(str(reason).split())
-        if len(clean_reason) > 90:
-            clean_reason = clean_reason[:87] + "..."
-        reason_text = f"  reason=\"{escape(clean_reason)}\""
+
+    def _clean(value: str, limit: int = 110) -> str:
+        text = " ".join(str(value).split())
+        if len(text) > limit:
+            text = text[: limit - 3] + "..."
+        return escape(text)
+
+    metric = _fmt_metric_value(metric_value)
+    delta_text = _fmt_metric_value(delta)
+    elapsed_text = f"{elapsed_s:.1f}s"
+
     output.print(
-        f"  [{color}]{label:<6}[/{color}] "
-        f"[dim]{iteration}/{total}[/dim]  "
-        f"{metric_key}={_fmt_metric_value(metric_value)}  "
-        f"Δ={_fmt_metric_value(delta)}  "
-        f"[dim]({elapsed_s:.1f}s)[/dim]"
-        f"{reason_text}"
+        f"  [{color}]{label:<7}[/{color}] "
+        f"[dim]iteration[/dim] {iteration}/{total}"
     )
+    output.print(
+        f"    [dim]metric [/dim] {metric_key:<18} {metric:>10}   "
+        f"[dim]delta[/dim] {delta_text:>10}   "
+        f"[dim]elapsed[/dim] {elapsed_text:>8}"
+    )
+    if reason:
+        output.print(f"    [dim]reason [/dim] {_clean(reason)}")
     if hypothesis and hypothesis != "?":
-        output.print(f"         [dim]{hypothesis[:100]}[/dim]")
+        output.print(f"    [dim]note   [/dim] {_clean(hypothesis)}")
 
 
 def _render_summary_card(
