@@ -3,172 +3,244 @@ ledger_version: v3
 ledger_hooks: enabled
 execution_mode: strict-full-v3
 activation_file: .task-ledger-active.json
-runtime: claude-code
-dispatch_adapter: native-claude-agents
-phase: VERIFY
-current_todo: none (T1-T5 complete)
-maturity_label: light-ledger-complete
+runtime: codex
+dispatch_adapter: codex-spawn-agent
+phase: PLAN
+current_todo: T1
+maturity_label: active
 ---
-# CURRENT — v30 (light ledger)
-
-## Basic Info
-
-- **Status:** complete — light ledger T1-T5 for long-query default, elapsed timer, candidate timeout, inline reject reasons, readable TUI layout, and Trino optimization input refresh
-- **Started:** 2026-05-28
-- **Updated:** 2026-05-28T18:37+0800
-- **Predecessor:** [archive/v29.md](archive/v29.md) — directed pre-execution diagnosis (LH-PRISM) on both paths + zero-cost long-query report; 781 pass 0 skip; v3-deviation label
+# CURRENT - v31 (V3 strict)
 
 ## PLAN
 
-> Prioritize responding quickly — this is a light-weight ledger entry for a small user-facing tuning UX fix, not a full V3 strict run.
+> Think carefully and step-by-step — this strict V3 iteration touches production
+> code across MCP/direct paths and adds a user-visible rule gate.
+>
+> Strict V3 iteration for `/trino-research` rule-first gate. This is not a light
+> ledger: every Todo must carry objective verification, and hook state must be
+> reported honestly.
 
-### Light Ledger T1 — Long-query default + elapsed timer
+```yaml
+mode: v3-strict
+ledger_version: v3
+ledger_hooks: enabled
+execution-mode: strict-full-v3
+runtime: codex
+dispatch-adapter: codex-spawn-agent
+subagent-authorization: user-requested "找Emily Claude 討論final plan"
+downgrade-approval: N/A
+reasoning-tier: available
+```
 
-**Goal:** `/trino-research` should keep tuning long queries by default, because the normal use case is expensive SQL tuning.
+## Use-case gate
 
-**Scope:**
+1. **Concrete scenario:** Sam runs `/trino-research` against long/expensive Trino SQL and wants obvious rule-based performance issues filtered before AI proposes rewrites.
+2. **Existing-solution gap:** v30 added strong Trino prompt guidance and two SQL-shape directions, but it still lacks a unified rule action taxonomy, compact pre-AI TUI, and shared MCP/direct gate contract.
+3. **Cost of doing vs not doing:** Without a rule gate, AI spends iterations on obvious anti-patterns and may over-trust risky suggestions; with a gate, deterministic findings can guide AI while keeping unsafe rewrites advisory.
 
-- Default long-query behavior to proceed with tuning.
-- Keep an explicit opt-out (`--no-long-query`) for diagnosis-only behavior after a slow baseline.
-- Show elapsed time while long-running baseline / candidate / verify runs are active.
-- Update README + feature doc to match behavior.
+## Basic Info
 
-**Done criteria:**
+- **Project:** genieCLI
+- **Iteration:** v31
+- **Mode:** v3-strict
+- **Status:** active
+- **Owner:** Emily project shadow / Codex runtime
+- **Started:** 2026-05-28
+- **Updated:** 2026-05-28T20:40+0800
+- **Focus:** Add an effective rule-first filter/gate before AI with readable TUI and shared MCP/direct behavior.
+- **Touched features:** [trino-research](features/trino-research.md)
 
-- CLI help documents `--long-query` as default and `--no-long-query` as opt-out.
-- Direct path and MCP path both default `long_query_opt_in=True`.
-- Existing directed-report gate still works when `long_query_opt_in=False`.
-- Human terminal status includes elapsed seconds.
-- Full pytest passes.
+## Goal
 
-### Light Ledger T2 — Candidate timeout at baseline wall-time
+- One-line summary: `/trino-research` should classify deterministic rule findings before AI as BLOCK / REWRITE / ADVISE / PASS, show a compact human-readable gate summary, and feed a bounded prompt block into both MCP and direct paths.
+- Done when: shared rule-gate module exists, both paths consume it, TUI output is tested, no auto-DDL or unverified rewrite is introduced, full pytest + ledger validator pass.
 
-**Goal:** Once `/trino-research` enters iteration, a candidate that runs longer than the original baseline is not useful for tuning and should fail fast.
+## Carryover
 
-**Scope:**
+- From v30: Trino prompt guidance and SQL-shape directions are in place.
+- From v29 promotes: quote fresh test counts only; parity changes need shared/symmetry verification.
 
-- Cap MCP candidate / verify runs at baseline wall-time via Trino `query_max_run_time` plus MCP request timeout.
-- Cap direct candidate / verify runs at baseline wall-time via Trino cursor `cancel()`.
-- Mark timed-out candidates as `timeout_worse` / failed fallback without replacing best SQL.
-- Show candidate timeout limits in status labels.
+## Promote Verification
 
-**Done criteria:**
+| From | Item | Outcome | Evidence |
+| --- | --- | --- | --- |
+| v29 | Test-count honesty | applied | v31 verification must quote in-turn pytest output only |
+| v29 | Symmetry/parity verify | applied | T3 requires MCP/direct shared-function + prompt/TUI tests |
+| v30 | Trino field notes | applied | CTE/raw/skew/spill/stats guidance stays advisory unless verified |
 
-- MCP and direct paths both derive timeout from baseline wall-time.
-- Timed-out candidates never become best SQL.
-- Tests cover MCP timeout propagation, direct plan-cost timeout propagation, and MCP timeout outcome.
-- README + feature doc match behavior.
+## Hardthink - PLAN sections
 
-### Light Ledger T3 — Inline reject reason
+### Alternatives considered
 
-**Goal:** MCP iteration summaries should not show a fast metric beside `REVERT` without explaining why it was rejected.
+1. **Copy Presto/Trino optimizer rules directly** - rejected: those Java rules operate on engine plan nodes with stats/cost context, not SQL text.
+2. **Add many sqlglot rules without framework** - rejected: rule volume without action taxonomy creates noisy prompt/TUI and no effectiveness measurement.
+3. **Implement rule gate framework first, with high-precision rules** - selected: it gives structure, shared MCP/direct behavior, and room to expand safely.
 
-**Scope:**
+### Scope
 
-- Add inline `reason="..."` to MCP iteration result summary lines.
-- Pass concrete reasons for semantic drift, execution failure, timeout, no-SQL, and not-faster outcomes.
-- Keep the existing hypothesis detail line below the summary.
+- **In:** shared rule-gate dataclasses, action taxonomy, deterministic ordering, prompt formatting, compact TUI rendering, MCP/direct wiring, high-precision first batch classification, docs/tests.
+- **Out:** automatic CTAS/materialized-view DDL, broad Presto rule port, unverified SQL mutation, live Trino benchmark, new external dependencies.
 
-**Done criteria:**
+### Open questions
 
-- A semantic-drift `REVERT` line can show `reason="semantic_drift: row count differs: ..."` on the same line.
-- Unit test covers reason rendering.
-- README + feature doc match behavior.
+- REWRITE in v31 is a suggested rewrite class, not an auto-mutation. Auto-apply requires a later explicit row-equivalence/plan-cost flow.
+- BLOCK in v31 means "do not ask AI to semantic-repair this automatically"; it does not stop diagnosis or report generation.
 
-### Light Ledger T4 — Readable iteration result layout
+## Trigger scoring
 
-**Goal:** MCP iteration summaries should be scan-friendly TUI blocks, not overloaded single rows.
-
-**Scope:**
-
-- Split iteration result into verdict, metric/delta/elapsed, reason, and note lines.
-- Keep the style consistent with HumanSink: whitespace hierarchy, no boxes, color not required for meaning.
-- Preserve compact output: one small block per iteration outcome.
-
-**Done criteria:**
-
-- KEPT / REVERT output remains easy to identify.
-- Metric, delta, elapsed, reason, and note have stable labels.
-- Unit tests cover the block layout.
-- README + feature doc match behavior.
-
-### Light Ledger T5 — Trino optimization input refresh
-
-**Goal:** Improve the model's Trino tuning depth by feeding it concrete Trino execution concepts and field-tested guidance, instead of generic SQL tips.
-
-**Scope:**
-
-- Ask Emily Claude for a bounded second opinion and combine it with Sam's field notes plus official Trino docs.
-- Correct inaccurate prompt guidance in `mcp_trino/SKILL.md` (`WITH` is inlined; no generic `BROADCAST` SQL hint; `cached=true` is feature-probed only).
-- Add model guidance for step materialization, repeated raw vs curated scans, skew, spill, dynamic filtering, CBO stats, and worker-count limits.
-- Add lightweight SQL-shape diagnosis for deep heavy CTE chains and repeated likely-raw table scans.
-- Update README + feature doc to match behavior.
-
-**Done criteria:**
-
-- `SKILL.md` no longer claims CTEs materialize once or suggests generic broadcast hints.
-- `pre_execution_diagnosis` can emit `materialize-cte-steps` and `reduce-raw-rescan` directions.
-- Tests cover the new direction classes and avoid false positives for repeated curated reads.
-- README + feature doc explain the new input layer.
-
-### Carried promotes from v29 retro (seed, not yet scheduled)
-
-1. ⭐ **P0 S — Test-count honesty rule** → SKILL.md / feature-doc process. Re-run pytest in-turn and quote the literal current figure for every test-count / pass-skip claim; never carry a remembered baseline. (Origin: v29 top Failed — a stale `781+10 skip` vs actual `781+0` was caught by the spec-verifier.)
-2. ⭐ **P1 S — Symmetry/parity Todos require the unmocked equivalence test as a Step-6 Tkt Verify line** → SKILL.md. (Origin: v29 T3 retro-fitted the equivalence test; T2 parity code shipped a row ahead of its guard.)
-3. ⭐ **P1 S — Upgrade `validate_ledger.py` to recognize the v3 ledger schema** → process. (Origin: v3 ledgers commit with blanket `--no-verify` because the v2-only validator structurally rejects `execution-mode: strict-full-v3` — fail-open latent gap.)
-
-### Meta-retro due
-
-v30 is the 5th iteration under the task-ledger-cycle v2 spec (v25→v30) — **first meta-retro is due this iteration** (see STATUS.md Meta-retro Log).
-
-## Active Parks (carried into v30)
-
-- E2E smoke mode labelling — age 2/3 — trigger: `kept=0/2` in an E2E report misread as a regression — origin: v26-#change-next-1
-- Cron plumbing (E2E-REPORT outside repo + HTTP 401) — age 2/3 — trigger: Sam opens an auto-generated E2E PR, finds branch but no PR — origin: v26-#change-next-2
-- Telegram allowlist plumbing — age 1/3 — trigger: Telegram reply errors on a status-flip ack — origin: v27-#failed-2
-- Explain-runner closures untested — age 0/3 — trigger: a row-shape change in either explain runner (`_build_mcp_explain_runner` / `_direct_explain_runner`) ships a regression mocked tests miss — origin: v29-#failed-2
-- Symmetry test can't compare explain-sourced axis — age 0/3 — trigger: Sam runs from a live cluster and a cross-path explain-direction divergence appears — origin: v29-#failed-3
-
-(Dropped at v29 retro, both aged 3/3 without trigger: Ledger roll-over drag, Autoresearch product-value signal. See `archive/v29.md` Park aging pass.)
+| Tkt | size (0/1/2) | unknown (0/1/2) | cross-cutting (0/1/2) | sum | V3 path |
+| --- | ------------ | --------------- | --------------------- | --- | ------- |
+| T1 | 1 | 1 | 1 | 3 | strict-full-9-step |
+| T2 | 2 | 1 | 2 | 5 | strict-full-9-step |
+| T3 | 2 | 1 | 2 | 5 | strict-full-9-step |
+| T4 | 1 | 0 | 1 | 2 | strict-full-9-step |
+| T5 | 1 | 0 | 1 | 2 | strict-full-9-step |
 
 ## Todos
 
-| ID | Todo | Status | Tool | Verify |
-| -- | ---- | ------ | ---- | ------ |
-| T1 | Long-query default + elapsed timer | done | Codex patch + pytest | `py_compile`; 151 targeted tests; 785 full tests |
-| T2 | Candidate timeout at baseline wall-time | done | Codex patch + pytest | `py_compile`; 128 targeted tests; 788 full tests |
-| T3 | Inline reject reason | done | Codex patch + pytest | `py_compile`; 77 targeted tests; 788 full tests |
-| T4 | Readable iteration result layout | done | Codex patch + pytest | `py_compile`; 77 targeted tests; 788 full tests |
-| T5 | Trino optimization input refresh | done | Emily Claude second opinion + Codex patch + pytest | `py_compile`; 39 targeted tests; 54 diagnosis/report tests; 116 MCP/plan tests; 792 full tests |
+Each Todo must be spec-worthy: one behavior, contract, integration, migration, or user-observable change.
+
+| ID | Status | Pri | Task | Feature | Tool | Verify | Note |
+| --- | --- | --- | --- | --- | --- | --- | --- |
+| T1 | done | P0 | V3 activation + final plan contract | process | task_ledger_cli + validator | doctor JSON ok; `.task-ledger-active.json` hooks enabled; CURRENT/STATUS updated | spec-worthy process contract includes Emily Claude final-plan evidence |
+| T2 | pending | P0 | Shared RuleGate behavior contract | trino-research | Codex patch + pytest | unit tests for action taxonomy, deterministic order, prompt cap, fail-open semantics | spec-worthy shared contract for MCP/direct |
+| T3 | pending | P0 | MCP/direct prompt + TUI integration | trino-research | Codex patch + pytest | tests prove both paths inject same gate header and render compact summary | spec-worthy user-observable TUI behavior |
+| T4 | pending | P1 | First high-precision rule-gate capability mapping | trino-research | Codex patch + pytest | tests cover BLOCK/REWRITE/ADVISE/PASS and no auto-DDL | spec-worthy capability; REWRITE is suggested only |
+| T5 | pending | P1 | Docs, report, and verification integration close-out | trino-research | Codex patch + full pytest | README/feature doc updated; full pytest; ledger validator | spec-worthy docs/process integration; fresh test counts only |
+
+## Model Routing Decisions
+
+```yaml
+- role: final-plan-reviewer
+  task_type: bounded_second_opinion
+  risk: low
+  blast_radius: plan_only
+  selected_model_intent: claude-clean-context
+  reason: Sam explicitly requested Emily Claude discussion before implementation
+```
+
+## Runtime Dispatch Plan
+
+| Step | Role | Adapter | Model intent | Required | Telemetry |
+| --- | --- | --- | --- | --- | --- |
+| Step 2 - Explore | controller + optional helper | dispatch-helper / local | bounded lookup | yes | phase report or CURRENT note |
+| Step 3 - Prototype | controller | local | deterministic code sketch | expected | CURRENT note |
+| Step 4 - Spec | controller | local | contract spec | yes | CURRENT note |
+| Step 5 - Usage Validate | controller | local | UX + failure mode check | yes | CURRENT note |
+| Step 7 - Dev | controller | local | production patch | yes | tests |
+| Step 8A - Spec verify | controller or helper | local/helper | independent spec check | yes | phase report/CURRENT |
+| Step 8B - Quality verify | controller or helper | local/helper | code quality check | yes | phase report/CURRENT |
+| Step 9 - Wrap / Retro | controller | local | closeout | yes | CURRENT/STATUS |
+
+## Discussion Brief (Step 1)
+
+Sam approved a larger v31 iteration: combine existing mechanisms (`sql_static`, `pre_execution_diagnosis`, EXPLAIN plan-cost loop, row-equivalence, candidate timeout, and v30 Trino prompt guidance) into an effective rule-based pre-AI filter/gate. TUI presentation matters: compact, readable, no noisy rule dump.
+
+Emily Claude final-plan review accepted the direction and flagged required constraints:
+
+- Use one shared gate function for MCP and direct paths.
+- BLOCK / REWRITE / ADVISE precedence must be deterministic.
+- REWRITE must not mutate SQL in v31; suggested rewrites need later row-equivalence before auto-apply.
+- EXPLAIN/metadata failures must fail open to PASS/ADVISE, never fail closed.
+- Prompt/TUI must be compact and capped.
+- Track false-positive BLOCK risk and keep a kill-switch path.
+
+## Step 2 - Explore
+
+### Findings
+
+- Existing `sql_static` has 8 deterministic AST findings and already feeds v29/v30 diagnosis.
+- Existing `pre_execution_diagnosis` turns static findings, SQL shape, EXPLAIN cost, metadata, and runtime memory into ranked directions.
+- Existing TUI convention in `HumanSink`: whitespace hierarchy, no boxes, color as accent only.
+- Hook config exists for both Codex and Claude Code; activation file will be created for v31.
+
+## Step 3 - Prototype
+
+### Candidate shape
+
+```text
+static_report + optimization_directions
+  -> build_rule_gate_summary()
+  -> RuleGateSummary(block/rewrite/advise/pass counts, capped items)
+  -> format_rule_gate_for_prompt()
+  -> render_rule_gate_summary(output)
+```
+
+No SQL mutation in v31. The "REWRITE" action marks a safe candidate class for future auto-apply, but the AI still receives the original SQL.
+
+## Step 4 - Spec Candidate
+
+### Shared contract
+
+- `RuleGateItem`: action, severity, source, rule_id, message, suggestion, evidence, confidence.
+- `RuleGateSummary`: sorted items plus action counts and `should_auto_iterate` boolean.
+- BLOCK means "do not semantic-repair automatically"; it is prompt/TUI guidance, not a hard CLI abort in v31.
+- REWRITE means "safe rewrite candidate class"; v31 does not mutate SQL.
+- ADVISE means "feed to AI as bounded context".
+- PASS means "no actionable rule-gate finding".
+
+### TUI contract
+
+Compact block:
+
+```text
+  rule gate  block=1 rewrite=2 advise=3
+    block    cartesian-join        semantic repair blocked; inspect join intent
+    rewrite  predicate-pushdown    move predicate into CTE candidate
+    advise   materialize-cte-steps CTAS/materialized view advisory only
+```
+
+## Step 5 - Usage Validate
+
+- Human scan path: one summary line + top capped findings, not a large table.
+- AI prompt path: one capped "Rule-based gate" section before the general Trino guide.
+- Failure path: if rule gate construction raises, continue without gate and emit a dim progress line.
+- Kill switch: if no findings, render nothing; future CLI flag can disable gate if needed.
+
+## Step 6 - Tkt
+
+### T1 Tkt
+
+Goal: Activate v31 strict V3 and lock final plan.
+Inputs: CURRENT.md v31, task_ledger_cli doctor/start, Emily Claude final-plan evidence.
+Out: `.task-ledger-active.json`, STATUS update, validator pass.
+Verify: `task_ledger_cli.py doctor --json`, `validate_ledger.py`.
+
+### T2 Tkt
+
+Goal: Create shared RuleGate module.
+Inputs: `sql_static` report shape, `OptimizationDirection`.
+Out: `genie/skills/mcp_trino/rule_gate.py` + unit tests.
+Verify: deterministic action order, duplicate handling, prompt cap, empty/pass behavior.
+
+### T3 Tkt
+
+Goal: Wire RuleGate to MCP and direct paths with compact TUI.
+Inputs: `mcp_trino/research.py`, `trino_query/research.py`, HumanSink style.
+Out: shared prompt block and render helper consumed on both paths.
+Verify: tests capture both system prompts and TUI output.
+
+### T4 Tkt
+
+Goal: Map first high-precision rules into BLOCK/REWRITE/ADVISE/PASS.
+Inputs: current 8 static rules + v30 direction kinds.
+Out: mapping table in code and tests.
+Verify: cartesian/null unsafe BLOCK; redundant cast/predicate pushdown REWRITE; CTE/raw/materialization ADVISE; no auto-DDL.
+
+### T5 Tkt
+
+Goal: Close docs and verification.
+Inputs: README, feature doc, CURRENT/STATUS.
+Out: updated docs and verified ledger.
+Verify: targeted tests, full pytest, ledger validator, git diff check.
 
 ## VERIFY
 
-- `python -m py_compile genie/output/human.py genie/skills/trino_query/research.py genie/skills/mcp_trino/research.py genie/chat.py` — pass.
-- `.venv/bin/python -m pytest tests/test_mcp_research.py tests/test_mcp_preflight.py tests/test_plan_cost_loop.py tests/test_output_human.py tests/test_zero_cost_directed_report.py -q` — 151 passed.
-- `.venv/bin/python -m pytest -q` — 785 passed.
-- `python3 ~/.claude/skills/task-ledger-cycle/templates/validate_ledger.py project-iterations/genieCLI` — pass.
-- `python -m py_compile genie/skills/mcp_trino/preflight.py genie/skills/mcp_trino/client.py genie/skills/mcp_trino/research.py genie/skills/trino_query/research.py genie/chat.py` — pass.
-- `.venv/bin/python -m pytest tests/test_mcp_preflight.py tests/test_mcp_research.py tests/test_plan_cost_loop.py tests/test_zero_cost_directed_report.py -q` — 128 passed.
-- `.venv/bin/python -m pytest -q` — 788 passed.
-- `python -m py_compile genie/skills/mcp_trino/research.py` — pass.
-- `.venv/bin/python -m pytest tests/test_mcp_research.py tests/test_zero_cost_directed_report.py -q` — 77 passed.
-- `.venv/bin/python -m pytest -q` — 788 passed.
-- `dispatch-helper --backend claude --caller emily ...` — pass; returned Trino second-opinion guidance covering CTE inlining, raw rescans, plan/stage explosion, skew, spill, dynamic filtering, stats, workers, and CTAS guardrails.
-- `python -m py_compile genie/skills/mcp_trino/pre_execution_diagnosis.py` — pass.
-- `.venv/bin/python -m pytest tests/test_pre_execution_diagnosis.py -q` — 39 passed.
-- `.venv/bin/python -m pytest tests/test_pre_execution_diagnosis.py tests/test_pre_execution_diagnosis_wiring.py tests/test_zero_cost_directed_report.py -q` — 54 passed.
-- `.venv/bin/python -m pytest tests/test_mcp_research.py tests/test_plan_cost_loop.py tests/test_mcp_preflight.py -q` — 116 passed.
-- `.venv/bin/python -m pytest -q` — 792 passed.
-- `python -m py_compile genie/skills/mcp_trino/research.py` — pass.
-- `.venv/bin/python -m pytest tests/test_mcp_research.py tests/test_zero_cost_directed_report.py -q` — 77 passed.
-- `.venv/bin/python -m pytest -q` — 788 passed.
+- T1 code track: no production code yet.
+- T1 doc track: `python3 ~/.claude/skills/task-ledger-cycle/templates/validate_ledger.py project-iterations/genieCLI` — pass.
+- T1 hook track: `task_ledger_cli.py doctor --repo-root . --runtimes codex,claude-code --json` — hook configs OK (`codex` 6 handlers, `claude-code` 13 handlers), activation OK, SessionStart probes clear.
+- T1 return-to-v1: not applicable yet; v31 remains active.
 
 ## RETRO
 
-- Old long-query gate did abort follow-up tuning unless `--long-query` was passed. New default is tuning-on; `--no-long-query` preserves the directed-report stop path.
-- Existing HumanSink status became the single timer surface, so direct path, MCP baseline/candidates/verifies, AI thinking, and MCP EXPLAIN ANALYZE waits all show elapsed seconds without changing machine output.
-- T2 tightens the cost guard from 1.2x baseline to 1.0x baseline for candidates. This matches Sam's tuning intent: a slower candidate is already a failed candidate.
-- T3 fixes an output ambiguity Sam caught: a candidate can be much faster by metric but still be invalid. `REVERT` now carries the rejection reason inline.
-- T4 keeps the same information but makes it scan-friendly: verdict first, numbers second, reason third.
-- T5 moves Trino tuning guidance from generic SQL tips toward engine-specific diagnosis. Official docs and Emily Claude agree on the key correction: `WITH` is inlined in baseline OSS Trino, so CTE materialization must be treated as an explicit side-effecting strategy, not a safe single-query rewrite.
-- T5's SQL-shape contributor is intentionally advisory. It gives the model stronger direction for deep heavy CTE chains and repeated likely-raw scans, but normal `/trino-research` remains read-only and will not auto-emit CTAS/materialized-view DDL.
+_(pending)_

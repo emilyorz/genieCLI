@@ -5,13 +5,13 @@
 
 ## Active Iteration
 
-- **Ledger:** [CURRENT.md](CURRENT.md) (v30 — light ledger complete)
-- **Status:** v30 T1-T5 complete. Long-query tuning default, elapsed stopwatch, candidate timeout, reject reasons, readable TUI blocks, and Trino optimization input refresh shipped locally. Full suite **792 pass, 0 skip**.
-- **Focus (v30, shipped):** `/trino-research` long-query UX + model input quality. Deterministic diagnosis now includes SQL-shape directions (`materialize-cte-steps`, `reduce-raw-rescan`) and the model prompt now carries Trino-specific guidance for CTE inlining, step materialization, raw-vs-curated scans, skew, spill, CBO stats, dynamic filtering, and worker-count limits.
-- **Touched features:** [trino-research](features/trino-research.md) + `mcp_trino/SKILL.md` + `mcp_trino/pre_execution_diagnosis.py`
+- **Ledger:** [CURRENT.md](CURRENT.md) (v31 — strict V3 active)
+- **Status:** v31 active. Building rule-first pre-AI gate for `/trino-research` with compact TUI and shared MCP/direct behavior.
+- **Focus (v31, in progress):** RuleGate framework: classify deterministic findings as BLOCK / REWRITE / ADVISE / PASS, feed a capped prompt block into AI, and render a readable rule-gate summary before iteration.
+- **Touched features:** [trino-research](features/trino-research.md) + `mcp_trino/rule_gate.py` + `mcp_trino/research.py` + `trino_query/research.py`
 - **Started:** 2026-05-28
-- **Last commit:** `7ff24d7` feat(trino-research): deepen Trino optimization guidance
-- **Resume action:** Sam can pull `origin/main` and test the updated Trino model input.
+- **Last commit:** `c354b34` docs(readme): add Trino tuning guidance references
+- **Resume action:** Continue v31 T2/T3 implementation after V3 activation doctor passes.
 
 ## Next Iteration Focus (promotes from v29 retro)
 
@@ -50,12 +50,13 @@ Top promotes from v29's retro (at cap 3):
 
 | Feature | Doc | Last touched |
 |---------|-----|--------------|
-| trino-research | [features/trino-research.md](features/trino-research.md) | v30 (long-query UX + Trino optimization input refresh; SQL-shape diagnosis for CTE materialization / repeated raw scans) |
+| trino-research | [features/trino-research.md](features/trino-research.md) | v31 in progress (rule-first gate before AI, compact TUI, shared MCP/direct behavior) |
 | mcp-banner | [features/mcp-banner.md](features/mcp-banner.md) | v26 (fast-fail 200ms probe; 14× cold-start improvement) |
 
 ## Archive
 
 - [archive/v29.md](archive/v29.md) — directed pre-execution diagnosis (LH-PRISM) on both paths: ranked `OptimizationDirection` injected pre-iter-1 + zero-cost long-query report (`--diagnose-only`/gate-trip) + dual-path symmetry test; C2 hypothesis-structure closed; 781 pass 0 skip; built v3-strict (label `v3-deviation`, enforcement via dispatched spec+quality verifiers not live hooks); commits `006a2f9`/`62e4503`/`4acb7c4`
+- [archive/v30.md](archive/v30.md) — long-query UX + Trino optimization input refresh: long-query default, elapsed stopwatch, candidate timeout, inline reject reasons, readable TUI blocks, SQL-shape diagnosis, README references; full suite 792 pass; commits through `c354b34`
 - [archive/v28.md](archive/v28.md) — sqlglot AST 8-rule engine + plan_signature + plan-cost long-query loop + no-data dispatch; 724 pass +77 tests; T1/T7 skipped (live MCP probe → Sam env); MCP no-data dispatch hotfix `bd1a97a`
 - [archive/v27.md](archive/v27.md) — `/trino-research` output UX overhaul (terminal slim + iteration-centric report + `./report/` subdir); single-commit T1-T4; hypothesis un-truncated; 641 tests pass; both v26 promotes deferred to parks at PLAN ack
 - [archive/v26.md](archive/v26.md) — fast-fail MCP banner (T1 3000→211ms); smoke discipline note; v15 R3 + v10 T9 close-out; first post-hardthink-gate retro (process-gap + do-differently-next-time sections populated)
