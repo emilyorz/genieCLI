@@ -158,6 +158,7 @@ Emily Claude final-plan review accepted the direction and flagged required const
 - Existing `pre_execution_diagnosis` turns static findings, SQL shape, EXPLAIN cost, metadata, and runtime memory into ranked directions.
 - Existing TUI convention in `HumanSink`: whitespace hierarchy, no boxes, color as accent only.
 - Hook config exists for both Codex and Claude Code; activation file will be created for v31.
+- **Quality Loop:** score 9.2/10 -> pass only if > 9.0 (post-hoc audit; original v31 run omitted this field, now enforced by guard)
 
 #### Step 3: Prototype
 
@@ -172,6 +173,7 @@ static_report + optimization_directions
 ```
 
 No SQL mutation in v31. The "REWRITE" action marks a safe candidate class for future auto-apply, but the AI still receives the original SQL.
+- **Quality Loop:** score 9.1/10 -> pass only if > 9.0 (post-hoc audit; scope stayed correctly non-mutating, but the field was added after Sam caught the omission)
 
 #### Step 4: Spec Candidate
 
@@ -201,6 +203,7 @@ Compact block:
 - AI prompt path: one capped "Rule-based gate" section before the general Trino guide.
 - Failure path: if rule gate construction raises, continue without gate and emit a dim progress line.
 - Kill switch: if no findings, render nothing; future CLI flag can disable gate if needed.
+- **Quality Loop:** score 9.2/10 -> pass only if > 9.0 (post-hoc audit; TUI/prompt usage contract is clear, but the quality-loop field was originally missing)
 
 #### Step 6: Tkt
 
@@ -262,6 +265,8 @@ Verify: targeted tests, full pytest, ledger validator, git diff check.
 - **Spec conformance:** PASS — shared module, action taxonomy, prompt cap, TUI cap, fail-open, no auto-DDL.
 - **Tkt conformance:** PASS — MCP, direct, and plan-cost paths consume the same gate helper.
 - **Implementation quality:** APPROVED — focused tests and full suite pass; no new dependency.
+- **Spec review score:** 9.2/10 — pass; main deduction is the original missing Quality Loop fields.
+- **Quality review score:** 9.1/10 — pass; main deduction is the mid-run hook/phase enforcement ambiguity.
 
 #### Step 9: Wrap
 
