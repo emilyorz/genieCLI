@@ -216,7 +216,19 @@ def run_preflight(
 
 DEFAULT_LONG_QUERY_THRESHOLD_S = 60
 DEFAULT_MAX_FALLBACKS = 3
-PER_CANDIDATE_TIMEOUT_FACTOR = 1.2
+PER_CANDIDATE_TIMEOUT_FACTOR = 1.0
+
+
+class CandidateTimeoutError(TimeoutError):
+    """Raised when a candidate query exceeds the baseline wall-time limit."""
+
+    def __init__(self, timeout_ms: float, label: str = "candidate") -> None:
+        self.timeout_ms = timeout_ms
+        self.label = label
+        super().__init__(
+            f"{label} exceeded baseline wall-time limit "
+            f"({timeout_ms / 1000.0:.1f}s)"
+        )
 
 
 class LongQueryAbort(RuntimeError):
@@ -279,8 +291,8 @@ def check_long_query_gate(
     """Decide whether a run should be aborted because the baseline is too slow.
 
     Worst-case wall-time model matches v28 PLAN:
-        predicted_total = baseline + (iter × 1.2 × baseline) + baseline + (fallbacks × baseline)
-    i.e. one baseline sample + iter candidate measurements capped at 1.2× baseline
+        predicted_total = baseline + (iter × baseline) + baseline + (fallbacks × baseline)
+    i.e. one baseline sample + iter candidate measurements capped at baseline wall time
     + one final L3 verify + up to `max_fallbacks` L3 fallbacks.
     """
     baseline_s = baseline_wall_ms / 1000.0
@@ -315,12 +327,17 @@ def check_long_query_gate(
 def make_query_max_run_time_sql(baseline_wall_ms: float) -> str:
     """Build a `SET SESSION query_max_run_time = '<N>ms'` statement.
 
-    N = ceil(1.2 × baseline_wall_ms), clamped to at least 1000ms so that tiny
+    N = ceil(1.0 × baseline_wall_ms), clamped to at least 1000ms so that tiny
     baselines don't produce absurdly short timeouts during smoke runs.
     """
-    import math
-    n_ms = max(1000, int(math.ceil(baseline_wall_ms * PER_CANDIDATE_TIMEOUT_FACTOR)))
+    n_ms = make_candidate_timeout_ms(baseline_wall_ms)
     return f"SET SESSION query_max_run_time = '{n_ms}ms'"
+
+
+def make_candidate_timeout_ms(baseline_wall_ms: float) -> int:
+    """Return the per-candidate timeout derived from baseline wall time."""
+    import math
+    return max(1000, int(math.ceil(baseline_wall_ms * PER_CANDIDATE_TIMEOUT_FACTOR)))
 
 
 def apply_safe_limit(sql: str, limit: int) -> str:

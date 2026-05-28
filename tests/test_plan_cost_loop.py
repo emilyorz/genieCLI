@@ -15,6 +15,7 @@ from genie.skills.trino_query.research import (
     _run_optimization_loop,
     _run_plan_cost_loop,
 )
+from genie.skills.mcp_trino.preflight import CandidateTimeoutError
 
 
 # ── Test fixtures ─────────────────────────────────────────────────────────────
@@ -85,7 +86,7 @@ def test_plan_cost_loop_picks_lowest_cost_when_l3_passes():
     provider = _llm_provider_with_replies([_wrap_sql(cand_a), _wrap_sql(cand_b)])
 
     measured = _make_baseline(rows=100, wall_ms=20_000)  # candidate runs faster
-    with patch("genie.skills.trino_query.research._measure", return_value=measured):
+    with patch("genie.skills.trino_query.research._measure", return_value=measured) as measure:
         result = _run_plan_cost_loop(
             provider=provider,
             model="m", reasoning="default",
@@ -100,6 +101,7 @@ def test_plan_cost_loop_picks_lowest_cost_when_l3_passes():
             explain_runner=runner,
             max_fallbacks=3,
         )
+    assert measure.call_args.kwargs["timeout_ms"] == 80_000
     assert result["status"] == "completed"
     assert result["mode"] == "plan_cost"
     assert result["best_sql"] == cand_b  # lower plan cost won
@@ -260,6 +262,40 @@ def test_plan_cost_loop_emits_no_verifiable_when_all_l3_fail():
         )
     assert result["status"] == "no_verifiable_improvement"
     assert result["best_sql"] == "SELECT * FROM t"
+
+
+def test_plan_cost_loop_treats_candidate_timeout_as_failed_fallback():
+    """A candidate that exceeds baseline wall time should not remain eligible."""
+    output = MagicMock()
+    baseline = _make_baseline(rows=100, wall_ms=80_000)
+    cand = "SELECT a FROM t WHERE id > 100"
+    runner = _explain_runner_factory({
+        "SELECT * FROM t": _make_explain(rows_est=100, bytes_est=10),
+        cand: _make_explain(rows_est=10, bytes_est=10),
+    })
+    provider = _llm_provider_with_replies([_wrap_sql(cand)])
+
+    with patch(
+        "genie.skills.trino_query.research._measure",
+        side_effect=CandidateTimeoutError(80_000, "verify iter 1"),
+    ):
+        result = _run_plan_cost_loop(
+            provider=provider,
+            model="m", reasoning="default",
+            original_sql="SELECT * FROM t",
+            metric_key="cpu_time_ms",
+            max_iterations=1, verify_runs=1,
+            output=output,
+            build_prompt=lambda *a, **kw: "",
+            baseline=baseline,
+            baseline_data=baseline["rows"],
+            static_report=None,
+            explain_runner=runner,
+            max_fallbacks=3,
+        )
+
+    assert result["status"] == "no_verifiable_improvement"
+    assert result["verify_log"][0]["result"] == "timeout_worse"
 
 
 # ── Dispatch from _run_optimization_loop ──────────────────────────────────────

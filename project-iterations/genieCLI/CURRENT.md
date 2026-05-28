@@ -6,14 +6,14 @@ activation_file: .task-ledger-active.json
 runtime: claude-code
 dispatch_adapter: native-claude-agents
 phase: VERIFY
-current_todo: none (T1 complete)
+current_todo: none (T1-T2 complete)
 maturity_label: light-ledger-complete
 ---
 # CURRENT — v30 (light ledger)
 
 ## Basic Info
 
-- **Status:** complete — light ledger T1 for long-query default + elapsed timer
+- **Status:** complete — light ledger T1/T2 for long-query default, elapsed timer, and candidate timeout
 - **Started:** 2026-05-28
 - **Updated:** 2026-05-28T00:00+0800
 - **Predecessor:** [archive/v29.md](archive/v29.md) — directed pre-execution diagnosis (LH-PRISM) on both paths + zero-cost long-query report; 781 pass 0 skip; v3-deviation label
@@ -41,6 +41,24 @@ maturity_label: light-ledger-complete
 - Human terminal status includes elapsed seconds.
 - Full pytest passes.
 
+### Light Ledger T2 — Candidate timeout at baseline wall-time
+
+**Goal:** Once `/trino-research` enters iteration, a candidate that runs longer than the original baseline is not useful for tuning and should fail fast.
+
+**Scope:**
+
+- Cap MCP candidate / verify runs at baseline wall-time via Trino `query_max_run_time` plus MCP request timeout.
+- Cap direct candidate / verify runs at baseline wall-time via Trino cursor `cancel()`.
+- Mark timed-out candidates as `timeout_worse` / failed fallback without replacing best SQL.
+- Show candidate timeout limits in status labels.
+
+**Done criteria:**
+
+- MCP and direct paths both derive timeout from baseline wall-time.
+- Timed-out candidates never become best SQL.
+- Tests cover MCP timeout propagation, direct plan-cost timeout propagation, and MCP timeout outcome.
+- README + feature doc match behavior.
+
 ### Carried promotes from v29 retro (seed, not yet scheduled)
 
 1. ⭐ **P0 S — Test-count honesty rule** → SKILL.md / feature-doc process. Re-run pytest in-turn and quote the literal current figure for every test-count / pass-skip claim; never carry a remembered baseline. (Origin: v29 top Failed — a stale `781+10 skip` vs actual `781+0` was caught by the spec-verifier.)
@@ -66,6 +84,7 @@ v30 is the 5th iteration under the task-ledger-cycle v2 spec (v25→v30) — **f
 | ID | Todo | Status | Tool | Verify |
 | -- | ---- | ------ | ---- | ------ |
 | T1 | Long-query default + elapsed timer | done | Codex patch + pytest | `py_compile`; 151 targeted tests; 785 full tests |
+| T2 | Candidate timeout at baseline wall-time | done | Codex patch + pytest | `py_compile`; 128 targeted tests; 788 full tests |
 
 ## VERIFY
 
@@ -73,8 +92,12 @@ v30 is the 5th iteration under the task-ledger-cycle v2 spec (v25→v30) — **f
 - `.venv/bin/python -m pytest tests/test_mcp_research.py tests/test_mcp_preflight.py tests/test_plan_cost_loop.py tests/test_output_human.py tests/test_zero_cost_directed_report.py -q` — 151 passed.
 - `.venv/bin/python -m pytest -q` — 785 passed.
 - `python3 ~/.claude/skills/task-ledger-cycle/templates/validate_ledger.py project-iterations/genieCLI` — pass.
+- `python -m py_compile genie/skills/mcp_trino/preflight.py genie/skills/mcp_trino/client.py genie/skills/mcp_trino/research.py genie/skills/trino_query/research.py genie/chat.py` — pass.
+- `.venv/bin/python -m pytest tests/test_mcp_preflight.py tests/test_mcp_research.py tests/test_plan_cost_loop.py tests/test_zero_cost_directed_report.py -q` — 128 passed.
+- `.venv/bin/python -m pytest -q` — 788 passed.
 
 ## RETRO
 
 - Old long-query gate did abort follow-up tuning unless `--long-query` was passed. New default is tuning-on; `--no-long-query` preserves the directed-report stop path.
 - Existing HumanSink status became the single timer surface, so direct path, MCP baseline/candidates/verifies, AI thinking, and MCP EXPLAIN ANALYZE waits all show elapsed seconds without changing machine output.
+- T2 tightens the cost guard from 1.2x baseline to 1.0x baseline for candidates. This matches Sam's tuning intent: a slower candidate is already a failed candidate.

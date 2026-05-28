@@ -247,6 +247,36 @@ class TestUxHelpers:
         assert "baseline: run 1/3" in calls[0]
         assert "baseline: run 3/3" in calls[2]
 
+    def test_measure_mcp_applies_candidate_timeout_to_tool_call(self):
+        """Candidate timeout should cap the MCP request and show the limit."""
+        from genie.skills.mcp_trino.research import _measure_mcp
+        from contextlib import nullcontext
+
+        calls = []
+        class FakeOutput:
+            def status(self, msg):
+                calls.append(msg)
+                return nullcontext()
+
+        mock_client = MagicMock(spec=McpClient)
+        mock_client.list_tools.return_value = [
+            {"name": "query", "inputSchema": {"properties": {"sql": {"type": "string"}}}},
+        ]
+        mock_client.call_tool.return_value = json.dumps({
+            "rows": [], "columns": [], "duration_ms": 1,
+            "metrics": {"cpu_time_ms": 1, "peak_memory_bytes": 1},
+        })
+        import genie.skills.mcp_trino.research as _mod
+        _mod._resolved_tool = None
+
+        _measure_mcp(
+            mock_client, "SELECT 1", "query_time_ms", runs=1,
+            output=FakeOutput(), label="iter 1 candidate", timeout_ms=12_345,
+        )
+
+        assert mock_client.call_tool.call_args.kwargs["timeout"] == 12.345
+        assert "limit=12.3s" in calls[0]
+
     def test_execute_via_mcp_handles_bare_list_response(self):
         """mcp-trino returns rows as a top-level JSON list, not wrapped in {"rows": ...}.
         _execute_via_mcp must extract rows + infer columns from the list shape."""

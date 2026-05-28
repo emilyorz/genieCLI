@@ -301,6 +301,7 @@ def _print_trino_research_help(output) -> None:
     output.print("    --long-query             allow slow baselines to keep tuning (default)")
     output.print("    --no-long-query          emit a directed report instead of iterating when baseline exceeds threshold")
     output.print("    --long-query-threshold <s> slow-baseline threshold for --no-long-query mode (default 60s)")
+    output.print("    candidate timeout        iteration candidates are capped at baseline wall-time")
     output.print("    --max-fallbacks <n>       K-retry cap for final L3 row-equivalence verify (default 3)")
     output.print("    --diagnose-only           zero-cost directed report: static + EXPLAIN plan, no query run")
     output.print("    --direct                  bypass MCP, use trino driver directly")

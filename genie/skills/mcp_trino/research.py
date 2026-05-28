@@ -21,8 +21,11 @@ from datetime import datetime
 from pathlib import Path
 from typing import Any, Callable, Optional
 
+import requests
+
 from genie.core.sql_extraction import extract_sql_from_reply
 from .client import McpClient, McpConfig, McpError, load_mcp_config
+from .preflight import CandidateTimeoutError, make_candidate_timeout_ms
 
 # sqlglot is already a project dependency — used for table name extraction
 import sqlglot
@@ -359,7 +362,12 @@ class ExplainAnalyzeResult:
 # EXPLAIN ANALYZE helpers
 # ---------------------------------------------------------------------------
 
-def _fetch_explain_analyze(client: McpClient, sql: str) -> ExplainAnalyzeResult:
+def _fetch_explain_analyze(
+    client: McpClient,
+    sql: str,
+    timeout_ms: Optional[float] = None,
+    label: str = "explain analyze",
+) -> ExplainAnalyzeResult:
     """Run EXPLAIN ANALYZE via MCP and parse the output.
 
     Returns ExplainAnalyzeResult with available=False if the query fails
@@ -368,7 +376,7 @@ def _fetch_explain_analyze(client: McpClient, sql: str) -> ExplainAnalyzeResult:
     """
     explain_sql = f"EXPLAIN ANALYZE {sql}"
     try:
-        result = _execute_via_mcp(client, explain_sql)
+        result = _execute_via_mcp(client, explain_sql, timeout_ms=timeout_ms, label=label)
         if result.get("error"):
             return ExplainAnalyzeResult(
                 raw_text=str(result["error"]),
@@ -410,6 +418,8 @@ def _fetch_explain_analyze(client: McpClient, sql: str) -> ExplainAnalyzeResult:
             total_output_rows=total_output,
             available=True,
         )
+    except CandidateTimeoutError:
+        raise
     except Exception as exc:
         return ExplainAnalyzeResult(
             raw_text=f"EXPLAIN ANALYZE failed: {exc}",
@@ -538,11 +548,15 @@ def _find_sql_param(tool_def: dict) -> str:
     return "sql"
 
 
-def _execute_via_mcp(client: McpClient, sql: str) -> dict:
+def _execute_via_mcp(client: McpClient, sql: str, timeout_ms: Optional[float] = None, label: str = "candidate") -> dict:
     """Execute SQL via MCP server, return parsed result with timing."""
     tool_name, sql_param = _resolve_query_tool(client)
     t0 = time.monotonic()
-    raw = client.call_tool(tool_name, {sql_param: sql})
+    try:
+        kwargs = {"timeout": timeout_ms / 1000.0} if timeout_ms is not None else {}
+        raw = client.call_tool(tool_name, {sql_param: sql}, **kwargs)
+    except requests.exceptions.Timeout as exc:
+        raise CandidateTimeoutError(timeout_ms or 0, label) from exc
     elapsed_ms = (time.monotonic() - t0) * 1000
 
     # Parse the response — MCP tools return text content
@@ -665,7 +679,8 @@ def _assemble_mcp_directions(client, sql, static_report, *, peak_memory_bytes=No
 def _measure_mcp(client: McpClient, sql: str, metric_key: str,
                   runs: int, capture_rows: bool = False,
                   max_capture_rows: int = 100_000,
-                  output=None, label: str = "query") -> MeasureResult:
+                  output=None, label: str = "query",
+                  timeout_ms: Optional[float] = None) -> MeasureResult:
     """Run SQL `runs` times via MCP, return median metric + all data.
 
     If captured row count exceeds max_capture_rows, rows are truncated to
@@ -683,11 +698,13 @@ def _measure_mcp(client: McpClient, sql: str, metric_key: str,
 
     for i in range(runs):
         run_label = f"{label}: run {i + 1}/{runs}"
+        if timeout_ms is not None:
+            run_label = f"{run_label} limit={timeout_ms / 1000.0:.1f}s"
         if output and hasattr(output, "status"):
             with output.status(run_label):
-                result = _execute_via_mcp(client, sql)
+                result = _execute_via_mcp(client, sql, timeout_ms=timeout_ms, label=label)
         else:
-            result = _execute_via_mcp(client, sql)
+            result = _execute_via_mcp(client, sql, timeout_ms=timeout_ms, label=label)
         if result["error"]:
             raise RuntimeError(f"MCP query failed: {result['error']}")
 
@@ -700,11 +717,17 @@ def _measure_mcp(client: McpClient, sql: str, metric_key: str,
         # round and parse the stage totals so the optimizer can rank candidates.
         if metrics.cpu_time_ms == 0 and metrics.peak_memory_bytes == 0:
             ea_label = f"{label}: explain-analyze backfill {i + 1}/{runs}"
+            if timeout_ms is not None:
+                ea_label = f"{ea_label} limit={timeout_ms / 1000.0:.1f}s"
             if output and hasattr(output, "status"):
                 with output.status(ea_label):
-                    ea = _fetch_explain_analyze(client, sql)
+                    ea = _fetch_explain_analyze(
+                        client, sql, timeout_ms=timeout_ms, label=f"{label} explain-analyze backfill",
+                    )
             else:
-                ea = _fetch_explain_analyze(client, sql)
+                ea = _fetch_explain_analyze(
+                    client, sql, timeout_ms=timeout_ms, label=f"{label} explain-analyze backfill",
+                )
             if ea.available:
                 metrics.cpu_time_ms = ea.total_cpu_ms
                 metrics.wall_time_ms = ea.total_wall_ms
@@ -1285,8 +1308,9 @@ def run_mcp_enhancement(
     # ── Per-candidate wall-clock kill (best-effort) ──
     # mcp-trino may or may not persist SET SESSION across separate tool calls.
     # We emit it anyway; if the server ignores it, candidates that overshoot
-    # 1.2× baseline will still burn wall-time but will not corrupt correctness.
+    # baseline wall-time are also capped by the MCP request timeout below.
     baseline_wall_ms = float(baseline.metrics.wall_time_ms or baseline.metrics.query_time_ms or 0)
+    candidate_timeout_ms = make_candidate_timeout_ms(baseline_wall_ms) if baseline_wall_ms > 0 else None
     if baseline_wall_ms > 0:
         timeout_sql = make_query_max_run_time_sql(baseline_wall_ms)
         try:
@@ -1296,6 +1320,11 @@ def run_mcp_enhancement(
         except Exception as exc:
             if output:
                 output.progress(f"  [dim]Session property emit failed (best-effort): {exc}[/dim]")
+        if output and candidate_timeout_ms is not None:
+            output.progress(
+                f"  Candidate timeout: {candidate_timeout_ms / 1000.0:.1f}s "
+                f"(baseline wall-time)"
+            )
 
     # ── EXPLAIN ANALYZE baseline ──
     original_explain: ExplainAnalyzeResult | None = None
@@ -1430,7 +1459,27 @@ def run_mcp_enhancement(
         # Execute and measure candidate
         try:
             candidate = _measure_mcp(client, candidate_sql, metric_key, verify_runs, capture_rows=True,
-                                     output=output, label=f"iter {iteration} candidate")
+                                     output=output, label=f"iter {iteration} candidate",
+                                     timeout_ms=candidate_timeout_ms)
+        except CandidateTimeoutError as exc:
+            elapsed = time.monotonic() - iter_start
+            _render_iteration_result(
+                output, iteration=iteration, total=max_iterations,
+                status="timeout_worse", hypothesis=f"timeout: {exc}",
+                metric_key=metric_key, metric_value=best_metric, delta=0.0,
+                elapsed_s=elapsed,
+            )
+            session["history"].append(new_msg(
+                "user",
+                f"Query exceeded the baseline wall-time limit: {exc}. "
+                f"Change REVERTED. Try a faster approach."
+            ))
+            iterations.append(IterationRecord(
+                iteration=iteration, status="timeout_worse",
+                metric_value=best_metric, delta=0.0,
+                hypothesis=hypothesis, sql=candidate_sql,
+            ))
+            continue
         except Exception as exc:
             elapsed = time.monotonic() - iter_start
             _render_iteration_result(

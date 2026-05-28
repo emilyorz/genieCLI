@@ -129,7 +129,7 @@ class McpClient:
         self._request_id += 1
         return self._request_id
 
-    def _post(self, method: str, params: dict | None = None) -> Any:
+    def _post(self, method: str, params: dict | None = None, *, timeout: float | None = None) -> Any:
         """Send a JSON-RPC 2.0 request and return the result."""
         payload = {
             "jsonrpc": "2.0",
@@ -147,7 +147,7 @@ class McpClient:
             self.config.endpoint(),
             json=payload,
             headers=headers,
-            timeout=self.config.timeout,
+            timeout=self.config.timeout if timeout is None else timeout,
         )
 
         # Capture session ID from response
@@ -226,13 +226,13 @@ class McpClient:
             return result.get("tools", [])
         return result or []
 
-    def call_tool(self, name: str, arguments: dict) -> str:
+    def call_tool(self, name: str, arguments: dict, *, timeout: float | None = None) -> str:
         """Call an MCP tool and return the result as a string."""
         self._ensure_initialized()
         result = self._post("tools/call", {
             "name": name,
             "arguments": arguments,
-        })
+        }, timeout=timeout)
         if result is None:
             return "null"
         # MCP tools return content array

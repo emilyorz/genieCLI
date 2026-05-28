@@ -26,7 +26,7 @@ from genie.skills.mcp_trino.pre_execution_diagnosis import (
     OptimizationDirection,
     format_directions_report,
 )
-from genie.skills.mcp_trino.preflight import LongQueryAbort
+from genie.skills.mcp_trino.preflight import CandidateTimeoutError, LongQueryAbort
 from genie.skills.mcp_trino.research import MeasureResult, RunMetrics, ExplainAnalyzeResult
 from genie.skills.trino_query import QueryMetrics
 
@@ -227,6 +227,41 @@ def test_mcp_slow_baseline_tunes_by_default():
     assert report.baseline_value == 100.0
     assert explain_analyze.called
     assert not any("Long-query gate:" in msg for msg in output.progress_messages)
+
+
+def test_mcp_candidate_timeout_is_marked_worse_not_kept():
+    from genie.skills.mcp_trino import research as mcp_research
+
+    provider = MagicMock()
+    provider.complete_text.return_value = "```sql\nSELECT 2\n```"
+    output = RecordingOutput()
+    explain_analyze = MagicMock(return_value=ExplainAnalyzeResult(raw_text="", available=False))
+
+    with patch.object(
+        mcp_research,
+        "_measure_mcp",
+        side_effect=[
+            _fake_mcp_baseline(),
+            CandidateTimeoutError(_SLOW_WALL_MS, "iter 1 candidate"),
+        ],
+    ), \
+         patch.object(mcp_research, "_fetch_explain_analyze", explain_analyze), \
+         patch.object(mcp_research, "_assemble_mcp_directions", return_value=([], [])):
+        report = mcp_research.run_mcp_enhancement(
+            client=MagicMock(),
+            sql="SELECT 1",
+            metric_key="wall_time_ms",
+            max_iterations=1,
+            verify_runs=1,
+            provider=provider,
+            model="m",
+            reasoning="disable",
+            output=output,
+            build_prompt=lambda *a, **k: "SKILL",
+        )
+
+    assert report.enhanced_sql == "SELECT 1"
+    assert report.iterations[0].status == "timeout_worse"
 
 
 # ---------------------------------------------------------------------------

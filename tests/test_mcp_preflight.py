@@ -223,8 +223,8 @@ class TestLongQueryGate:
         )
         assert r.ok
         assert r.message == ""
-        # baseline + 5*1.2*baseline + baseline(final verify) + 3*baseline(fallbacks)
-        # = 3600 * (1 + 6 + 1 + 3) = 3600 * 11 = 39600s
+        # baseline + 5*baseline + baseline(final verify) + 3*baseline(fallbacks)
+        # = 3600 * (1 + 5 + 1 + 3) = 3600 * 10 = 36000s
         assert r.predicted_total_s == 3600.0 * (1 + 5 * PER_CANDIDATE_TIMEOUT_FACTOR + 1 + 3)
 
     def test_custom_threshold_and_fallbacks(self):
@@ -249,23 +249,19 @@ class TestLongQueryGate:
 class TestMakeQueryMaxRunTimeSql:
     def test_builds_valid_set_session_syntax(self):
         sql = make_query_max_run_time_sql(10_000)  # 10s baseline
-        # 1.2 × 10_000 = 12_000 ms
-        assert sql == "SET SESSION query_max_run_time = '12000ms'"
+        assert sql == "SET SESSION query_max_run_time = '10000ms'"
 
     def test_clamps_tiny_baseline_to_1000ms_minimum(self):
-        sql = make_query_max_run_time_sql(100)  # would be 120ms otherwise
+        sql = make_query_max_run_time_sql(100)  # would be 100ms otherwise
         assert sql == "SET SESSION query_max_run_time = '1000ms'"
 
     def test_rounds_up_fractional_ms(self):
-        # 500ms × 1.2 = 600ms, but floor is 1000ms → clamp wins here; test with larger baseline
         sql = make_query_max_run_time_sql(10_000.4)
-        # 1.2 × 10000.4 = 12000.48 → ceil → 12001 ms
-        assert sql == "SET SESSION query_max_run_time = '12001ms'"
+        assert sql == "SET SESSION query_max_run_time = '10001ms'"
 
     def test_one_hour_baseline(self):
         sql = make_query_max_run_time_sql(3_600_000)  # 1h
-        # 1.2 × 3.6M = 4.32M ms = 72 min
-        assert sql == "SET SESSION query_max_run_time = '4320000ms'"
+        assert sql == "SET SESSION query_max_run_time = '3600000ms'"
 
 
 class TestApplySafeLimit:

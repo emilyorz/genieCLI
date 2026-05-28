@@ -16,11 +16,13 @@ from __future__ import annotations
 
 import re
 import statistics
+import threading
 import time
 from pathlib import Path
 from typing import Callable, Optional
 
 from genie.core.sql_extraction import extract_sql_from_reply
+from genie.skills.mcp_trino.preflight import CandidateTimeoutError, make_candidate_timeout_ms
 from genie.skills.trino_query.connection import get_active_profile
 from genie.skills.trino_query import QueryMetrics, _extract_metrics
 
@@ -29,7 +31,7 @@ from genie.skills.trino_query import QueryMetrics, _extract_metrics
 # Measurement helpers (run in-process, no subprocess/verify.py needed)
 # ---------------------------------------------------------------------------
 
-def _execute_sql(sql: str, capture_rows: bool = False) -> tuple[int, QueryMetrics, list]:
+def _execute_sql_sync(sql: str, capture_rows: bool = False) -> tuple[int, QueryMetrics, list]:
     """Execute SQL on Trino, return (row_count, metrics, rows).
 
     When capture_rows=True, actual row data is returned for equivalence checks.
@@ -50,6 +52,78 @@ def _execute_sql(sql: str, capture_rows: bool = False) -> tuple[int, QueryMetric
     return row_count, metrics, rows if capture_rows else []
 
 
+def _execute_sql(
+    sql: str,
+    capture_rows: bool = False,
+    timeout_ms: Optional[float] = None,
+    label: str = "candidate",
+) -> tuple[int, QueryMetrics, list]:
+    """Execute SQL with an optional wall-clock timeout.
+
+    The Trino Python cursor exposes ``cancel()``, so candidate timeouts can
+    stop the server-side query instead of waiting for the full driver request.
+    """
+    if timeout_ms is None or timeout_ms <= 0:
+        return _execute_sql_sync(sql, capture_rows=capture_rows)
+
+    result: dict[str, tuple[int, QueryMetrics, list]] = {}
+    error: dict[str, BaseException] = {}
+    state: dict[str, object] = {}
+
+    def runner() -> None:
+        conn = None
+        cur = None
+        try:
+            cfg = get_active_profile()
+            conn = cfg.connect()
+            state["conn"] = conn
+            cur = conn.cursor()
+            state["cur"] = cur
+            cur.execute(sql)
+            try:
+                rows = cur.fetchall()
+                row_count = len(rows)
+            except Exception:
+                rows = []
+                row_count = 0
+            stats = getattr(cur, "stats", {}) or {}
+            metrics = _extract_metrics(stats)
+            result["value"] = (row_count, metrics, rows if capture_rows else [])
+        except BaseException as exc:
+            error["exc"] = exc
+        finally:
+            if conn is not None:
+                try:
+                    conn.close()
+                except Exception:
+                    pass
+
+    thread = threading.Thread(target=runner, daemon=True)
+    thread.start()
+    thread.join(timeout_ms / 1000.0)
+    if thread.is_alive():
+        cur = state.get("cur")
+        if cur is not None and hasattr(cur, "cancel"):
+            try:
+                cur.cancel()
+            except Exception:
+                pass
+        conn = state.get("conn")
+        if conn is not None and hasattr(conn, "close"):
+            try:
+                conn.close()
+            except Exception:
+                pass
+        thread.join(timeout=0.2)
+        raise CandidateTimeoutError(timeout_ms, label)
+
+    if "exc" in error:
+        raise error["exc"]
+    if "value" not in result:
+        raise RuntimeError("Trino query finished without returning a result")
+    return result["value"]
+
+
 def _measure(
     sql: str,
     metric_key: str,
@@ -57,6 +131,7 @@ def _measure(
     capture_rows: bool = False,
     output=None,
     label: str = "query",
+    timeout_ms: Optional[float] = None,
 ) -> dict:
     """Run SQL `runs` times, return median metric + row_count + all samples.
 
@@ -72,11 +147,19 @@ def _measure(
         # Capture rows only on last run to avoid memory waste
         capture = capture_rows and (i == runs - 1)
         run_label = f"{label}: run {i + 1}/{runs}"
+        if timeout_ms is not None:
+            run_label = f"{run_label} limit={timeout_ms / 1000.0:.1f}s"
         if output and hasattr(output, "status"):
             with output.status(run_label):
-                rc, m, rows = _execute_sql(sql, capture_rows=capture)
+                rc, m, rows = _execute_sql(
+                    sql, capture_rows=capture,
+                    timeout_ms=timeout_ms, label=label,
+                )
         else:
-            rc, m, rows = _execute_sql(sql, capture_rows=capture)
+            rc, m, rows = _execute_sql(
+                sql, capture_rows=capture,
+                timeout_ms=timeout_ms, label=label,
+            )
         row_count = rc
         if capture:
             last_rows = rows
@@ -95,6 +178,16 @@ def _measure(
         "rows": last_rows,
         "metrics": all_metrics[median_idx],
     }
+
+
+def _baseline_wall_ms(metrics) -> float:
+    """Best available wall-clock duration from Trino metrics."""
+    return float(
+        getattr(metrics, "wall_time_ms", 0)
+        or getattr(metrics, "elapsed_time_ms", 0)
+        or getattr(metrics, "query_time_ms", 0)
+        or 0
+    )
 
 
 def _normalize_row(row: tuple) -> tuple:
@@ -360,6 +453,7 @@ def _run_plan_cost_loop(
     static_report,
     explain_runner: Callable[[str], Optional[str]],
     max_fallbacks: int,
+    candidate_timeout_ms: Optional[float] = None,
 ) -> dict:
     """Plan-cost ranking + L1 structural guard + K-retry on row-equivalence.
 
@@ -382,6 +476,9 @@ def _run_plan_cost_loop(
 
     baseline_metric = baseline["median"]
     baseline_rows = baseline["row_count"]
+    if candidate_timeout_ms is None:
+        baseline_wall_ms = _baseline_wall_ms(baseline["metrics"])
+        candidate_timeout_ms = make_candidate_timeout_ms(baseline_wall_ms) if baseline_wall_ms > 0 else None
 
     # Baseline plan cost + signature
     baseline_rows_est, baseline_bytes_est, baseline_plan = plan_cost(
@@ -391,10 +488,14 @@ def _run_plan_cost_loop(
     baseline_cost = (baseline_rows_est or 0) * (baseline_bytes_est or 1)
 
     output.print("")
+    timeout_text = (
+        f", candidate_timeout={candidate_timeout_ms / 1000.0:.1f}s"
+        if candidate_timeout_ms is not None else ""
+    )
     output.progress(
         f"  [long-query] Plan-cost loop active "
         f"(baseline rows~{baseline_rows_est}, bytes~{baseline_bytes_est}, "
-        f"max_fallbacks={max_fallbacks})"
+        f"max_fallbacks={max_fallbacks}{timeout_text})"
     )
 
     # Session setup — same prompt structure as the legacy loop
@@ -576,7 +677,13 @@ def _run_plan_cost_loop(
             measured = _measure(
                 ranked["sql"], metric_key, verify_runs, capture_rows=True,
                 output=output, label=f"verify iter {ranked['iteration']}",
+                timeout_ms=candidate_timeout_ms,
             )
+        except CandidateTimeoutError as exc:
+            output.progress(f"  [verify] timeout_worse: {exc}")
+            verify_log.append({"iter": ranked["iteration"], "result": "timeout_worse", "reason": str(exc)})
+            fallbacks_used += 1
+            continue
         except Exception as exc:
             output.progress(f"  [verify] _measure failed: {exc}")
             verify_log.append({"iter": ranked["iteration"], "result": "exec_failed", "reason": str(exc)})
@@ -783,10 +890,17 @@ def _run_optimization_loop(
     baseline_metric = baseline["median"]
     baseline_rows = baseline["row_count"]
     baseline_data = baseline["rows"]
+    baseline_wall_ms = _baseline_wall_ms(baseline["metrics"])
+    candidate_timeout_ms = make_candidate_timeout_ms(baseline_wall_ms) if baseline_wall_ms > 0 else None
 
     output.progress(f"  Baseline {metric_key}: {baseline_metric} (median of {verify_runs} runs)")
     output.progress(f"  Baseline row count: {baseline_rows}")
     _print_metrics(output, baseline["metrics"])
+    if candidate_timeout_ms is not None:
+        output.progress(
+            f"  Candidate timeout: {candidate_timeout_ms / 1000.0:.1f}s "
+            f"(baseline wall-time)"
+        )
 
     if static_report and static_report.findings:
         output.progress(
@@ -803,7 +917,7 @@ def _run_optimization_loop(
     threshold_s = long_query_threshold_s if long_query_threshold_s is not None else DEFAULT_LONG_QUERY_THRESHOLD_S
     fallbacks = max_fallbacks if max_fallbacks is not None else DEFAULT_MAX_FALLBACKS
     gate = check_long_query_gate(
-        baseline_wall_ms=float(getattr(baseline["metrics"], "wall_time_ms", 0) or 0),
+        baseline_wall_ms=baseline_wall_ms,
         max_iterations=max_iterations,
         long_query_opt_in=long_query_opt_in,
         threshold_s=threshold_s,
@@ -852,6 +966,7 @@ def _run_optimization_loop(
             static_report=static_report,
             explain_runner=explain_runner,
             max_fallbacks=fallbacks,
+            candidate_timeout_ms=candidate_timeout_ms,
         )
 
     # ── Pre-execution diagnosis (v29 T2 — dual-path parity with MCP path) ──
@@ -985,7 +1100,20 @@ def _run_optimization_loop(
             candidate = _measure(
                 candidate_sql, metric_key, verify_runs, capture_rows=True,
                 output=output, label=f"iter {iteration} candidate",
+                timeout_ms=candidate_timeout_ms,
             )
+        except CandidateTimeoutError as e:
+            output.progress(f"  [REVERT] timeout_worse: {e}")
+            session["history"].append(new_msg(
+                "user",
+                f"SQL exceeded the baseline wall-time limit: {e}. Change REVERTED."
+            ))
+            history.append({
+                "iteration": iteration, "status": "timeout_worse",
+                "metric": best_metric, "delta": 0.0, "hypothesis": hypothesis,
+                "base_sql": iter_base_sql, "candidate_sql": candidate_sql,
+            })
+            continue
         except Exception as e:
             output.progress(f"  [REVERT] Execution failed: {e}")
             session["history"].append(new_msg("user", f"SQL execution failed: {e}. Change REVERTED."))
