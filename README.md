@@ -1,10 +1,10 @@
 # GenieCLI
 
-AI-powered Trino query tuning CLI. 用 LLM 自動優化 Trino SQL，結合靜態分析、自動迭代、result equivalence guard。
+AI-powered Trino query tuning CLI. 用 LLM 自動優化 Trino SQL，結合靜態分析、EXPLAIN 診斷、自動迭代、result equivalence guard。
 
 支援三種 AI 後端：TGenie gateway（公司內部）、**OpenAI-compatible API**（OpenAI、Groq、Ollama、LM Studio）、**Anthropic**。
 
-**核心功能：** Trino query 自動優化（autoresearch）、Oracle → Trino SQL 遷移、Trino SQL 靜態分析、MCP Trino 整合。
+**核心功能：** Trino query 自動優化（autoresearch）、pre-execution directed diagnosis、長查詢零成本診斷報告、Oracle → Trino SQL 遷移、Trino SQL 靜態分析、MCP Trino 整合。
 
 **v5.0.0** — 聚焦 Trino query tuning，移除無關功能（browser automation、deepwiki），共用 pattern catalog 移至 core。
 
@@ -183,21 +183,32 @@ genie --skills
 ```
 > /trino test                 # 確認 Trino profile 能連
 > /trino-research             # 互動模式：貼 SQL → 選 metric → 選 iterations → 跑
+> /trino-research --file q.sql --diagnose-only   # 只產診斷報告，不執行查詢
 ```
 
 一行版（非互動）：
 
 ```bash
 > /trino-research --file query.sql --metric cpu_time_ms --iterations 5 --runs 3
+> /trino-research --file slow.sql --long-query --max-fallbacks 3
 ```
 
-**MCP 路徑（選配）：** 如果 Step 2 有開 `[mcp.trino] enabled=true`，`/trino-research` 自動走 MCP 優化路徑（EXPLAIN ANALYZE + table metadata）。想強制走直連 driver：`/trino-research --direct`。
+**MCP 路徑（選配）：** 如果 Step 2 有開 `[mcp.trino] enabled=true`，`/trino-research` 走 MCP 優化路徑（EXPLAIN ANALYZE + table metadata）。MCP 未設定或不可達時會明確報錯，不做 silent fallback；想走直連 driver：`/trino-research --direct`。
 
 ### Step 5 — 拿報告
 
 1. **終端即時輸出** — 每輪迭代的 metric / keep / revert 狀態
-2. **Markdown Report**（`trino-research-YYYYMMDD-HHMMSS.md`）
+2. **Markdown Report** — 一般報告、no-data 靜態報告、directed diagnosis 報告
 3. **保證語義正確** — result equivalence guard 逐行比對
+
+報告輸出：
+
+| 情境 | 輸出 |
+| ---- | ---- |
+| 一般 direct path | `./report/trino-research-YYYYMMDD-HHMMSS.md` |
+| 一般 MCP path | `trino-research-mcp-YYYYMMDD-HHMMSS.md` |
+| `--diagnose-only` 或長查詢 gate-trip | `./report/trino-research-diagnose-YYYYMMDD-HHMMSS.md` |
+| table/schema/catalog no-data | `./report/trino-research-nodata-YYYYMMDD-HHMMSS.md` |
 
 ---
 
@@ -206,7 +217,7 @@ genie --skills
 | 指令              | 說明                                           |
 | ----------------- | ---------------------------------------------- |
 | `/trino`          | Trino 連線管理（profiles / test）              |
-| `/trino-research` | **Trino SQL 自動優化**                         |
+| `/trino-research` | **Trino SQL 自動優化 + pre-execution diagnosis** |
 | `/autoresearch`   | 通用自主迭代 loop                              |
 | `/new`            | 新對話                                         |
 | `/sessions`       | 列出已儲存的對話                               |
@@ -220,23 +231,61 @@ genie --skills
 
 ## Trino Query Optimization（`/trino-research`）
 
-AI 驅動的 Trino SQL 自動優化。每輪迭代中，AI 提出優化方案 → 執行驗證 → 通過 guard 才保留。
+AI 驅動的 Trino SQL 自動優化。流程不是讓 AI 盲猜改法，而是先做 deterministic diagnosis，再把具體方向餵給 AI：靜態 AST 規則、EXPLAIN (FORMAT JSON) plan cost、table metadata（MCP path）、runtime peak memory 會先被整理成 ranked `OptimizationDirection`，再進入迭代優化。
+
+每輪迭代中，AI 依診斷方向提出優化方案 → 執行驗證 → 通過 guard 才保留。
 
 ### 設計原則
 
 1. **AI 回傳完整 SQL**（不依賴 file_patch / diff）
-2. **Result equivalence guard** — 逐行比對查詢結果，確保語義不變
-3. **Median verify** — 每個候選 SQL 跑 N 次取中位數，減少 cache 噪音
-4. **Iterative accumulation** — 每輪以 current_best 為基準
-5. **History trimming** — 只保留最近 4 條對話
+2. **Diagnosis first** — 先用 deterministic signals 產生 ranked optimization directions
+3. **Result equivalence guard** — 逐行比對查詢結果，確保語義不變
+4. **Median verify** — 每個候選 SQL 跑 N 次取中位數，減少 cache 噪音
+5. **Iterative accumulation** — 每輪以 current_best 為基準
+6. **History trimming** — 只保留最近 4 條對話
 
-### Guard 機制（三層防護）
+### Pre-execution diagnosis
 
-| Guard                  | 說明                                | 失敗時 |
-| ---------------------- | ----------------------------------- | ------ |
-| **Lint**               | SQL 語法分析（lint score ≠ F）      | REVERT |
-| **Execution**          | 必須在 Trino 上成功執行             | REVERT |
-| **Result equivalence** | 優化後結果必須與 baseline 逐行一致  | REVERT |
+`/trino-research` 會在第一輪優化前組合四種訊號：
+
+| 訊號 | 來源 | 用途 |
+| ---- | ---- | ---- |
+| Static AST findings | sqlglot rules | 找 cartesian join、select star、predicate pushdown 等結構問題 |
+| Plan cost | `EXPLAIN (FORMAT JSON)` | 估 rows / bytes，做 reduce-scan、memory-pressure 等方向排序 |
+| Table metadata | MCP path | 偵測 partition / sort hints，建議 leverage partitioning / ordering |
+| Peak memory | baseline runtime metrics | 把 memory pressure 納入目標 metric |
+
+診斷結果會以 `OptimizationDirection(kind, severity, rationale, evidence, target_metric)` 排序後放進 optimizer prompt。`--direct` 路徑也有同等診斷能力；差別是沒有 MCP metadata。
+
+只想看診斷、不跑 baseline query：
+
+```bash
+> /trino-research --file query.sql --diagnose-only
+```
+
+這會輸出 directed report，成本只到 static analysis + EXPLAIN plan；不跑原 SQL，也不進迭代。
+
+### Guard 機制
+
+| Guard | 說明 | 失敗時 |
+| ----- | ---- | ------ |
+| **Preflight** | read-only whitelist + EXPLAIN size estimate + optional `--safe-limit` | STOP |
+| **Lint/static** | SQL 語法與 anti-pattern 分析 | REVERT / REPORT |
+| **Execution** | 必須在 Trino 上成功執行 | REVERT |
+| **Plan-cost structural guard** | 長查詢模式用 plan signature 過濾結構偏移 candidate | REJECT |
+| **Result equivalence** | 優化後結果必須與 baseline 逐行一致 | REVERT |
+
+### Long-query handling
+
+如果 baseline wall time 超過 `--long-query-threshold`（預設 60s），而你沒有明確加 `--long-query`，工具不會盲目進入 N 輪高成本迭代；它會輸出 zero-cost directed report，告訴你應該先往哪幾個方向改。
+
+要明確允許長查詢進入 plan-cost loop：
+
+```bash
+> /trino-research --file slow.sql --long-query --max-fallbacks 3
+```
+
+長查詢模式會用 EXPLAIN plan cost 排序 candidate，最後再用 row-equivalence 做 L3 驗證；`--max-fallbacks` 控制候選失敗時最多重試幾個 fallback。
 
 | 參數           | 說明               | 預設        |
 | -------------- | ------------------ | ----------- |
@@ -244,8 +293,15 @@ AI 驅動的 Trino SQL 自動優化。每輪迭代中，AI 提出優化方案 �
 | `--metric`     | 優化目標 metric    | cpu_time_ms |
 | `--iterations` | 最大迭代次數       | 5           |
 | `--runs`       | 每次驗證重複跑幾次 | 3           |
+| `--safe-limit` | 外層包一層 `LIMIT n` | off |
+| `--query-timeout` | 單次 query timeout 秒數 | 300 |
+| `--long-query` | 明確允許慢 baseline 進入迭代 | off |
+| `--long-query-threshold` | 超過幾秒視為長查詢 | 60 |
+| `--max-fallbacks` | row-equivalence fallback 重試上限 | 3 |
+| `--diagnose-only` | 只產 directed report，不執行原 SQL | off |
+| `--direct` | 強制走 local Trino driver，不走 MCP | off |
 
-**可選 metric：** `cpu_time_ms` / `wall_time_ms` / `physical_input_bytes` / `processed_rows` / `total_splits`
+**可選 metric：** `query_time_ms` / `cpu_time_ms` / `wall_time_ms` / `physical_input_bytes` / `processed_rows` / `total_splits` / `peak_memory_bytes`
 
 ---
 
@@ -271,12 +327,19 @@ timeout = 30
 
 ### /trino-research 自動路由
 
-當 `[mcp.trino].enabled = true` 時，`/trino-research` 會**自動**走 MCP 路徑（baseline 測量、EXPLAIN ANALYZE、metadata 建議都由 MCP server 提供）。當 MCP 無法連線或未啟用時，退回 local `trino` Python driver。
+當 `[mcp.trino].enabled = true` 時，`/trino-research` 會走 MCP 路徑（baseline 測量、EXPLAIN ANALYZE、metadata 建議都由 MCP server 提供）。MCP 無法連線或未啟用時會明確報錯；不做 silent fallback，避免你以為正在測 MCP、實際卻走 direct driver。
 
 強制跑直連模式：
 
 ```bash
 > /trino-research --direct --file query.sql
+```
+
+只跑 MCP/direct 共用的診斷報告：
+
+```bash
+> /trino-research --file query.sql --diagnose-only
+> /trino-research --direct --file query.sql --diagnose-only
 ```
 
 ---
