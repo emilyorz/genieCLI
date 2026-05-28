@@ -285,7 +285,7 @@ AI 驅動的 Trino SQL 自動優化。流程不是讓 AI 盲猜改法，而是�
 > /trino-research --file slow.sql --no-long-query
 ```
 
-長查詢模式會用 EXPLAIN plan cost 排序 candidate，最後再用 row-equivalence 做 L3 驗證；`--max-fallbacks` 控制候選失敗時最多重試幾個 fallback。進入 iteration 後，candidate / verify run 若超過 baseline wall-time 會視為失敗，不會取代目前 best SQL；MCP path 會 best-effort 設定 Trino `query_max_run_time`，direct path 會用 cursor cancel。長時間執行 baseline、candidate、verify 或 EXPLAIN ANALYZE 時，終端 status 會顯示 `elapsed=<秒數>s`，candidate status 也會顯示 `limit=<秒數>s`。
+長查詢模式會用 EXPLAIN plan cost 排序 candidate，最後再用 row-equivalence 做 L3 驗證；`--max-fallbacks` 控制候選失敗時最多重試幾個 fallback。進入 iteration 後，candidate / verify run 若超過 baseline wall-time 會視為失敗，不會取代目前 best SQL；MCP path 會 best-effort 設定 Trino `query_max_run_time`，direct path 會用 cursor cancel。長時間執行 baseline、candidate、verify 或 EXPLAIN ANALYZE 時，終端 status 會顯示 `elapsed=<秒數>s`，candidate status 也會顯示 `limit=<秒數>s`；MCP iteration summary 的 `REVERT` / `FAIL` / `TIMEOUT` 會在同一行顯示 `reason="..."`。
 
 | 參數           | 說明               | 預設        |
 | -------------- | ------------------ | ----------- |

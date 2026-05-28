@@ -187,10 +187,12 @@ class TestUxHelpers:
             out, iteration=2, total=5, status="semantic_drift",
             hypothesis="drop WHERE clause", metric_key="query_time_ms",
             metric_value=0.020, delta=-0.030, elapsed_s=1.5,
+            reason="semantic_drift: row count differs: 5 vs 0",
         )
         rendered = "\n".join(out._lines)
         assert "REVERT" in rendered
         assert "red" in rendered
+        assert 'reason="semantic_drift: row count differs: 5 vs 0"' in rendered
 
     def test_render_plan_card_shows_sql_stats(self):
         out = self._mock_output()

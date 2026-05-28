@@ -22,6 +22,7 @@ from pathlib import Path
 from typing import Any, Callable, Optional
 
 import requests
+from rich.markup import escape
 
 from genie.core.sql_extraction import extract_sql_from_reply
 from .client import McpClient, McpConfig, McpError, load_mcp_config
@@ -1437,6 +1438,7 @@ def run_mcp_enhancement(
                 status="no_sql", hypothesis="no SQL extracted",
                 metric_key=metric_key, metric_value=best_metric, delta=0.0,
                 elapsed_s=time.monotonic() - iter_start,
+                reason="no SQL extracted from model response",
             )
             iterations.append(IterationRecord(
                 iteration=iteration, status="no_sql",
@@ -1468,6 +1470,7 @@ def run_mcp_enhancement(
                 status="timeout_worse", hypothesis=f"timeout: {exc}",
                 metric_key=metric_key, metric_value=best_metric, delta=0.0,
                 elapsed_s=elapsed,
+                reason=str(exc),
             )
             session["history"].append(new_msg(
                 "user",
@@ -1487,6 +1490,7 @@ def run_mcp_enhancement(
                 status="exec_failed", hypothesis=f"execution failed: {exc}",
                 metric_key=metric_key, metric_value=best_metric, delta=0.0,
                 elapsed_s=elapsed,
+                reason=str(exc),
             )
             iterations.append(IterationRecord(
                 iteration=iteration, status="exec_failed",
@@ -1512,6 +1516,7 @@ def run_mcp_enhancement(
                 status="semantic_drift", hypothesis=f"drift: {equiv_reason}",
                 metric_key=metric_key, metric_value=candidate_metric, delta=delta,
                 elapsed_s=elapsed,
+                reason=f"semantic_drift: {equiv_reason}",
             )
             session["history"].append(new_msg(
                 "user",
@@ -1541,6 +1546,7 @@ def run_mcp_enhancement(
             status=status, hypothesis=hypothesis,
             metric_key=metric_key, metric_value=candidate_metric, delta=delta,
             elapsed_s=elapsed,
+            reason=None if improved else "not faster than current best",
         )
 
         session["history"].append(new_msg(
@@ -1751,6 +1757,7 @@ def _render_sql_diff(output, old_sql: str, new_sql: str, max_lines: int = 20) ->
 def _render_iteration_result(
     output, *, iteration: int, total: int, status: str, hypothesis: str,
     metric_key: str, metric_value: float, delta: float, elapsed_s: float,
+    reason: str | None = None,
 ) -> None:
     """One structured line per iteration outcome. Uses the HumanSink palette."""
     if output is None:
@@ -1760,6 +1767,7 @@ def _render_iteration_result(
         "worse": "yellow",
         "semantic_drift": "red",
         "exec_failed": "red",
+        "timeout_worse": "red",
         "no_sql": "dim",
     }
     label_by_status = {
@@ -1767,16 +1775,24 @@ def _render_iteration_result(
         "worse": "WORSE",
         "semantic_drift": "REVERT",
         "exec_failed": "FAIL",
+        "timeout_worse": "TIMEOUT",
         "no_sql": "SKIP",
     }
     color = color_by_status.get(status, "white")
     label = label_by_status.get(status, status.upper())
+    reason_text = ""
+    if reason:
+        clean_reason = " ".join(str(reason).split())
+        if len(clean_reason) > 90:
+            clean_reason = clean_reason[:87] + "..."
+        reason_text = f"  reason=\"{escape(clean_reason)}\""
     output.print(
         f"  [{color}]{label:<6}[/{color}] "
         f"[dim]{iteration}/{total}[/dim]  "
         f"{metric_key}={_fmt_metric_value(metric_value)}  "
         f"Δ={_fmt_metric_value(delta)}  "
         f"[dim]({elapsed_s:.1f}s)[/dim]"
+        f"{reason_text}"
     )
     if hypothesis and hypothesis != "?":
         output.print(f"         [dim]{hypothesis[:100]}[/dim]")
