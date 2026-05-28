@@ -15,6 +15,7 @@ that contributor.
 """
 from __future__ import annotations
 
+import re
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any
 
@@ -25,15 +26,19 @@ from typing import TYPE_CHECKING, Any
 LARGE_SCAN_BYTES: int = 1 * 1024**3       # 1 GiB — bytes_est above which reduce-scan emits
 HIGH_PEAK_MEMORY_BYTES: int = 1 * 1024**3  # 1 GiB — peak/build-side above which memory-pressure emits
 HIGH_SEVERITY_SCAN_MULTIPLIER: int = 10    # bytes_est above this × LARGE_SCAN_BYTES → reduce-scan is "high"
+COMPLEX_CTE_COUNT: int = 3                 # chained WITH steps above this are worth diagnosis
+HEAVY_CTE_COUNT: int = 2                   # JOIN/GROUP/window/set-heavy CTE steps above this trigger materialization advice
+REPEATED_RAW_SCAN_COUNT: int = 2            # same likely-raw table seen at least this many times
 
 # ---------------------------------------------------------------------------
 # Evidence-prefix → sort rank mapping (lower = higher priority)
 # ---------------------------------------------------------------------------
 _SOURCE_RANK: dict[str, int] = {
     "static": 0,
-    "explain": 1,
-    "runtime": 2,
-    "metadata": 3,
+    "sql-shape": 1,
+    "explain": 2,
+    "runtime": 3,
+    "metadata": 4,
 }
 
 _SEVERITY_RANK: dict[str, int] = {"high": 0, "medium": 1, "low": 2}
@@ -114,6 +119,143 @@ def _static_contributor(static_report: Any) -> list[OptimizationDirection]:
                 target_metric="wall_time_ms",
             )
         )
+    return directions
+
+
+# ---------------------------------------------------------------------------
+# Contributor 1b — SQL shape heuristics
+# ---------------------------------------------------------------------------
+
+_RAW_TABLE_TOKENS: frozenset[str] = frozenset({
+    "raw",
+    "ods",
+    "source",
+    "stg",
+    "stage",
+    "staging",
+    "fact",
+    "events",
+    "event",
+    "logs",
+    "log",
+})
+
+_CURATED_TABLE_TOKENS: frozenset[str] = frozenset({
+    "curated",
+    "presum",
+    "summary",
+    "summarized",
+    "aggregate",
+    "agg",
+    "dim",
+    "dimension",
+})
+
+
+def _name_tokens(name: str) -> set[str]:
+    return {tok for tok in re.split(r"[^a-z0-9]+", name.lower()) if tok}
+
+
+def _looks_like_raw_table(table_name: str) -> bool:
+    """Best-effort naming heuristic; metadata and EXPLAIN remain authoritative."""
+    tokens = _name_tokens(table_name)
+    if tokens & _CURATED_TABLE_TOKENS:
+        return False
+    return bool(tokens & _RAW_TABLE_TOKENS)
+
+
+def _table_name(table: Any) -> str:
+    parts = [
+        getattr(table, "catalog", "") or "",
+        getattr(table, "db", "") or "",
+        getattr(table, "name", "") or "",
+    ]
+    return ".".join(str(part) for part in parts if part)
+
+
+def _sql_shape_contributor(sql: str) -> list[OptimizationDirection]:
+    """Emit advisory directions from SQL shape without executing the query.
+
+    These are intentionally conservative. They do not rewrite SQL and they do
+    not authorize side-effecting CTAS; they only give the optimizer a sharper
+    diagnosis block when the query shape resembles real Trino pain points.
+    """
+    if not isinstance(sql, str) or not sql.strip():
+        return []
+
+    try:
+        import sqlglot
+        from sqlglot import exp
+
+        tree = sqlglot.parse_one(sql, read="trino")
+    except Exception:
+        return []
+
+    directions: list[OptimizationDirection] = []
+
+    ctes = list(tree.find_all(exp.CTE))
+    heavy_ctes = [
+        cte for cte in ctes
+        if (
+            cte.find(exp.Join)
+            or cte.find(exp.Group)
+            or cte.find(exp.Window)
+            or cte.find(exp.Union)
+        )
+    ]
+    if len(ctes) >= COMPLEX_CTE_COUNT and len(heavy_ctes) >= HEAVY_CTE_COUNT:
+        directions.append(
+            OptimizationDirection(
+                kind="materialize-cte-steps",
+                severity="high",
+                rationale=(
+                    "The SQL has multiple heavy WITH steps. Trino inlines WITH "
+                    "relations, so a deep CTE chain can expand into an expensive "
+                    "single plan. Recommend step materialization via managed CTAS "
+                    "or materialized views only as an advisory or explicit "
+                    "multi-statement mode; do not auto-convert a read-only SELECT "
+                    "into side-effecting DDL."
+                ),
+                evidence=(
+                    f"sql-shape:cte_count={len(ctes)},"
+                    f"heavy_ctes={len(heavy_ctes)}"
+                ),
+                target_metric="query_time_ms",
+            )
+        )
+
+    cte_aliases = {str(cte.alias).lower() for cte in ctes if cte.alias}
+    table_counts: dict[str, int] = {}
+    for table in tree.find_all(exp.Table):
+        name = _table_name(table)
+        if not name or name.lower() in cte_aliases:
+            continue
+        key = name.lower()
+        if _looks_like_raw_table(key):
+            table_counts[key] = table_counts.get(key, 0) + 1
+
+    repeated_raw = sorted(
+        (name, count)
+        for name, count in table_counts.items()
+        if count >= REPEATED_RAW_SCAN_COUNT
+    )
+    if repeated_raw:
+        name, count = repeated_raw[0]
+        directions.append(
+            OptimizationDirection(
+                kind="reduce-raw-rescan",
+                severity="medium",
+                rationale=(
+                    "The same likely raw/source table is referenced multiple "
+                    "times. Prioritize avoiding repeated raw scans; repeated "
+                    "reads of small curated/presum/dimension tables are usually "
+                    "a lower-priority cost."
+                ),
+                evidence=f"sql-shape:repeated_raw_scan={name}x{count}",
+                target_metric="physical_input_bytes",
+            )
+        )
+
     return directions
 
 
@@ -293,8 +435,10 @@ def _memory_contributor(peak_memory_bytes: Any) -> list[OptimizationDirection]:
                 severity="high",
                 rationale=(
                     "The query exceeded the peak-memory threshold at runtime. "
-                    "Consider rewriting large joins, adding spill hints, or "
-                    "filtering earlier to reduce in-memory state."
+                    "Inspect EXPLAIN ANALYZE for skew, spill, and large build-side "
+                    "state; reduce memory with narrower projections, earlier "
+                    "filters, smaller build sides, or partitioned joins when the "
+                    "build side does not fit per worker."
                 ),
                 evidence=f"runtime:peak_memory_bytes={int(peak_memory_bytes)}",
                 target_metric="peak_memory_bytes",
@@ -477,6 +621,7 @@ def pre_execution_diagnosis(
     """
     directions: list[OptimizationDirection] = []
     directions.extend(_static_contributor(static_report))
+    directions.extend(_sql_shape_contributor(sql))
     directions.extend(_explain_cost_contributor(explain_cost))
     directions.extend(_metadata_contributor(table_metadata))
     directions.extend(_memory_contributor(peak_memory_bytes))

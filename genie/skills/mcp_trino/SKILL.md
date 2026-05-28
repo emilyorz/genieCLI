@@ -28,20 +28,77 @@ behavior without touching Python code.
 3. **Avoid blocking aggregations** — prefer `APPROX_DISTINCT(x)` over
    `COUNT(DISTINCT x)` unless exact semantics are required. Same for
    `APPROX_PERCENTILE` over sort-based percentiles.
-4. **Join order matters** — put the smallest filtered relation first so
-   the broadcast side stays small. Use `BROADCAST` hint for small
-   dimension tables, `PARTITIONED` for equi-joins on large facts.
-5. **CTEs over correlated subqueries** — Trino materializes CTEs once;
-   correlated subqueries re-execute per row.
-6. **Push COALESCE / NULL handling into the scan** — don't wrap a whole
+4. **Join order and build side matter** — Trino's CBO chooses join order
+   and distribution from table stats. Broadcast is good only when the
+   filtered build side fits in memory on every worker; partitioned joins
+   are safer for large-large joins. Do not emit generic SQL hints.
+5. **Treat `WITH` as inlined** — Trino currently inlines `WITH` relations
+   where referenced; a CTE is not a cache. A deep CTE chain with JOIN/GROUP
+   BY can create one huge plan. Recommend step materialization only as an
+   advisory or in an explicit multi-statement mode.
+6. **Prioritize raw scans over curated rescans** — repeated scans of raw /
+   fact / source tables are expensive; repeated scans of small curated,
+   presum, or dimension tables are usually secondary unless EXPLAIN proves
+   otherwise.
+7. **Push COALESCE / NULL handling into the scan** — don't wrap a whole
    column list in `COALESCE` at the top; apply it only where needed.
-7. **Minimize data shuffles** — if two JOINs share the same key, keep
+8. **Minimize data shuffles** — if two JOINs share the same key, keep
    them adjacent so Trino can colocate partitions. Avoid unnecessary
    GROUP BY between joins that force a re-partition.
-8. **Leverage column stats** — Trino CBO performs better when table
+9. **Leverage column stats** — Trino CBO performs better when table
    statistics exist. If a plan shows hash-joins on huge tables with
-   no broadcast, suggest re-analyzing table stats rather than adding
-   manual hints.
+   bad build-side choices, suggest `ANALYZE` / stats refresh before
+   forcing join distribution.
+
+## Trino Execution Model Notes
+
+- `WITH` / CTEs are readability constructs, not guaranteed materialized
+  results. If the same CTE or subplan is referenced repeatedly, assume the
+  optimizer may inline it and plan repeated work.
+- One giant SQL statement can fail because the plan is too deep even when
+  total cluster CPU looks sufficient. Symptoms: many fragments/exchanges,
+  repeated identical subplans, high blocked time, skewed per-task input, or
+  spill.
+- More workers help scan and shuffle throughput. They do not fix a bad
+  single-query plan, per-worker memory pressure, skewed hot keys, or a
+  stage that spills heavily.
+- Use `EXPLAIN (TYPE DISTRIBUTED)` to inspect fragments/exchanges and
+  `EXPLAIN ANALYZE` to inspect runtime CPU, blocked time, per-task
+  `Input std.dev.`, dynamic filters, and output row fan-out.
+- Dynamic filtering helps selective joins when the small filtered dimension
+  becomes the build side and connector support exists. Preserve selective
+  dimension predicates and up-to-date stats so CBO can choose that shape.
+
+## Step Materialization Guidance
+
+Recommend materializing intermediate steps only when the query shape justifies
+the side effects:
+
+- Good candidates: 3+ chained CTEs, multiple heavy JOIN/GROUP BY steps, one
+  CTE reused by multiple branches, or repeated scans of a large raw/fact table.
+- Lower-priority candidates: repeated reads of small curated / presum /
+  dimension tables, shallow CTEs used once, or simple readability CTEs.
+- Preferred recommendation format: "split into managed CTAS steps in a scratch
+  schema" or "use a materialized view if the base data changes slowly".
+- Do not auto-return multi-statement DDL in the normal `/trino-research` loop.
+  CTAS/materialized views require a scratch schema, collision-proof names,
+  cleanup/TTL, CREATE/DROP privileges, and explicit user opt-in.
+- Do not overwrite source tables. Never emit `DROP` / `CREATE OR REPLACE`
+  against user schemas unless the user explicitly enabled a materialization
+  mode with a scratch target.
+- `WITH (cached = TRUE)` is not baseline OSS Trino CTE syntax. Treat it as a
+  feature-probed / fork-specific capability only; do not suggest it unless the
+  exact deployed engine supports it.
+
+## Runtime Bottleneck Patterns
+
+| Symptom | Likely cause | Model guidance |
+|---------|--------------|----------------|
+| Huge scan bytes, small output | Missing partition/predicate/projection pushdown | Push filters to leaves; use native partition column types; list needed columns |
+| One stage/task much larger than peers | Data skew / hot join or group key | Filter NULL/hot keys, pre-aggregate, consider salting only after evidence |
+| High peak memory or spill | Large build side, high-cardinality aggregation/window/sort | Narrow columns, filter earlier, pre-aggregate, avoid broadcast for large build |
+| Many fragments/exchanges/repeated subplans | Nested CTE plan explosion | Flatten or recommend managed step materialization |
+| Bad join order/distribution | Missing/stale stats | Suggest stats refresh / `ANALYZE`; only recommend session property override with evidence |
 
 ## Anti-patterns to Rewrite
 
@@ -89,13 +146,14 @@ behavior without touching Python code.
 
 ## Join Strategy Selection
 
-| Scenario | Strategy | How to hint |
-|----------|----------|-------------|
-| Small dim (< 10K rows) joined to fact | BROADCAST | Ensure the small table is the build side |
-| Two large tables on equi-key | PARTITIONED (hash) | Default; no hint needed |
-| Large table joined to medium (10K–1M) | BROADCAST if < broadcast limit | Check `query.max-broadcast-table-size` |
-| Cross join (intentional) | REPLICATE | Explicit `CROSS JOIN` — never accidentally create one |
-| Self-join | PARTITIONED | Trino handles same-table equi-join efficiently |
+| Scenario | Strategy | How to guide |
+|----------|----------|--------------|
+| Small filtered dimension joined to fact | Broadcast can help | Keep the small side as build side; verify it fits per-worker memory |
+| Two large tables on equi-key | Partitioned hash join | Default/safest; reduce both sides before join |
+| Medium table joined to large fact | Depends on filtered size | Let CBO choose when stats exist; otherwise recommend stats refresh first |
+| Selective dimension filter | Dynamic filtering | Preserve dimension-side filters and equi-join keys so probe-side scan can prune |
+| Cross join | Avoid unless intentional | Require explicit `CROSS JOIN` and explain the fan-out |
+| Bad CBO choice with evidence | Session property only | Mention `join_distribution_type` / `join_reordering_strategy` as environment-level levers, not SQL hints |
 
 ## Window Function Optimization
 
@@ -111,13 +169,14 @@ behavior without touching Python code.
 
 ## Common Wins by Metric
 
-- **query_time_ms / wall_time_ms**: partition filter, broadcast hint for
-  small dim, APPROX_DISTINCT, drop unused columns, reduce join fan-out
+- **query_time_ms / wall_time_ms**: partition filter, broadcast join for
+  proven small build side, step-materialization recommendation for deep
+  CTE plans, APPROX_DISTINCT, drop unused columns, reduce join fan-out
 - **cpu_time_ms**: APPROX aggregations, reduce rows scanned, remove
   unnecessary GROUP BY keys, avoid UDF-heavy expressions in WHERE
 - **peak_memory_bytes**: avoid `ORDER BY` on huge result sets (stream
-  instead), `DISTINCT` → `GROUP BY`, spill-friendly joins, limit
-  broadcast table size
+  instead), `DISTINCT` → `GROUP BY`, reduce build-side size, avoid
+  broadcast when the build side is too large for each worker
 - **physical_input_bytes**: partition pruning, projection pushdown
   (named columns), column stats-aware filter placement, Parquet
   row-group pruning via min/max stats
@@ -137,9 +196,16 @@ behavior without touching Python code.
 - Do not add trailing semicolons to the returned SQL.
 - Do not rewrite a query into a stored procedure or UDF call — Trino
   has no stored procedures.
+- Do not return CTAS / `CREATE TABLE` / `DROP TABLE` chains from the normal
+  single-query optimization loop. Step materialization is advisory unless
+  a dedicated materialization mode is explicitly enabled.
 - Do not use `CREATE TEMPORARY TABLE` — Trino doesn't support temp
   tables. Use CTEs or `CREATE TABLE ... WITH (format = 'PARQUET')` if
   materialization is truly needed (but that changes semantics).
+- Do not suggest `WITH (cached = TRUE)` unless a capability probe confirms
+  the deployed engine supports it; it is not baseline OSS Trino CTE syntax.
+- Do not refer to `EXPLAIN (FORMAT EMBEDDED)`; use supported formats
+  `TEXT`, `GRAPHVIZ`, or `JSON`.
 
 ## Per-iteration Response Format
 

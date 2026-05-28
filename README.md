@@ -231,7 +231,7 @@ genie --skills
 
 ## Trino Query Optimization（`/trino-research`）
 
-AI 驅動的 Trino SQL 自動優化。流程不是讓 AI 盲猜改法，而是先做 deterministic diagnosis，再把具體方向餵給 AI：靜態 AST 規則、EXPLAIN (FORMAT JSON) plan cost、table metadata（MCP path）、runtime peak memory 會先被整理成 ranked `OptimizationDirection`，再進入迭代優化。
+AI 驅動的 Trino SQL 自動優化。流程不是讓 AI 盲猜改法，而是先做 deterministic diagnosis，再把具體方向餵給 AI：靜態 AST 規則、SQL shape heuristics、EXPLAIN (FORMAT JSON) plan cost、table metadata（MCP path）、runtime peak memory 會先被整理成 ranked `OptimizationDirection`，再進入迭代優化。
 
 每輪迭代中，AI 依診斷方向提出優化方案 → 執行驗證 → 通過 guard 才保留。
 
@@ -246,16 +246,19 @@ AI 驅動的 Trino SQL 自動優化。流程不是讓 AI 盲猜改法，而是�
 
 ### Pre-execution diagnosis
 
-`/trino-research` 會在第一輪優化前組合四種訊號：
+`/trino-research` 會在第一輪優化前組合五種訊號：
 
 | 訊號 | 來源 | 用途 |
 | ---- | ---- | ---- |
 | Static AST findings | sqlglot rules | 找 cartesian join、select star、predicate pushdown 等結構問題 |
+| SQL shape heuristics | sqlglot AST | 偵測多層 heavy CTE、可能重複 raw scan，轉成 materialize-cte-steps / reduce-raw-rescan 方向 |
 | Plan cost | `EXPLAIN (FORMAT JSON)` | 估 rows / bytes，做 reduce-scan、memory-pressure 等方向排序 |
 | Table metadata | MCP path | 偵測 partition / sort hints，建議 leverage partitioning / ordering |
 | Peak memory | baseline runtime metrics | 把 memory pressure 納入目標 metric |
 
 診斷結果會以 `OptimizationDirection(kind, severity, rationale, evidence, target_metric)` 排序後放進 optimizer prompt。`--direct` 路徑也有同等診斷能力；差別是沒有 MCP metadata。
+
+模型提示也內建 Trino 實戰 guardrails：`WITH`/CTE 在 baseline OSS Trino 不是 cache、深層 CTE + JOIN/GROUP BY 可能造成 plan/stage 爆開；重複 raw/fact/source scan 優先度高於重複讀小型 curated/presum/dimension table；skew、spill、dynamic filtering、CBO stats 與 worker 數限制會被明確納入優化建議。CTAS / materialized view 只會作為 advisory，除非未來開啟 dedicated materialization mode，否則正常 read-only loop 不會自動產生 side-effecting DDL。
 
 只想看診斷、不跑 baseline query：
 

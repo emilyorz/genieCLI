@@ -5,13 +5,13 @@
 
 ## Active Iteration
 
-- **Ledger:** [CURRENT.md](CURRENT.md) (v30 — PLAN pending; v29 closed + archived 2026-05-27)
-- **Status:** v29 CLOSED. All 4 Todos shipped + dual-verified (spec SPEC_COMPLIANT + quality >9.0). Full suite **781 pass, 0 skip**, zero regression. v30 awaiting Sam direction.
-- **Focus (v29, shipped):** Directed pre-execution diagnosis (LH-PRISM-style) on BOTH paths — deterministic static/explain/metadata/runtime diagnostics → ranked `OptimizationDirection` list → injected into optimizer prompt pre-iter-1 (seeds the AI instead of blind hypothesis). Long-query abort converted to zero-cost directed Markdown report (`--diagnose-only` + gate-trip). Dual-path symmetry guarded by an unmocked equivalence test.
-- **Touched features:** [trino-research](features/trino-research.md) + new `mcp_trino/pre_execution_diagnosis.py` leaf
-- **Started:** 2026-04-20 (v28) → v29 2026-05-27 close
-- **Last commit:** `4acb7c4` docs(trino-research): v29 T4 close-out — directed pre-execution diagnosis design log + dual-path parity docs. Earlier v29 stack: `62e4503` (T3 zero-cost report) / `006a2f9` (T2 prompt wiring + peak_memory metric) / T1 module commit.
-- **Resume action:** Open v30 PLAN. Three v29-retro promotes seeded into `CURRENT.md` (test-count honesty rule, symmetry-test-as-Tkt-Verify-line, validate_ledger.py v3 upgrade). **Meta-retro due at v30** (5th iteration under v2 spec). Built under v3-strict with runtime-honesty deviation label `v3-deviation (hooks-installed-not-live, single-runtime, claude-code-only)` — real enforcement came from dispatched spec+quality verifier subagents, not live hooks.
+- **Ledger:** [CURRENT.md](CURRENT.md) (v30 — light ledger complete)
+- **Status:** v30 T1-T5 complete. Long-query tuning default, elapsed stopwatch, candidate timeout, reject reasons, readable TUI blocks, and Trino optimization input refresh shipped locally. Full suite **792 pass, 0 skip**.
+- **Focus (v30, shipped):** `/trino-research` long-query UX + model input quality. Deterministic diagnosis now includes SQL-shape directions (`materialize-cte-steps`, `reduce-raw-rescan`) and the model prompt now carries Trino-specific guidance for CTE inlining, step materialization, raw-vs-curated scans, skew, spill, CBO stats, dynamic filtering, and worker-count limits.
+- **Touched features:** [trino-research](features/trino-research.md) + `mcp_trino/SKILL.md` + `mcp_trino/pre_execution_diagnosis.py`
+- **Started:** 2026-05-28
+- **Last commit:** pending — v30 T5 local changes after `bcb40b5`.
+- **Resume action:** Commit/push v30 T5 after final ledger validation; Sam can pull and test the updated Trino model input.
 
 ## Next Iteration Focus (promotes from v29 retro)
 
@@ -50,7 +50,7 @@ Top promotes from v29's retro (at cap 3):
 
 | Feature | Doc | Last touched |
 |---------|-----|--------------|
-| trino-research | [features/trino-research.md](features/trino-research.md) | v29 (directed pre-execution diagnosis on both paths — ranked `OptimizationDirection` injected pre-iter-1; zero-cost long-query report; dual-path symmetry test; C2 hypothesis-structure folded in) |
+| trino-research | [features/trino-research.md](features/trino-research.md) | v30 (long-query UX + Trino optimization input refresh; SQL-shape diagnosis for CTE materialization / repeated raw scans) |
 | mcp-banner | [features/mcp-banner.md](features/mcp-banner.md) | v26 (fast-fail 200ms probe; 14× cold-start improvement) |
 
 ## Archive

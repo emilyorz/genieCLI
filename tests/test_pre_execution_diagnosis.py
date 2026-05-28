@@ -200,6 +200,79 @@ def test_should_not_emit_memory_pressure_from_leaf_only_plan():
 
 
 # ---------------------------------------------------------------------------
+# SQL shape — CTE materialization / repeated raw scan advice
+# ---------------------------------------------------------------------------
+
+def test_should_emit_materialize_cte_steps_for_complex_heavy_cte_chain():
+    sql = """
+    WITH
+      step1 AS (
+        SELECT account_id, count(*) AS cnt
+        FROM raw.events
+        GROUP BY account_id
+      ),
+      step2 AS (
+        SELECT s.account_id, d.region, s.cnt
+        FROM step1 s
+        JOIN curated.dim_account d ON d.account_id = s.account_id
+      ),
+      step3 AS (
+        SELECT region, sum(cnt) AS total_cnt
+        FROM step2
+        GROUP BY region
+      )
+    SELECT * FROM step3
+    """
+
+    result = pre_execution_diagnosis(sql)
+
+    materialize = [d for d in result if d.kind == "materialize-cte-steps"]
+    assert len(materialize) == 1
+    assert materialize[0].severity == "high"
+    assert materialize[0].evidence == "sql-shape:cte_count=3,heavy_ctes=3"
+
+
+def test_should_not_emit_materialize_cte_steps_for_single_simple_cte():
+    sql = "WITH step1 AS (SELECT account_id FROM raw.events) SELECT * FROM step1"
+
+    result = pre_execution_diagnosis(sql)
+
+    kinds = [d.kind for d in result]
+    assert "materialize-cte-steps" not in kinds
+
+
+def test_should_emit_reduce_raw_rescan_for_repeated_raw_table():
+    sql = """
+    WITH
+      left_scan AS (SELECT account_id FROM raw.events WHERE dt = DATE '2026-05-01'),
+      right_scan AS (SELECT account_id FROM raw.events WHERE dt = DATE '2026-05-02')
+    SELECT *
+    FROM left_scan l
+    JOIN right_scan r ON l.account_id = r.account_id
+    """
+
+    result = pre_execution_diagnosis(sql)
+
+    raw_rescan = [d for d in result if d.kind == "reduce-raw-rescan"]
+    assert len(raw_rescan) == 1
+    assert raw_rescan[0].severity == "medium"
+    assert raw_rescan[0].evidence == "sql-shape:repeated_raw_scan=raw.eventsx2"
+
+
+def test_should_not_emit_reduce_raw_rescan_for_repeated_curated_table():
+    sql = """
+    SELECT *
+    FROM curated.dim_account a
+    JOIN curated.dim_account b ON a.parent_id = b.account_id
+    """
+
+    result = pre_execution_diagnosis(sql)
+
+    kinds = [d.kind for d in result]
+    assert "reduce-raw-rescan" not in kinds
+
+
+# ---------------------------------------------------------------------------
 # AC3 — all inputs None → empty list, no raise
 # ---------------------------------------------------------------------------
 

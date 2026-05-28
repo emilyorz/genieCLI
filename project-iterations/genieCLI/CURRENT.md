@@ -6,16 +6,16 @@ activation_file: .task-ledger-active.json
 runtime: claude-code
 dispatch_adapter: native-claude-agents
 phase: VERIFY
-current_todo: none (T1-T4 complete)
+current_todo: none (T1-T5 complete)
 maturity_label: light-ledger-complete
 ---
 # CURRENT — v30 (light ledger)
 
 ## Basic Info
 
-- **Status:** complete — light ledger T1-T4 for long-query default, elapsed timer, candidate timeout, inline reject reasons, and readable TUI layout
+- **Status:** complete — light ledger T1-T5 for long-query default, elapsed timer, candidate timeout, inline reject reasons, readable TUI layout, and Trino optimization input refresh
 - **Started:** 2026-05-28
-- **Updated:** 2026-05-28T00:00+0800
+- **Updated:** 2026-05-28T18:37+0800
 - **Predecessor:** [archive/v29.md](archive/v29.md) — directed pre-execution diagnosis (LH-PRISM) on both paths + zero-cost long-query report; 781 pass 0 skip; v3-deviation label
 
 ## PLAN
@@ -92,6 +92,25 @@ maturity_label: light-ledger-complete
 - Unit tests cover the block layout.
 - README + feature doc match behavior.
 
+### Light Ledger T5 — Trino optimization input refresh
+
+**Goal:** Improve the model's Trino tuning depth by feeding it concrete Trino execution concepts and field-tested guidance, instead of generic SQL tips.
+
+**Scope:**
+
+- Ask Emily Claude for a bounded second opinion and combine it with Sam's field notes plus official Trino docs.
+- Correct inaccurate prompt guidance in `mcp_trino/SKILL.md` (`WITH` is inlined; no generic `BROADCAST` SQL hint; `cached=true` is feature-probed only).
+- Add model guidance for step materialization, repeated raw vs curated scans, skew, spill, dynamic filtering, CBO stats, and worker-count limits.
+- Add lightweight SQL-shape diagnosis for deep heavy CTE chains and repeated likely-raw table scans.
+- Update README + feature doc to match behavior.
+
+**Done criteria:**
+
+- `SKILL.md` no longer claims CTEs materialize once or suggests generic broadcast hints.
+- `pre_execution_diagnosis` can emit `materialize-cte-steps` and `reduce-raw-rescan` directions.
+- Tests cover the new direction classes and avoid false positives for repeated curated reads.
+- README + feature doc explain the new input layer.
+
 ### Carried promotes from v29 retro (seed, not yet scheduled)
 
 1. ⭐ **P0 S — Test-count honesty rule** → SKILL.md / feature-doc process. Re-run pytest in-turn and quote the literal current figure for every test-count / pass-skip claim; never carry a remembered baseline. (Origin: v29 top Failed — a stale `781+10 skip` vs actual `781+0` was caught by the spec-verifier.)
@@ -120,6 +139,7 @@ v30 is the 5th iteration under the task-ledger-cycle v2 spec (v25→v30) — **f
 | T2 | Candidate timeout at baseline wall-time | done | Codex patch + pytest | `py_compile`; 128 targeted tests; 788 full tests |
 | T3 | Inline reject reason | done | Codex patch + pytest | `py_compile`; 77 targeted tests; 788 full tests |
 | T4 | Readable iteration result layout | done | Codex patch + pytest | `py_compile`; 77 targeted tests; 788 full tests |
+| T5 | Trino optimization input refresh | done | Emily Claude second opinion + Codex patch + pytest | `py_compile`; 39 targeted tests; 54 diagnosis/report tests; 116 MCP/plan tests; 792 full tests |
 
 ## VERIFY
 
@@ -133,6 +153,12 @@ v30 is the 5th iteration under the task-ledger-cycle v2 spec (v25→v30) — **f
 - `python -m py_compile genie/skills/mcp_trino/research.py` — pass.
 - `.venv/bin/python -m pytest tests/test_mcp_research.py tests/test_zero_cost_directed_report.py -q` — 77 passed.
 - `.venv/bin/python -m pytest -q` — 788 passed.
+- `dispatch-helper --backend claude --caller emily ...` — pass; returned Trino second-opinion guidance covering CTE inlining, raw rescans, plan/stage explosion, skew, spill, dynamic filtering, stats, workers, and CTAS guardrails.
+- `python -m py_compile genie/skills/mcp_trino/pre_execution_diagnosis.py` — pass.
+- `.venv/bin/python -m pytest tests/test_pre_execution_diagnosis.py -q` — 39 passed.
+- `.venv/bin/python -m pytest tests/test_pre_execution_diagnosis.py tests/test_pre_execution_diagnosis_wiring.py tests/test_zero_cost_directed_report.py -q` — 54 passed.
+- `.venv/bin/python -m pytest tests/test_mcp_research.py tests/test_plan_cost_loop.py tests/test_mcp_preflight.py -q` — 116 passed.
+- `.venv/bin/python -m pytest -q` — 792 passed.
 - `python -m py_compile genie/skills/mcp_trino/research.py` — pass.
 - `.venv/bin/python -m pytest tests/test_mcp_research.py tests/test_zero_cost_directed_report.py -q` — 77 passed.
 - `.venv/bin/python -m pytest -q` — 788 passed.
@@ -144,3 +170,5 @@ v30 is the 5th iteration under the task-ledger-cycle v2 spec (v25→v30) — **f
 - T2 tightens the cost guard from 1.2x baseline to 1.0x baseline for candidates. This matches Sam's tuning intent: a slower candidate is already a failed candidate.
 - T3 fixes an output ambiguity Sam caught: a candidate can be much faster by metric but still be invalid. `REVERT` now carries the rejection reason inline.
 - T4 keeps the same information but makes it scan-friendly: verdict first, numbers second, reason third.
+- T5 moves Trino tuning guidance from generic SQL tips toward engine-specific diagnosis. Official docs and Emily Claude agree on the key correction: `WITH` is inlined in baseline OSS Trino, so CTE materialization must be treated as an explicit side-effecting strategy, not a safe single-query rewrite.
+- T5's SQL-shape contributor is intentionally advisory. It gives the model stronger direction for deep heavy CTE chains and repeated likely-raw scans, but normal `/trino-research` remains read-only and will not auto-emit CTAS/materialized-view DDL.
