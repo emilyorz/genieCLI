@@ -260,6 +260,39 @@ AI 驅動的 Trino SQL 自動優化。流程不是讓 AI 盲猜改法，而是�
 
 模型提示也內建 Trino 實戰 guardrails：`WITH`/CTE 在 baseline OSS Trino 不是 cache、深層 CTE + JOIN/GROUP BY 可能造成 plan/stage 爆開；重複 raw/fact/source scan 優先度高於重複讀小型 curated/presum/dimension table；skew、spill、dynamic filtering、CBO stats 與 worker 數限制會被明確納入優化建議。CTAS / materialized view 只會作為 advisory，除非未來開啟 dedicated materialization mode，否則正常 read-only loop 不會自動產生 side-effecting DDL。
 
+### 給 AI 的 Trino 優化方向
+
+`/trino-research` 不只把原 SQL 丟給模型。每次 optimizer prompt 都會帶入以下方向，讓模型優先處理 Trino 真正常見的 bottleneck：
+
+| 方向 | 觸發線索 | 給 AI 的要求 |
+| ---- | -------- | ------------ |
+| CTE / `WITH` plan explosion | 3+ chained CTE，且多個 step 有 JOIN / GROUP BY / window / set operation | 假設 `WITH` 會被 inline，不要當成 cache；優先簡化 plan，必要時建議 managed CTAS / materialized view step 化 |
+| Repeated raw scan | 同一個 raw / fact / source table 被多次引用 | 優先減少 raw scan；不要把小型 curated / presum / dimension table 的重複讀誤判成主要瓶頸 |
+| Pushdown / pruning | scan bytes 大、output 小、partition predicate 被 function 包住 | 把 filter 推到 scan leaf；保留 partition column 原生型別；只選需要的欄位 |
+| Join distribution / CBO | large-large join、build side 過大、stats 缺失 | 先建議 stats refresh / `ANALYZE`；broadcast 只適合 filtered build side 可放進每台 worker memory 的情境 |
+| Dynamic filtering | fact table join filtered dimension | 保留 selective dimension predicate 和 equi-join key，讓 Trino 能把 runtime filter 推回 probe-side scan |
+| Skew / spill | `EXPLAIN ANALYZE` 顯示 per-task input 差距大、blocked time 高、spill 或 peak memory 高 | 先定位 hot key / large build / high-cardinality aggregation，再建議 pre-aggregate、filter NULL/hot keys、縮欄位或改 join shape |
+| Worker 數限制 | shared cluster worker 少、scan/shuffle throughput 不足 | 可以建議增加 worker / dedicated cluster，但要明確說它不能解 plan depth、per-node memory、skew、spill 的根因 |
+
+Materialization 是 side-effecting strategy，不是一般 loop 的自動 rewrite。正常 read-only `/trino-research` 只會建議「可考慮 step 化」，不會直接回傳 `CREATE TABLE` / `DROP TABLE` chain；未來若要支援，必須另外開 dedicated materialization mode，明確指定 scratch schema、命名、TTL/cleanup、權限與失敗復原。
+
+### Trino reference links
+
+這些是目前 prompt guidance 對齊的官方 Trino 文件：
+
+| 主題 | Reference |
+| ---- | --------- |
+| `WITH` / CTE semantics | [Trino SELECT — WITH clause](https://trino.io/docs/current/sql/select.html#with-clause) |
+| `EXPLAIN` supported types / formats | [Trino EXPLAIN](https://trino.io/docs/current/sql/explain.html) |
+| Runtime CPU / blocked time / skew statistics | [Trino EXPLAIN ANALYZE](https://trino.io/docs/current/sql/explain-analyze.html) |
+| Join ordering, join distribution, CBO stats | [Trino cost-based optimizations](https://trino.io/docs/current/optimizer/cost-based-optimizations.html) |
+| Predicate / projection / aggregation / join pushdown | [Trino pushdown](https://trino.io/docs/current/optimizer/pushdown.html) |
+| Dynamic filtering / dynamic partition pruning | [Trino dynamic filtering](https://trino.io/docs/current/admin/dynamic-filtering.html) |
+| Materialized view semantics and staleness | [Trino CREATE MATERIALIZED VIEW](https://trino.io/docs/current/sql/create-materialized-view.html) |
+| Object storage file-system cache | [Trino file system cache](https://trino.io/docs/current/object-storage/file-system-cache.html) |
+
+`WITH (cached = TRUE)` 沒有列入 baseline OSS Trino reference；目前只能視為 fork / vendor / version-specific capability。若公司 Trino 有支援，應先做 capability probe，再把它加入 prompt guidance。
+
 只想看診斷、不跑 baseline query：
 
 ```bash
