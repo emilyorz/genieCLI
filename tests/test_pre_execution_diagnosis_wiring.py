@@ -26,6 +26,7 @@ from genie.skills.trino_query import QueryMetrics
 
 
 _DIAGNOSIS_HEADER = "Pre-execution diagnosis"
+_RULE_GATE_HEADER = "Rule-based gate"
 _HIGH_PEAK = HIGH_PEAK_MEMORY_BYTES + 1  # guarantees a memory-pressure direction
 
 
@@ -78,10 +79,13 @@ def test_should_inject_directions_block_into_direct_path_prompt():
             )
 
     sys_prompt = exc.value.sys_prompt
+    assert _RULE_GATE_HEADER in sys_prompt
     assert _DIAGNOSIS_HEADER in sys_prompt
     assert "memory-pressure" in sys_prompt
+    assert sys_prompt.index(_RULE_GATE_HEADER) < sys_prompt.index(_DIAGNOSIS_HEADER)
     # block must precede the skill prompt body
     assert sys_prompt.index(_DIAGNOSIS_HEADER) < sys_prompt.index("SKILL_PROMPT_TEXT")
+    assert any("rule gate" in str(call.args[0]) for call in output.print.call_args_list)
 
 
 # ---------------------------------------------------------------------------
@@ -127,9 +131,12 @@ def test_should_inject_directions_block_into_mcp_path_prompt():
             )
 
     sys_prompt = exc.value.sys_prompt
+    assert _RULE_GATE_HEADER in sys_prompt
     assert _DIAGNOSIS_HEADER in sys_prompt
     assert "memory-pressure" in sys_prompt
+    assert sys_prompt.index(_RULE_GATE_HEADER) < sys_prompt.index(_DIAGNOSIS_HEADER)
     assert sys_prompt.index(_DIAGNOSIS_HEADER) < sys_prompt.index("SKILL_PROMPT_TEXT")
+    assert any("rule gate" in str(call.args[0]) for call in output.print.call_args_list)
 
 
 # ---------------------------------------------------------------------------
@@ -184,3 +191,5 @@ def test_should_inject_same_diagnosis_header_on_both_paths():
 
     assert _DIAGNOSIS_HEADER in direct_prompt["v"]
     assert _DIAGNOSIS_HEADER in mcp_prompt["v"]
+    assert _RULE_GATE_HEADER in direct_prompt["v"]
+    assert _RULE_GATE_HEADER in mcp_prompt["v"]

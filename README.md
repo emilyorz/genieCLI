@@ -231,18 +231,19 @@ genie --skills
 
 ## Trino Query Optimization（`/trino-research`）
 
-AI 驅動的 Trino SQL 自動優化。流程不是讓 AI 盲猜改法，而是先做 deterministic diagnosis，再把具體方向餵給 AI：靜態 AST 規則、SQL shape heuristics、EXPLAIN (FORMAT JSON) plan cost、table metadata（MCP path）、runtime peak memory 會先被整理成 ranked `OptimizationDirection`，再進入迭代優化。
+AI 驅動的 Trino SQL 自動優化。流程不是讓 AI 盲猜改法，而是先做 rule-based gate 和 deterministic diagnosis，再把具體方向餵給 AI：靜態 AST 規則、SQL shape heuristics、EXPLAIN (FORMAT JSON) plan cost、table metadata（MCP path）、runtime peak memory 會先被整理成 rule gate + ranked `OptimizationDirection`，再進入迭代優化。
 
 每輪迭代中，AI 依診斷方向提出優化方案 → 執行驗證 → 通過 guard 才保留。
 
 ### 設計原則
 
 1. **AI 回傳完整 SQL**（不依賴 file_patch / diff）
-2. **Diagnosis first** — 先用 deterministic signals 產生 ranked optimization directions
-3. **Result equivalence guard** — 逐行比對查詢結果，確保語義不變
-4. **Median verify** — 每個候選 SQL 跑 N 次取中位數，減少 cache 噪音
-5. **Iterative accumulation** — 每輪以 current_best 為基準
-6. **History trimming** — 只保留最近 4 條對話
+2. **Rule gate first** — 先把 deterministic findings 分成 BLOCK / REWRITE / ADVISE / PASS
+3. **Diagnosis first** — 再用 deterministic signals 產生 ranked optimization directions
+4. **Result equivalence guard** — 逐行比對查詢結果，確保語義不變
+5. **Median verify** — 每個候選 SQL 跑 N 次取中位數，減少 cache 噪音
+6. **Iterative accumulation** — 每輪以 current_best 為基準
+7. **History trimming** — 只保留最近 4 條對話
 
 ### Pre-execution diagnosis
 
@@ -257,6 +258,26 @@ AI 驅動的 Trino SQL 自動優化。流程不是讓 AI 盲猜改法，而是�
 | Peak memory | baseline runtime metrics | 把 memory pressure 納入目標 metric |
 
 診斷結果會以 `OptimizationDirection(kind, severity, rationale, evidence, target_metric)` 排序後放進 optimizer prompt。`--direct` 路徑也有同等診斷能力；差別是沒有 MCP metadata。
+
+在 optimizer prompt 的 Trino guide 之前，`/trino-research` 會先插入一段 capped `Rule-based gate`。這不是另一個 LLM 建議，而是 deterministic findings 的 action taxonomy：
+
+| Action | 代表意思 | v31 行為 |
+| ------ | -------- | -------- |
+| `BLOCK` | 高風險語義問題，例如 cartesian join / NULL unsafe equality | 不讓 AI 自動「猜」語義修法；繼續診斷和產報告，不直接 abort CLI |
+| `REWRITE` | 高信心 rewrite candidate class，例如 redundant DISTINCT、predicate pushdown、redundant cast | 只建議模型優先處理；v31 不自動改 SQL，仍需 result equivalence |
+| `ADVISE` | 有幫助但證據較弱或需要環境判斷，例如 CTE step materialization、raw rescan、memory pressure | 作為 AI context；不把 advisory 當成硬規則 |
+| `PASS` | 沒有 actionable gate finding | 不渲染 TUI block，也不污染 prompt |
+
+TUI 只顯示一個 compact block，避免把 terminal 變成 rule dump：
+
+```text
+  rule gate  block=1  rewrite=2  advise=3
+    block    cartesian-join        Do not invent missing join predicates automatically...
+    rewrite  predicate-pushdown    Candidate rewrite: push predicate into the CTE/subquery...
+    advise   materialize-cte-steps Step materialization is advisory only...
+```
+
+Rule gate fail-open：如果上游 diagnostic object malformed，會跳過 gate block，研究流程繼續跑；它不會取代 preflight、execution guard 或 result equivalence。
 
 模型提示也內建 Trino 實戰 guardrails：`WITH`/CTE 在 baseline OSS Trino 不是 cache、深層 CTE + JOIN/GROUP BY 可能造成 plan/stage 爆開；重複 raw/fact/source scan 優先度高於重複讀小型 curated/presum/dimension table；skew、spill、dynamic filtering、CBO stats 與 worker 數限制會被明確納入優化建議。CTAS / materialized view 只會作為 advisory，除非未來開啟 dedicated materialization mode，否則正常 read-only loop 不會自動產生 side-effecting DDL。
 
@@ -306,6 +327,7 @@ Materialization 是 side-effecting strategy，不是一般 loop 的自動 rewrit
 | Guard | 說明 | 失敗時 |
 | ----- | ---- | ------ |
 | **Preflight** | read-only whitelist + EXPLAIN size estimate + optional `--safe-limit` | STOP |
+| **Rule gate** | deterministic findings 分類成 BLOCK / REWRITE / ADVISE / PASS，先渲染 compact TUI 並餵給 AI | FAIL OPEN / PROMPT GUIDANCE |
 | **Lint/static** | SQL 語法與 anti-pattern 分析 | REVERT / REPORT |
 | **Execution** | 必須在 Trino 上成功執行 | REVERT |
 | **Plan-cost structural guard** | 長查詢模式用 plan signature 過濾結構偏移 candidate | REJECT |

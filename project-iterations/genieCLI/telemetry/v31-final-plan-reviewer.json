@@ -1,0 +1,23 @@
+{
+  "actual_effort": "bounded-second-opinion",
+  "actual_model": "claude-clean-context",
+  "blast_radius": "plan_only",
+  "dispatch_id": "v31-final-plan-reviewer",
+  "intended_effort": "bounded-second-opinion",
+  "intended_model": "claude-clean-context",
+  "model_mismatch_approval": "",
+  "model_mismatch_rationale": "",
+  "model_mismatch_reason_code": "",
+  "model_status": "",
+  "risk": "low",
+  "role": "final-plan-reviewer",
+  "runtime": "codex",
+  "schema_version": "task-ledger-v3-telemetry-1",
+  "status": "completed",
+  "task_type": "bounded_second_opinion",
+  "telemetry_ref": "telemetry/v31-final-plan-reviewer.json",
+  "timestamp": "2026-05-28T13:01:25Z",
+  "todo_id": "T1",
+  "updated_at": "2026-05-28T13:01:55Z",
+  "writer": "task_ledger_dispatch.py"
+}

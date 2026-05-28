@@ -15,6 +15,7 @@ from genie.skills.trino_query.research import (
     _run_optimization_loop,
     _run_plan_cost_loop,
 )
+from genie.skills.trino_query.sql_static import Finding, StaticAnalysisReport
 from genie.skills.mcp_trino.preflight import CandidateTimeoutError
 
 
@@ -69,6 +70,18 @@ def _wrap_sql(sql):
     return f"Here is the rewrite:\n```sql\n{sql}\n```"
 
 
+class _PromptCaptured(Exception):
+    """Carries the captured system prompt out of new_session."""
+
+    def __init__(self, sys_prompt: str):
+        super().__init__("captured")
+        self.sys_prompt = sys_prompt
+
+
+def _capturing_new_session(sys_prompt: str):
+    raise _PromptCaptured(sys_prompt)
+
+
 # ── Plan-cost loop unit tests ─────────────────────────────────────────────────
 
 def test_plan_cost_loop_picks_lowest_cost_when_l3_passes():
@@ -107,6 +120,44 @@ def test_plan_cost_loop_picks_lowest_cost_when_l3_passes():
     assert result["best_sql"] == cand_b  # lower plan cost won
     assert result["candidates_evaluated"] == 2
     assert result["best_metric"] == 20_000.0
+
+
+def test_plan_cost_loop_injects_rule_gate_before_skill_prompt():
+    """Plan-cost mode should get the same pre-AI rule gate as legacy direct."""
+    output = MagicMock()
+    baseline = _make_baseline(rows=100, wall_ms=80_000)
+    runner = _explain_runner_factory({
+        "SELECT * FROM t": _make_explain(rows_est=100, bytes_est=10),
+    })
+    static_report = StaticAnalysisReport(findings=[
+        Finding("medium", "select-star", "SELECT * found", "name needed columns", 1),
+    ])
+
+    with patch("genie.session.manager.new_session", side_effect=_capturing_new_session):
+        with pytest.raises(_PromptCaptured) as exc:
+            _run_plan_cost_loop(
+                provider=MagicMock(),
+                model="m",
+                reasoning="default",
+                original_sql="SELECT * FROM t",
+                metric_key="cpu_time_ms",
+                max_iterations=1,
+                verify_runs=1,
+                output=output,
+                build_prompt=lambda *a, **kw: "SKILL_PROMPT_TEXT",
+                baseline=baseline,
+                baseline_data=baseline["rows"],
+                static_report=static_report,
+                explain_runner=runner,
+                max_fallbacks=3,
+            )
+
+    sys_prompt = exc.value.sys_prompt
+    assert "Rule-based gate" in sys_prompt
+    assert "select-star" in sys_prompt
+    assert "side effects: do not emit CTAS/materialized-view DDL" in sys_prompt
+    assert sys_prompt.index("Rule-based gate") < sys_prompt.index("SKILL_PROMPT_TEXT")
+    assert any("rule gate" in str(call.args[0]) for call in output.print.call_args_list)
 
 
 def test_plan_cost_loop_emits_no_verifiable_when_no_candidate_beats_baseline():

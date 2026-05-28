@@ -1352,12 +1352,21 @@ def run_mcp_enhancement(
     from genie.skills.mcp_trino.pre_execution_diagnosis import (
         format_directions_for_prompt,
     )
+    from genie.skills.mcp_trino.rule_gate import (
+        build_rule_gate_summary,
+        format_rule_gate_for_prompt,
+        render_rule_gate_summary,
+    )
 
     directions, pre_table_metadata = _assemble_mcp_directions(
         client, sql, static_report,
         peak_memory_bytes=getattr(baseline.metrics, "peak_memory_bytes", 0) or None,
     )
+    rule_gate = build_rule_gate_summary(static_report, directions)
+    rule_gate_block = format_rule_gate_for_prompt(rule_gate)
     directions_block = format_directions_for_prompt(directions)
+    if output:
+        render_rule_gate_summary(output, rule_gate)
     if output and directions:
         output.progress(f"  Pre-execution diagnosis: {len(directions)} ranked direction(s) → prompt")
 
@@ -1374,6 +1383,8 @@ def run_mcp_enhancement(
         f"- Keep the EXACT same result set — same columns, same rows, same values\n"
         f"- Make ONE focused change per iteration\n\n"
     )
+    if rule_gate_block:
+        sys_prompt += f"{rule_gate_block}\n\n"
     if skill_instructions:
         sys_prompt += f"## Trino Optimization Guide\n\n{skill_instructions}\n\n"
     if directions_block:

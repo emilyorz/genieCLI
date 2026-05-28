@@ -6,12 +6,12 @@
 ## Active Iteration
 
 - **Ledger:** [CURRENT.md](CURRENT.md) (v31 — strict V3 active)
-- **Status:** v31 active. Building rule-first pre-AI gate for `/trino-research` with compact TUI and shared MCP/direct behavior.
-- **Focus (v31, in progress):** RuleGate framework: classify deterministic findings as BLOCK / REWRITE / ADVISE / PASS, feed a capped prompt block into AI, and render a readable rule-gate summary before iteration.
+- **Status:** v31 complete pending push. Rule-first pre-AI gate for `/trino-research` implemented with compact TUI and shared MCP/direct/plan-cost behavior.
+- **Focus (v31, complete):** RuleGate framework classifies deterministic findings as BLOCK / REWRITE / ADVISE / PASS, feeds a capped prompt block into AI, and renders a readable rule-gate summary before iteration.
 - **Touched features:** [trino-research](features/trino-research.md) + `mcp_trino/rule_gate.py` + `mcp_trino/research.py` + `trino_query/research.py`
 - **Started:** 2026-05-28
-- **Last commit:** `c354b34` docs(readme): add Trino tuning guidance references
-- **Resume action:** Continue v31 T2/T3 implementation after V3 activation doctor passes.
+- **Last commit:** v31 close-out commit; see git log
+- **Resume action:** If interrupted before push, run `git status`, re-run validator/doctor if files changed, commit v31 RuleGate work, and push `main`.
 
 ## Next Iteration Focus (promotes from v29 retro)
 
@@ -50,7 +50,7 @@ Top promotes from v29's retro (at cap 3):
 
 | Feature | Doc | Last touched |
 |---------|-----|--------------|
-| trino-research | [features/trino-research.md](features/trino-research.md) | v31 in progress (rule-first gate before AI, compact TUI, shared MCP/direct behavior) |
+| trino-research | [features/trino-research.md](features/trino-research.md) | v31 complete (rule-first gate before AI, compact TUI, shared MCP/direct/plan-cost behavior) |
 | mcp-banner | [features/mcp-banner.md](features/mcp-banner.md) | v26 (fast-fail 200ms probe; 14× cold-start improvement) |
 
 ## Archive

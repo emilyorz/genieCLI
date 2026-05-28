@@ -468,7 +468,13 @@ def _run_plan_cost_loop(
     """
     from genie.core.provider import CompletionRequest
     from genie.session.manager import new_msg, new_session
+    from genie.skills.mcp_trino.pre_execution_diagnosis import pre_execution_diagnosis
     from genie.skills.mcp_trino.preflight import plan_cost
+    from genie.skills.mcp_trino.rule_gate import (
+        build_rule_gate_summary,
+        format_rule_gate_for_prompt,
+        render_rule_gate_summary,
+    )
     from genie.skills.trino_query.plan_signature import (
         plan_signature,
         structural_equivalent,
@@ -486,6 +492,15 @@ def _run_plan_cost_loop(
     )
     baseline_sig = plan_signature(baseline_plan) if baseline_plan is not None else None
     baseline_cost = (baseline_rows_est or 0) * (baseline_bytes_est or 1)
+    directions = pre_execution_diagnosis(
+        original_sql,
+        static_report=static_report,
+        explain_cost=(baseline_rows_est, baseline_bytes_est, baseline_plan),
+        table_metadata=None,
+        peak_memory_bytes=getattr(baseline.get("metrics"), "peak_memory_bytes", 0) or None,
+    )
+    rule_gate = build_rule_gate_summary(static_report, directions)
+    rule_gate_block = format_rule_gate_for_prompt(rule_gate)
 
     output.print("")
     timeout_text = (
@@ -497,6 +512,7 @@ def _run_plan_cost_loop(
         f"(baseline rows~{baseline_rows_est}, bytes~{baseline_bytes_est}, "
         f"max_fallbacks={max_fallbacks}{timeout_text})"
     )
+    render_rule_gate_summary(output, rule_gate)
 
     # Session setup — same prompt structure as the legacy loop
     skill_prompt = build_prompt(True, model)
@@ -508,8 +524,10 @@ def _run_plan_cost_loop(
         f"- Do NOT use file_patch or any tool calls\n"
         f"- Keep the EXACT same result set — same columns, same rows, same values\n"
         f"- Make ONE focused change per iteration\n"
-        f"- Trino best practices: partition filters, named columns, CTEs over subqueries, "
-        f"APPROX_DISTINCT over COUNT(DISTINCT), COALESCE instead of NVL\n\n"
+        f"- Trino best practices: partition filters, named columns, predicate pushdown, "
+        f"projection pruning, APPROX_DISTINCT over COUNT(DISTINCT), COALESCE instead of NVL\n"
+        f"- Treat CTE step materialization as advisory only; keep this loop read-only\n\n"
+        f"{(rule_gate_block + chr(10) + chr(10)) if rule_gate_block else ''}"
         f"{skill_prompt}"
     )
     session = new_session(sys_prompt)
@@ -973,12 +991,20 @@ def _run_optimization_loop(
     # The --direct path has no table-metadata fetcher, so diagnosis is driven by
     # static findings + plan-cost estimates + the baseline's actual peak memory.
     from genie.skills.mcp_trino.pre_execution_diagnosis import format_directions_for_prompt
+    from genie.skills.mcp_trino.rule_gate import (
+        build_rule_gate_summary,
+        format_rule_gate_for_prompt,
+        render_rule_gate_summary,
+    )
 
     directions = _assemble_direct_directions(
         original_sql, static_report, explain_runner,
         peak_memory_bytes=getattr(baseline["metrics"], "peak_memory_bytes", 0) or None,
     )
+    rule_gate = build_rule_gate_summary(static_report, directions)
+    rule_gate_block = format_rule_gate_for_prompt(rule_gate)
     directions_block = format_directions_for_prompt(directions)
+    render_rule_gate_summary(output, rule_gate)
     if directions:
         output.progress(f"  Pre-execution diagnosis: {len(directions)} ranked direction(s) → prompt")
 
@@ -992,8 +1018,10 @@ def _run_optimization_loop(
         f"- Do NOT use file_patch or any tool calls\n"
         f"- Keep the EXACT same result set — same columns, same rows, same values\n"
         f"- Make ONE focused change per iteration\n"
-        f"- Trino best practices: partition filters, named columns, CTEs over subqueries, "
-        f"APPROX_DISTINCT over COUNT(DISTINCT), COALESCE instead of NVL\n\n"
+        f"- Trino best practices: partition filters, named columns, predicate pushdown, "
+        f"projection pruning, APPROX_DISTINCT over COUNT(DISTINCT), COALESCE instead of NVL\n"
+        f"- Treat CTE step materialization as advisory only; keep this loop read-only\n\n"
+        f"{(rule_gate_block + chr(10) + chr(10)) if rule_gate_block else ''}"
         f"{(directions_block + chr(10) + chr(10)) if directions_block else ''}"
         f"{skill_prompt}"
     )
