@@ -1,18 +1,19 @@
 # E2E Report — 2026-04-15 04:00 (Asia/Taipei)
 
 ## Run Info
+
 - **Branch:** `e2e/geniecli-0415-0402`
 - **Runner:** cron (OpenClaw)
 - **Timestamp:** 2026-04-15 04:00 AM
 
 ## Results
 
-| Suite | Result | Details |
-|---|---|---|
-| Unit tests (597) | ✅ PASS | 597 passed in 1.38s |
-| Trino unit tests (25) | ✅ PASS | 25 passed in 0.10s |
-| Trino integration tests (10) | ✅ PASS | 10 passed in 0.76s |
-| Trino autoresearch E2E | ❌ FAIL | `ModuleNotFoundError: No module named 'trino'` |
+| Suite                        | Result  | Details                                        |
+| ---------------------------- | ------- | ---------------------------------------------- |
+| Unit tests (597)             | ✅ PASS | 597 passed in 1.38s                            |
+| Trino unit tests (25)        | ✅ PASS | 25 passed in 0.10s                             |
+| Trino integration tests (10) | ✅ PASS | 10 passed in 0.76s                             |
+| Trino autoresearch E2E       | ❌ FAIL | `ModuleNotFoundError: No module named 'trino'` |
 
 ## Failure Detail
 
@@ -35,4 +36,5 @@ ModuleNotFoundError: No module named 'trino'
 - `project-iterations/genieCLI/TASK-LEDGER-v15.md` — new ledger for v15
 
 ## Previous Run
+
 - 2026-04-14 04:00 — 597 passed, 0 failed

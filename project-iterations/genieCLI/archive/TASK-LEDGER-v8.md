@@ -14,7 +14,7 @@
 ## Goal
 
 - One-line summary:
-  Migrate genieCLI from the current skill.toml + __init__.py pattern to an Anthropic-style skills architecture built around SKILL.md, and move the bundled skills onto the new format.
+  Migrate genieCLI from the current skill.toml + **init**.py pattern to an Anthropic-style skills architecture built around SKILL.md, and move the bundled skills onto the new format.
 - Done when:
   1. SKILL.md-based discovery/loading works end-to-end in genieCLI;
   2. bundled skills are migrated or intentionally bridged with clear coverage;
@@ -25,18 +25,18 @@
 
 - Current skill system already has a central registry, tiering, and legacy discovery in genie/core/registry.py + genie/cli.py.
 - Anthropic reference repo is available at /tmp/anthropic-skills and https://github.com/anthropics/skills.
-- Existing bundled skills currently live under genie/skills/* with skill.toml + __init__.py pairs.
+- Existing bundled skills currently live under genie/skills/\* with skill.toml + **init**.py pairs.
 - Preserve current tool names and user-facing behavior while switching the underlying skill format.
 
 ## Todo
 
-| ID | Status | Pri | Task | Owner | Note |
-|----|--------|-----|------|-------|------|
-| T1 | done | P0 | Round 1: audit current genieCLI skill loading plus Anthropic skills repo, then write a concrete migration map and file inventory | Emily | MIGRATION-MAP.md written; 8 skills inventoried, 6 design decisions, file change list |
-| T2 | done | P0 | Round 2: implement SKILL.md loading/discovery and any bridging needed for progressive disclosure / bundled resources | Emily | discover() accepts SKILL.md or skill.toml; parse_skill_md() added; 3 new tests; 557 pass |
-| T3 | done | P0 | Round 3: migrate the bundled skills to the new format and move any shared resources into references/scripts/assets where appropriate | Emily | 8 SKILL.md created, 8 skill.toml deleted; 53 tools load via SKILL.md; 101 tests pass |
-| T4 | done | P1 | Round 4: switch docs, help text, CLI listing, and regression tests to the new architecture; clean up stale legacy assumptions | Emily | architecture.md updated; registry docstring updated; no stale skill.toml refs in code |
-| T5 | done | P0 | Round 5: verify with targeted tests and the full relevant suite, then update STATUS.md and the ledger handoff | Emily | 557 pass (same baseline); STATUS.md + ledger updated; migration complete |
+| ID  | Status | Pri | Task                                                                                                                                 | Owner | Note                                                                                     |
+| --- | ------ | --- | ------------------------------------------------------------------------------------------------------------------------------------ | ----- | ---------------------------------------------------------------------------------------- |
+| T1  | done   | P0  | Round 1: audit current genieCLI skill loading plus Anthropic skills repo, then write a concrete migration map and file inventory     | Emily | MIGRATION-MAP.md written; 8 skills inventoried, 6 design decisions, file change list     |
+| T2  | done   | P0  | Round 2: implement SKILL.md loading/discovery and any bridging needed for progressive disclosure / bundled resources                 | Emily | discover() accepts SKILL.md or skill.toml; parse_skill_md() added; 3 new tests; 557 pass |
+| T3  | done   | P0  | Round 3: migrate the bundled skills to the new format and move any shared resources into references/scripts/assets where appropriate | Emily | 8 SKILL.md created, 8 skill.toml deleted; 53 tools load via SKILL.md; 101 tests pass     |
+| T4  | done   | P1  | Round 4: switch docs, help text, CLI listing, and regression tests to the new architecture; clean up stale legacy assumptions        | Emily | architecture.md updated; registry docstring updated; no stale skill.toml refs in code    |
+| T5  | done   | P0  | Round 5: verify with targeted tests and the full relevant suite, then update STATUS.md and the ledger handoff                        | Emily | 557 pass (same baseline); STATUS.md + ledger updated; migration complete                 |
 
 ## Verify
 
@@ -67,7 +67,7 @@
 - Key findings:
   - pyyaml is already a core dep — can use `yaml.safe_load()` for SKILL.md frontmatter
   - Only registry.py `discover()` needs code change (line 157-170); BaseSkill/Arg/SkillContext untouched
-  - All 8 skills keep their __init__.py + register() unchanged; only the marker file changes
+  - All 8 skills keep their **init**.py + register() unchanged; only the marker file changes
 - Decision: accept — proceed to Round 2
 
 ### Round 2 — 2026-04-13

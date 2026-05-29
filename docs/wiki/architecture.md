@@ -70,11 +70,11 @@ GenieCLI is an AI-powered Trino query tuning CLI. It supports multiple LLM backe
 
 Protocol-based abstraction with three implementations:
 
-| Provider  | File           | Features                                                                  |
-| --------- | -------------- | ------------------------------------------------------------------------- |
-| TGenie    | `tgenie.py`    | Internal gateway, multipart/form-data, SSE streaming, auto token refresh  |
+| Provider  | File           | Features                                                                 |
+| --------- | -------------- | ------------------------------------------------------------------------ |
+| TGenie    | `tgenie.py`    | Internal gateway, multipart/form-data, SSE streaming, auto token refresh |
 | OpenAI    | `openai.py`    | OpenAI/Groq/Ollama/LM Studio, SSE streaming, Ollama native mode          |
-| Anthropic | `anthropic.py` | Anthropic wire format, system prompt extraction, vision support           |
+| Anthropic | `anthropic.py` | Anthropic wire format, system prompt extraction, vision support          |
 
 ### 4. Skill Registry (`core/registry.py`)
 
@@ -98,6 +98,7 @@ Protocol-based abstraction with three implementations:
 ### 6. Shared SQL Catalog (`core/sql_patterns.py`)
 
 Oracle construct catalog shared between `oracle2trino` and `trino_linter`:
+
 - 20 Oracle constructs (SQL residuals + PL/SQL blocks)
 - Pattern-based detection (regex)
 - Confidence scoring for conversion quality
@@ -106,6 +107,7 @@ Oracle construct catalog shared between `oracle2trino` and `trino_linter`:
 ### 7. Autoresearch Runtime (`runtime/`)
 
 Autonomous iteration engine for query optimization:
+
 - `run_manager.py` — Iteration state machine (propose → verify → commit/revert)
 - `checkpoint.py` — Git-based state checkpointing
 - `journal.py` — TSV iteration journaling with metrics

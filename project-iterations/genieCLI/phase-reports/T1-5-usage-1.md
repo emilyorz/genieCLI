@@ -11,17 +11,17 @@
 
 ## Acceptance Criteria
 
-| # | Given | When | Then |
-|---|-------|------|------|
-| AC1 | SQL with a high-severity static finding | called with that `static_report` | a `high`-severity direction, `evidence` starts `static:`, ranks first |
-| AC2 | `explain_cost` w/ large non-leaf `outputSizeInBytes`, `peak_memory_bytes=None` | called | ≥1 `memory-pressure` direction (`target_metric="peak_memory_bytes"`), `evidence` starts `explain:` |
-| AC3 | all four inputs `None` | called | returns `[]`, no raise |
-| AC4 | identical inputs, two calls | called twice | lists equal element-for-element (deterministic) |
-| AC5 | `table_metadata` with partition props unused in predicate | called | `leverage-partitioning` direction emitted |
+| #   | Given                                                                          | When                             | Then                                                                                               |
+| --- | ------------------------------------------------------------------------------ | -------------------------------- | -------------------------------------------------------------------------------------------------- |
+| AC1 | SQL with a high-severity static finding                                        | called with that `static_report` | a `high`-severity direction, `evidence` starts `static:`, ranks first                              |
+| AC2 | `explain_cost` w/ large non-leaf `outputSizeInBytes`, `peak_memory_bytes=None` | called                           | ≥1 `memory-pressure` direction (`target_metric="peak_memory_bytes"`), `evidence` starts `explain:` |
+| AC3 | all four inputs `None`                                                         | called                           | returns `[]`, no raise                                                                             |
+| AC4 | identical inputs, two calls                                                    | called twice                     | lists equal element-for-element (deterministic)                                                    |
+| AC5 | `table_metadata` with partition props unused in predicate                      | called                           | `leverage-partitioning` direction emitted                                                          |
 
 ## Fit analysis
 
-The single signature serves all three callers. The `peak_memory_bytes`-optional design is what makes the T3 long-query case work: no post-run metric exists there, yet AC2 guarantees a memory direction still surfaces via the `outputSizeInBytes` plan proxy. Determinism (AC4) is required because T4's dual-path symmetry test asserts both paths inject the *same* directions for the same query — non-deterministic ordering would make that test flaky.
+The single signature serves all three callers. The `peak_memory_bytes`-optional design is what makes the T3 long-query case work: no post-run metric exists there, yet AC2 guarantees a memory direction still surfaces via the `outputSizeInBytes` plan proxy. Determinism (AC4) is required because T4's dual-path symmetry test asserts both paths inject the _same_ directions for the same query — non-deterministic ordering would make that test flaky.
 
 **No Spec change required.** Proceed to Tkt.
 

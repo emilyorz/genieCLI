@@ -31,13 +31,13 @@
 
 ## Todo
 
-| ID | Status | Pri | Task | Owner | Note |
-|----|--------|-----|------|-------|------|
-| T1 | done | P0 | Round 1: audit the current browser skill, Gemini Flash 2.5 profile, and the likely failure modes; write a concrete tuning plan | Emily | Root cause: tier split gives Flash snapshot but not click_element/type_element |
-| T2 | done | P0 | Round 2: rewrite browser SKILL.md into a stricter, model-friendly browser workflow with explicit ordering and guardrails | Emily | 4-step LOOK→PICK→ACT→VERIFY cycle; tool selection table; common patterns |
-| T3 | done | P0 | Round 3: apply any browser tool grouping / tiering / wording changes needed to reduce Flash 2.5 confusion | Emily | Swapped core tier: click/type→extended, click_element/type_element→core; 38 tests pass |
-| T4 | done | P1 | Round 4: add or adjust regression tests/docs for the browser skill so the new guidance stays stable | Emily | 3 new coherence tests in test_skill_tiers.py; architecture.md already correct |
-| T5 | done | P0 | Round 5: verify the result on the relevant suite and update STATUS.md / ledger handoff | Emily | 560 pass (3 new); coherence check pass; STATUS.md + ledger updated |
+| ID  | Status | Pri | Task                                                                                                                           | Owner | Note                                                                                   |
+| --- | ------ | --- | ------------------------------------------------------------------------------------------------------------------------------ | ----- | -------------------------------------------------------------------------------------- |
+| T1  | done   | P0  | Round 1: audit the current browser skill, Gemini Flash 2.5 profile, and the likely failure modes; write a concrete tuning plan | Emily | Root cause: tier split gives Flash snapshot but not click_element/type_element         |
+| T2  | done   | P0  | Round 2: rewrite browser SKILL.md into a stricter, model-friendly browser workflow with explicit ordering and guardrails       | Emily | 4-step LOOK→PICK→ACT→VERIFY cycle; tool selection table; common patterns               |
+| T3  | done   | P0  | Round 3: apply any browser tool grouping / tiering / wording changes needed to reduce Flash 2.5 confusion                      | Emily | Swapped core tier: click/type→extended, click_element/type_element→core; 38 tests pass |
+| T4  | done   | P1  | Round 4: add or adjust regression tests/docs for the browser skill so the new guidance stays stable                            | Emily | 3 new coherence tests in test_skill_tiers.py; architecture.md already correct          |
+| T5  | done   | P0  | Round 5: verify the result on the relevant suite and update STATUS.md / ledger handoff                                         | Emily | 560 pass (3 new); coherence check pass; STATUS.md + ledger updated                     |
 
 ## Verify
 

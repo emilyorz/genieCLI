@@ -9,16 +9,20 @@
 ## Verify re-run
 
 **Command/check (new file)**:
+
 ```
 cd /Users/leeabc/work/emilyorz/genieCLI && python -m pytest tests/test_pre_execution_diagnosis.py -v
 ```
+
 **Result**: PASS
 **Output excerpt**: `29 passed` — all 29 tests collected and passed.
 
 **Command/check (full suite)**:
+
 ```
 python -m pytest -q
 ```
+
 **Result**: PASS
 **Output excerpt**: `753 passed, 10 skipped in 0.93s`
 
@@ -38,24 +42,24 @@ No other files changed. Matches Tkt `Out:` exactly.
 
 ## Requirement mapping
 
-| Requirement | Verdict | Evidence |
-|---|---|---|
-| `OptimizationDirection` is a frozen dataclass | pass | `@dataclass(frozen=True)` at line 45 |
-| Fields: `kind / severity / rationale / evidence / target_metric` (all `str`) | pass | lines 49–53 |
-| Public function `pre_execution_diagnosis(sql, *, static_report, explain_cost, table_metadata, peak_memory_bytes)` | pass | lines 291–329 |
-| Contributor 1 — static: one direction per finding, severity passthrough, `evidence=static:{rule_id}@L{line}` | pass | lines 87–116; `test_should_emit_one_direction_per_static_finding` |
-| Contributor 2 — explain-cost: `reduce-scan` if bytes_est over threshold | pass | lines 163–177; `test_should_emit_reduce_scan_when_bytes_est_over_threshold` |
-| Contributor 2 — explain-cost: recursive walk → max non-leaf outputSizeInBytes → `memory-pressure` | pass | lines 124–198; `test_should_emit_memory_pressure_from_explain_plan_when_peak_memory_none` |
-| Contributor 3 — metadata: `leverage-partitioning` / `leverage-sort` when props present | pass | lines 208–255; `test_should_emit_leverage_partitioning_when_partitioned_by_present`, `test_should_emit_leverage_sort_when_sorted_by_present` |
-| Contributor 4 — memory/runtime: `peak_memory_bytes` over threshold → memory-pressure direction | pass | lines 263–283; `test_should_emit_memory_pressure_from_runtime_when_peak_over_threshold` |
-| Module-level named thresholds: `LARGE_SCAN_BYTES`, `HIGH_PEAK_MEMORY_BYTES` (1 GiB each, documented) | pass | lines 25–26 |
-| Deterministic ranking by `(severity_rank, source_rank, kind)` | pass | `_sort_key` at lines 61–68; extended to 4-tuple `(severity_rank, source_rank, kind, evidence)` — see note below |
-| PURE — no import of research.py, no I/O, no network | pass | only imports: `__future__`, `dataclasses`, `typing` — grep confirms zero research.py import |
-| Total-over-partial-inputs — any/all None → no raise | pass | `test_should_not_raise_when_single_arg_is_none[kwargs0-3]` (parametrized × 4) + `test_should_return_empty_list_when_all_inputs_are_none` |
-| All-None → `[]` | pass | `test_should_return_empty_list_when_all_inputs_are_none` |
-| Leaf module — no top-level import of research.py (`TYPE_CHECKING` guard OK) | pass | top-level imports are only stdlib; `TYPE_CHECKING` guard present |
-| `static_report.parse_error` set → static contributor returns `[]` | pass | lines 91–92; `test_should_contribute_nothing_when_static_report_has_parse_error` |
-| Malformed/empty `raw_plan_json` → no raise | pass | `except Exception: pass` at line 197; `test_should_not_raise_on_malformed_explain_cost_tuple` + `_non_tuple` + `_deeply_nested_garbage` |
+| Requirement                                                                                                       | Verdict | Evidence                                                                                                                                     |
+| ----------------------------------------------------------------------------------------------------------------- | ------- | -------------------------------------------------------------------------------------------------------------------------------------------- |
+| `OptimizationDirection` is a frozen dataclass                                                                     | pass    | `@dataclass(frozen=True)` at line 45                                                                                                         |
+| Fields: `kind / severity / rationale / evidence / target_metric` (all `str`)                                      | pass    | lines 49–53                                                                                                                                  |
+| Public function `pre_execution_diagnosis(sql, *, static_report, explain_cost, table_metadata, peak_memory_bytes)` | pass    | lines 291–329                                                                                                                                |
+| Contributor 1 — static: one direction per finding, severity passthrough, `evidence=static:{rule_id}@L{line}`      | pass    | lines 87–116; `test_should_emit_one_direction_per_static_finding`                                                                            |
+| Contributor 2 — explain-cost: `reduce-scan` if bytes_est over threshold                                           | pass    | lines 163–177; `test_should_emit_reduce_scan_when_bytes_est_over_threshold`                                                                  |
+| Contributor 2 — explain-cost: recursive walk → max non-leaf outputSizeInBytes → `memory-pressure`                 | pass    | lines 124–198; `test_should_emit_memory_pressure_from_explain_plan_when_peak_memory_none`                                                    |
+| Contributor 3 — metadata: `leverage-partitioning` / `leverage-sort` when props present                            | pass    | lines 208–255; `test_should_emit_leverage_partitioning_when_partitioned_by_present`, `test_should_emit_leverage_sort_when_sorted_by_present` |
+| Contributor 4 — memory/runtime: `peak_memory_bytes` over threshold → memory-pressure direction                    | pass    | lines 263–283; `test_should_emit_memory_pressure_from_runtime_when_peak_over_threshold`                                                      |
+| Module-level named thresholds: `LARGE_SCAN_BYTES`, `HIGH_PEAK_MEMORY_BYTES` (1 GiB each, documented)              | pass    | lines 25–26                                                                                                                                  |
+| Deterministic ranking by `(severity_rank, source_rank, kind)`                                                     | pass    | `_sort_key` at lines 61–68; extended to 4-tuple `(severity_rank, source_rank, kind, evidence)` — see note below                              |
+| PURE — no import of research.py, no I/O, no network                                                               | pass    | only imports: `__future__`, `dataclasses`, `typing` — grep confirms zero research.py import                                                  |
+| Total-over-partial-inputs — any/all None → no raise                                                               | pass    | `test_should_not_raise_when_single_arg_is_none[kwargs0-3]` (parametrized × 4) + `test_should_return_empty_list_when_all_inputs_are_none`     |
+| All-None → `[]`                                                                                                   | pass    | `test_should_return_empty_list_when_all_inputs_are_none`                                                                                     |
+| Leaf module — no top-level import of research.py (`TYPE_CHECKING` guard OK)                                       | pass    | top-level imports are only stdlib; `TYPE_CHECKING` guard present                                                                             |
+| `static_report.parse_error` set → static contributor returns `[]`                                                 | pass    | lines 91–92; `test_should_contribute_nothing_when_static_report_has_parse_error`                                                             |
+| Malformed/empty `raw_plan_json` → no raise                                                                        | pass    | `except Exception: pass` at line 197; `test_should_not_raise_on_malformed_explain_cost_tuple` + `_non_tuple` + `_deeply_nested_garbage`      |
 
 ---
 
@@ -101,22 +105,27 @@ None. Exactly two files created (`pre_execution_diagnosis.py` + `tests/test_pre_
 ## Usage compliance
 
 **AC1** — high-severity static finding, `evidence` starts `static:`, ranks first:
+
 - `test_should_rank_high_severity_static_finding_first`: PASS.
 - Caveat: the test calls with only `static_report` set (no other contributors), so "ranks first" reduces to "is first element of a 1-element list." It does not prove static high-severity beats a same-severity explain direction. This is a test-coverage gap, not a correctness bug — `_SOURCE_RANK` statically enforces `static:0 < explain:1`, making cross-source static priority structurally guaranteed.
 
 **AC2** — `explain_cost` with large non-leaf outputSizeInBytes, `peak_memory_bytes=None` → `memory-pressure` direction with `evidence` starting `explain:`:
+
 - `test_should_emit_memory_pressure_from_explain_plan_when_peak_memory_none`: PASS. Uses `(None, None, plan)` with `peak_memory_bytes=None`. Asserts `evidence.startswith("explain:")` and `target_metric="peak_memory_bytes"`. LOAD-BEARING — verified substantively, not vacuously.
 
 **AC3** — all four inputs None → `[]`, no raise:
+
 - `test_should_return_empty_list_when_all_inputs_are_none`: PASS. Asserts exact `result == []`.
 
 **AC4** — determinism / input-order-invariance:
+
 - `test_should_produce_identical_output_on_repeated_calls`: PASS — same input, two calls, asserts `result_a == result_b`.
 - `test_should_produce_same_ranking_regardless_of_findings_input_order`: PASS — shuffled input list, same output.
 - `test_should_produce_same_ranking_regardless_of_table_metadata_order`: PASS — two tables swapped, same output.
 - `test_should_produce_same_order_for_same_kind_different_evidence`: PASS — closes the tie-breaking edge case the 3-tuple spec would have left nondeterministic. LOAD-BEARING — scrutinized: the fixture creates two `leverage-partitioning` directions for `alpha` and `beta`; the evidence strings differ (`metadata:alpha partitioned_by=dt` vs `metadata:beta partitioned_by=region`); lexicographic sort on evidence is deterministic regardless of input order. Assertion is non-vacuous.
 
 **AC5** — `table_metadata` with partition props → `leverage-partitioning`:
+
 - `test_should_emit_leverage_partitioning_when_partitioned_by_present`: PASS. Asserts `"leverage-partitioning" in kinds`.
 
 ---

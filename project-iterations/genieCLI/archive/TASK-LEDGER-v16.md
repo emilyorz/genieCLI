@@ -27,20 +27,20 @@
 
 ### Subcommand inventory
 
-| Target | Type | Pre-fix status | Post-fix |
-|--------|------|:---:|:---:|
-| `setup` | @app.command | ❌ "File not found: setup" | ✅ |
-| `setup trino` | @app.command + arg | ❌ "No such command 'trino'" | ✅ |
-| `setup mcp` | @app.command + arg | ❌ same | ✅ |
-| `setup check` | @app.command + arg | ❌ same | ✅ |
-| `doctor` | @app.command + shim | ✅ | ✅ |
-| `verify` | @app.command + shim | ✅ | ✅ |
-| `sessions` | callback target | ✅ | ✅ |
-| `config` | callback target | ✅ | ✅ |
-| `tools` | callback target | ✅ | ✅ |
-| `<file>.sql` | callback file-path | ✅ | ✅ |
-| `chat` (bare) | callback fallthrough | ✅ | ✅ |
-| `--version` | eager option | ✅ | ✅ |
+| Target        | Type                 |        Pre-fix status        | Post-fix |
+| ------------- | -------------------- | :--------------------------: | :------: |
+| `setup`       | @app.command         |  ❌ "File not found: setup"  |    ✅    |
+| `setup trino` | @app.command + arg   | ❌ "No such command 'trino'" |    ✅    |
+| `setup mcp`   | @app.command + arg   |           ❌ same            |    ✅    |
+| `setup check` | @app.command + arg   |           ❌ same            |    ✅    |
+| `doctor`      | @app.command + shim  |              ✅              |    ✅    |
+| `verify`      | @app.command + shim  |              ✅              |    ✅    |
+| `sessions`    | callback target      |              ✅              |    ✅    |
+| `config`      | callback target      |              ✅              |    ✅    |
+| `tools`       | callback target      |              ✅              |    ✅    |
+| `<file>.sql`  | callback file-path   |              ✅              |    ✅    |
+| `chat` (bare) | callback fallthrough |              ✅              |    ✅    |
+| `--version`   | eager option         |              ✅              |    ✅    |
 
 ### Root cause
 

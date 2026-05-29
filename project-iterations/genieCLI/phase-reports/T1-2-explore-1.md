@@ -11,11 +11,13 @@
 ### Cross-package import map (current state)
 
 `genie/skills/trino_query/research.py` already imports FROM `mcp_trino`:
+
 - `from genie.skills.mcp_trino.preflight import plan_cost` — line 365
 - `from genie.skills.mcp_trino.preflight import detect_no_data_reason` — line 672
 - `from genie.skills.mcp_trino.preflight import check_long_query_gate, ...` — line 728
 
 `genie/skills/mcp_trino/research.py` imports FROM `trino_query`:
+
 - `from genie.skills.trino_query.sql_static import analyze as static_analyze` — line 1090
 - `from genie.skills.trino_query.research import _run_no_data_path` — line 1131
 
@@ -71,6 +73,7 @@ def plan_cost(sql, explain_runner) -> tuple[Optional[int], Optional[int], Option
 ```
 
 `estimate_from_explain` walks the EXPLAIN JSON tree recursively via `node.get("estimates")` (list), `node.get("children", [])`. Fields consumed from each estimate node:
+
 - `outputRowCount` → `rows_est` (line 111)
 - `outputSizeInBytes` → `bytes_est` (line 112)
 
@@ -176,6 +179,7 @@ A tool named `mcp_trino_query` (the pattern from `McpTrinoSkill.__init__` at `mc
 **Verdict**: feasible.
 
 All three inputs exist and are already computed before the optimization loop starts in both paths:
+
 - `static_report` — computed at `mcp_trino/research.py:1092` and `trino_query/research.py:677`, both before the baseline
 - `plan_cost` output — already called in `trino_query/research.py:375` (long-query path); available for pre-diagnosis
 - `table_metadata` — currently fetched POST-loop (line 1387) on MCP path; must be moved earlier or computed lazily
@@ -193,6 +197,7 @@ genie/skills/mcp_trino/pre_execution_diagnosis.py
 ```
 
 Signature:
+
 ```python
 from genie.skills.trino_query.sql_static import StaticAnalysisReport
 from genie.skills.mcp_trino.research import TableMetadata
@@ -208,6 +213,7 @@ def pre_execution_diagnosis(
 ```
 
 Both callers use:
+
 ```python
 # mcp_trino/research.py
 from .pre_execution_diagnosis import pre_execution_diagnosis

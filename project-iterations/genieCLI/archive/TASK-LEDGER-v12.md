@@ -27,15 +27,15 @@
 
 ## Todo
 
-| ID | Status | Pri | Task | Owner | Note |
-|----|--------|-----|------|-------|------|
-| T1 | done | P0 | Inspect overlap; decide merge path | Emily | Merge linter into oracle2trino, engine to core |
-| T2 | done | P0 | Implement convergence | Emily | lint engine → genie/core/, LintTrinoSQL → oracle2trino |
-| T3 | done | P1 | Update tests | Emily | All imports updated, discovery test fixed |
-| T4 | done | P0 | Add EXPLAIN ANALYZE collection helper | Emily | _fetch_explain_analyze + _parse_explain_stages |
-| T5 | done | P0 | Wire EXPLAIN ANALYZE into loop + report | Emily | Baseline + enhanced, section 11 in report |
-| T6 | done | P1 | Tests for EXPLAIN ANALYZE | Emily | 9 new tests |
-| T7 | done | P1 | Verify + commit + push + merge | Emily | 588 passed, 10 skipped, 0 failed |
+| ID  | Status | Pri | Task                                    | Owner | Note                                                   |
+| --- | ------ | --- | --------------------------------------- | ----- | ------------------------------------------------------ |
+| T1  | done   | P0  | Inspect overlap; decide merge path      | Emily | Merge linter into oracle2trino, engine to core         |
+| T2  | done   | P0  | Implement convergence                   | Emily | lint engine → genie/core/, LintTrinoSQL → oracle2trino |
+| T3  | done   | P1  | Update tests                            | Emily | All imports updated, discovery test fixed              |
+| T4  | done   | P0  | Add EXPLAIN ANALYZE collection helper   | Emily | \_fetch_explain_analyze + \_parse_explain_stages       |
+| T5  | done   | P0  | Wire EXPLAIN ANALYZE into loop + report | Emily | Baseline + enhanced, section 11 in report              |
+| T6  | done   | P1  | Tests for EXPLAIN ANALYZE               | Emily | 9 new tests                                            |
+| T7  | done   | P1  | Verify + commit + push + merge          | Emily | 588 passed, 10 skipped, 0 failed                       |
 
 ## Verify
 
@@ -61,6 +61,7 @@
 - **UPDATE**: Round 1 complete
 
 Files changed:
+
 - NEW: `genie/core/lint_rules.py` (319 LOC — moved from trino_linter/rules.py)
 - NEW: `genie/core/lint_analyzer.py` (129 LOC — moved from trino_linter/analyzer.py, import fixed)
 - DELETED: `genie/skills/trino_linter/` (entire directory)
@@ -77,11 +78,12 @@ Files changed:
 ### Round 2 — 2026-04-14T00:00+08:00
 
 - **PLAN**: Add EXPLAIN ANALYZE auto-collection with fallback, wire into enhancement loop and report.
-- **DISPATCH**: Implemented ExplainAnalyzeResult, _fetch_explain_analyze, _parse_explain_stages, report section 11, EN/ZH labels, 9 new tests.
+- **DISPATCH**: Implemented ExplainAnalyzeResult, \_fetch_explain_analyze, \_parse_explain_stages, report section 11, EN/ZH labels, 9 new tests.
 - **VERIFY**: 588 passed, 10 skipped, 0 failed. Multi-file verification: all 6 checks PASS.
 - **UPDATE**: Round 2 complete
 
 Files changed:
+
 - MODIFIED: `genie/skills/mcp_trino/research.py` — ExplainAnalyzeResult, EXPLAIN ANALYZE helpers, report section, labels
 - MODIFIED: `tests/test_mcp_research.py` — 9 new tests (stage parsing, fetch, report rendering)
 

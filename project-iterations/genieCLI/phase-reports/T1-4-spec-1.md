@@ -32,6 +32,7 @@ def pre_execution_diagnosis(
 ```
 
 `kind` vocabulary (stable, machine-comparable in tests):
+
 - `reduce-scan` — large input scan; target `physical_input_bytes`
 - `memory-pressure` — large build side / high peak memory; target `peak_memory_bytes`
 - `fix-cartesian-join`, `add-join-condition`, etc. — derived from static `rule_id`; target `wall_time_ms`/`cpu_time_ms`
@@ -39,12 +40,12 @@ def pre_execution_diagnosis(
 
 ## 3. Four contributors (each pure, independently unit-tested)
 
-| # | Source | Input | Emits |
-|---|--------|-------|-------|
-| 1 | static | `StaticAnalysisReport.findings` | one direction per Finding; severity passthrough; `evidence=static:{rule_id}@L{line}` |
-| 2 | explain-cost | `(rows_est, bytes_est, raw_plan_json)` | `reduce-scan` if bytes/rows over threshold; recursive walk → max non-leaf `outputSizeInBytes` → `memory-pressure` |
-| 3 | metadata | `list[TableMetadata]` | `leverage-partitioning`/`leverage-sort` when props present |
-| 4 | memory | `peak_memory_bytes` + build-side from (2) | guarantees ≥1 memory-targeted class |
+| #   | Source       | Input                                     | Emits                                                                                                             |
+| --- | ------------ | ----------------------------------------- | ----------------------------------------------------------------------------------------------------------------- |
+| 1   | static       | `StaticAnalysisReport.findings`           | one direction per Finding; severity passthrough; `evidence=static:{rule_id}@L{line}`                              |
+| 2   | explain-cost | `(rows_est, bytes_est, raw_plan_json)`    | `reduce-scan` if bytes/rows over threshold; recursive walk → max non-leaf `outputSizeInBytes` → `memory-pressure` |
+| 3   | metadata     | `list[TableMetadata]`                     | `leverage-partitioning`/`leverage-sort` when props present                                                        |
+| 4   | memory       | `peak_memory_bytes` + build-side from (2) | guarantees ≥1 memory-targeted class                                                                               |
 
 ## 4. Invariants
 
@@ -55,12 +56,12 @@ def pre_execution_diagnosis(
 
 ## 5. Failure modes
 
-| Condition | Behavior |
-|-----------|----------|
-| `static_report is None` or `.parse_error` set | static contributor → [] |
+| Condition                                                | Behavior                             |
+| -------------------------------------------------------- | ------------------------------------ |
+| `static_report is None` or `.parse_error` set            | static contributor → []              |
 | `explain_cost is None` / `raw_plan_json` malformed/empty | explain walk finds nothing, no raise |
-| unqualified SQL → `table_metadata` empty/None | metadata contributor → [] |
-| all inputs absent | return `[]` (NOT exception) |
+| unqualified SQL → `table_metadata` empty/None            | metadata contributor → []            |
+| all inputs absent                                        | return `[]` (NOT exception)          |
 
 ## 6. Thresholds (module-level, named, documented)
 
@@ -75,7 +76,7 @@ def pre_execution_diagnosis(
 - memory direction emitted when `peak_memory_bytes` over threshold
 - empty/parse-fail inputs → `[]`, no raise (parametrized over each arg None + all-None)
 - static Finding → direction mapping (severity passthrough + evidence string shape)
-- metadata partition/sort props → leverage-* directions; absent props → none
+- metadata partition/sort props → leverage-\* directions; absent props → none
 
 ## 8. Open risk carried to Dev
 

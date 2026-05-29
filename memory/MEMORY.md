@@ -21,14 +21,14 @@
 
 ### Roadmap
 
-| Phase | 內容                                            | 狀態 |
-| ----- | ----------------------------------------------- | ---- |
-| 1     | Trino SQL Linter（靜態分析）                    | Done |
-| 2     | Oracle → Trino 轉換器                           | Done |
-| 3     | MCP 接 Trino                                    | Done |
-| 4     | Query Optimizer（autoresearch）                 | Done |
-| 5     | v5.0.0 減法（移除 browser/deepwiki）            | Done |
-| Next  | Oracle MCP — data procedure → Trino query 轉換  | 規劃中 |
+| Phase | 內容                                           | 狀態   |
+| ----- | ---------------------------------------------- | ------ |
+| 1     | Trino SQL Linter（靜態分析）                   | Done   |
+| 2     | Oracle → Trino 轉換器                          | Done   |
+| 3     | MCP 接 Trino                                   | Done   |
+| 4     | Query Optimizer（autoresearch）                | Done   |
+| 5     | v5.0.0 減法（移除 browser/deepwiki）           | Done   |
+| Next  | Oracle MCP — data procedure → Trino query 轉換 | 規劃中 |
 
 ### 關鍵決策
 

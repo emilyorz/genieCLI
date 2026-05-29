@@ -8,7 +8,7 @@
 - Owner: Emily (Claude Code)
 - Status: complete (project-side; user-side pip upgrade recommended)
 - Updated: 2026-04-14T18:55+0800
-- Focus: Identify the *real* cause of `UNKNOWN-0.0.0` and decide whether a
+- Focus: Identify the _real_ cause of `UNKNOWN-0.0.0` and decide whether a
   project-side compat shim is worth the cost.
 
 ## Goal
@@ -33,31 +33,34 @@
 
 ## Todo
 
-| ID | Status | Pri | Task | Owner | Note |
-|----|--------|-----|------|-------|------|
-| T1 | done | P0 | Reproduce `UNKNOWN-0.0.0` on the actual failing environment | Emily | Repro'd on `/usr/bin/python3` pip 21.2.4 + system setuptools 58.0.4 |
-| T2 | done | P0 | Pinpoint why setuptools emits `UNKNOWN.egg-info` before the modern path runs | Emily | pip 21.2.4 legacy `get_requires_for_build_wheel` subprocess runs `egg_info` with a setuptools that ignores pyproject.toml, writing `UNKNOWN.egg-info/` into the source tempdir; `bdist_wheel` later reuses it |
-| T3 | done | P0 | Evaluate minimal compat shims (`setup.cfg`, `setup.py`) without losing PEP 621 metadata | Emily | Every legacy shim that suppresses `UNKNOWN` also silently strips `Requires-Python`, `Requires-Dist`, and the project summary — net worse than the bug |
-| T4 | done | P0 | Pick the cheapest correct fix | Emily | Project fix = the existing build-backend correction; user-side = upgrade pip (one command) |
-| T5 | done | P0 | End-to-end verify: named wheel + working entry point | Emily | Homebrew Python 3.13 venv: `genie_cli-5.0.0-py3-none-any.whl`, full `Requires-Dist`, `genie --help` runs |
-| T6 | done | P0 | Uninstall the residual `UNKNOWN-0.0.0` from the user site | Emily | `pip uninstall -y UNKNOWN`; directory gone |
-| T7 | done | P1 | Ledger update + commit | Emily | This file + commit in v14 fix hash chain |
+| ID  | Status | Pri | Task                                                                                    | Owner | Note                                                                                                                                                                                                          |
+| --- | ------ | --- | --------------------------------------------------------------------------------------- | ----- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| T1  | done   | P0  | Reproduce `UNKNOWN-0.0.0` on the actual failing environment                             | Emily | Repro'd on `/usr/bin/python3` pip 21.2.4 + system setuptools 58.0.4                                                                                                                                           |
+| T2  | done   | P0  | Pinpoint why setuptools emits `UNKNOWN.egg-info` before the modern path runs            | Emily | pip 21.2.4 legacy `get_requires_for_build_wheel` subprocess runs `egg_info` with a setuptools that ignores pyproject.toml, writing `UNKNOWN.egg-info/` into the source tempdir; `bdist_wheel` later reuses it |
+| T3  | done   | P0  | Evaluate minimal compat shims (`setup.cfg`, `setup.py`) without losing PEP 621 metadata | Emily | Every legacy shim that suppresses `UNKNOWN` also silently strips `Requires-Python`, `Requires-Dist`, and the project summary — net worse than the bug                                                         |
+| T4  | done   | P0  | Pick the cheapest correct fix                                                           | Emily | Project fix = the existing build-backend correction; user-side = upgrade pip (one command)                                                                                                                    |
+| T5  | done   | P0  | End-to-end verify: named wheel + working entry point                                    | Emily | Homebrew Python 3.13 venv: `genie_cli-5.0.0-py3-none-any.whl`, full `Requires-Dist`, `genie --help` runs                                                                                                      |
+| T6  | done   | P0  | Uninstall the residual `UNKNOWN-0.0.0` from the user site                               | Emily | `pip uninstall -y UNKNOWN`; directory gone                                                                                                                                                                    |
+| T7  | done   | P1  | Ledger update + commit                                                                  | Emily | This file + commit in v14 fix hash chain                                                                                                                                                                      |
 
 ## Verify
 
 - Evidence checked:
-
   1. **Symptom reproduction on pip 21.2.4.** With the build-backend fix
      already committed, running the exact command Sam ran:
+
      ```
      /usr/bin/python3 -m pip install --no-cache-dir .
      ```
+
      produces
+
      ```
      Building wheels for collected packages: UNKNOWN
      Created wheel for UNKNOWN: filename=UNKNOWN-0.0.0-py3-none-any.whl size=964
      Successfully installed UNKNOWN-0.0.0
      ```
+
      so Sam's report is correct for that environment.
 
   2. **Residue of prior install.** Before the reproduction, the old
@@ -99,12 +102,12 @@
   7. **Compat-shim evaluation.** Tried three minimal shims against a
      pip 21.2.4 reproduction on Python 3.9:
 
-     | Shim | Wheel name | Code content | Deps / requires-python |
-     |---|---|---|---|
-     | none (pyproject only) | `UNKNOWN-0.0.0` | empty (964 B) | lost |
-     | `setup.py: setup()` (empty) | `UNKNOWN-0.0.0` | empty | lost |
-     | `setup.py: setup(name=..., version=...)` | `genie_cli-5.0.0` | **empty (994 B)** | **lost** |
-     | `setup.cfg` with `[metadata]` + `[options] packages = find:` + `[options.entry_points]` + `[options.packages.find] include = genie*` | `genie_cli-5.0.0` | full (97 kB) | **still lost** — the installed `METADATA` drops to `Metadata-Version: 2.1` with `Summary: UNKNOWN` and no `Requires-Dist` / `Requires-Python`, because the legacy config wins over pyproject on old pip |
+     | Shim                                                                                                                                 | Wheel name        | Code content      | Deps / requires-python                                                                                                                                                                                  |
+     | ------------------------------------------------------------------------------------------------------------------------------------ | ----------------- | ----------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+     | none (pyproject only)                                                                                                                | `UNKNOWN-0.0.0`   | empty (964 B)     | lost                                                                                                                                                                                                    |
+     | `setup.py: setup()` (empty)                                                                                                          | `UNKNOWN-0.0.0`   | empty             | lost                                                                                                                                                                                                    |
+     | `setup.py: setup(name=..., version=...)`                                                                                             | `genie_cli-5.0.0` | **empty (994 B)** | **lost**                                                                                                                                                                                                |
+     | `setup.cfg` with `[metadata]` + `[options] packages = find:` + `[options.entry_points]` + `[options.packages.find] include = genie*` | `genie_cli-5.0.0` | full (97 kB)      | **still lost** — the installed `METADATA` drops to `Metadata-Version: 2.1` with `Summary: UNKNOWN` and no `Requires-Dist` / `Requires-Python`, because the legacy config wins over pyproject on old pip |
 
      **Conclusion:** every legacy shim that fixes the name also silently
      strips PEP 621 fields. That is worse than the original bug, not
@@ -166,7 +169,7 @@
   - Preserving pip's build tempdir with `--no-clean` was the key move.
     Seeing `UNKNOWN.egg-info/` and `genie_cli.egg-info/` in the same
     directory made the pip-21.2.4-specific race obvious.
-  - Testing every candidate shim against *both* the filename AND the
+  - Testing every candidate shim against _both_ the filename AND the
     installed METADATA caught the silent-metadata-loss in the setup.cfg
     shim. Stopping at "filename is now genie-cli" would have shipped a
     worse bug than the one we started with.

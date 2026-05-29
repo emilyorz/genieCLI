@@ -39,13 +39,13 @@ notes in `mcp_trino/SKILL.md` body; AI never saw them.
 
 ## Changes
 
-| File | Change |
-|------|--------|
-| `genie/core/registry.py` | Add `parse_skill_md_body()`; extend `SkillRegistry` with `_group_instructions`, `register_instructions()`, `get_instructions()`, `all_instructions()`; `_load_skill_package` auto-attaches SKILL.md body to registry keyed by dir name; `clear()` resets instructions. |
-| `genie/cli.py` | `_build_system_prompt` collects active group instructions and appends a `## SKILL INSTRUCTIONS` section to the system prompt. |
-| `genie/skills/mcp_trino/research.py` | `run_mcp_enhancement` reads `SkillRegistry.get_instructions("mcp_trino")` and injects it as a `## Trino Optimization Guide` section. Hardcoded best-practices list removed. |
-| `genie/skills/mcp_trino/SKILL.md` | Expanded body: optimization priorities (6 ordered principles), anti-pattern rewrite table (9 rewrites), metric-specific wins, per-iteration response format. |
-| `tests/test_registry.py` | 4 new tests covering body extraction and registry-level instructions. |
+| File                                 | Change                                                                                                                                                                                                                                                                 |
+| ------------------------------------ | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `genie/core/registry.py`             | Add `parse_skill_md_body()`; extend `SkillRegistry` with `_group_instructions`, `register_instructions()`, `get_instructions()`, `all_instructions()`; `_load_skill_package` auto-attaches SKILL.md body to registry keyed by dir name; `clear()` resets instructions. |
+| `genie/cli.py`                       | `_build_system_prompt` collects active group instructions and appends a `## SKILL INSTRUCTIONS` section to the system prompt.                                                                                                                                          |
+| `genie/skills/mcp_trino/research.py` | `run_mcp_enhancement` reads `SkillRegistry.get_instructions("mcp_trino")` and injects it as a `## Trino Optimization Guide` section. Hardcoded best-practices list removed.                                                                                            |
+| `genie/skills/mcp_trino/SKILL.md`    | Expanded body: optimization priorities (6 ordered principles), anti-pattern rewrite table (9 rewrites), metric-specific wins, per-iteration response format.                                                                                                           |
+| `tests/test_registry.py`             | 4 new tests covering body extraction and registry-level instructions.                                                                                                                                                                                                  |
 
 ## Verification
 

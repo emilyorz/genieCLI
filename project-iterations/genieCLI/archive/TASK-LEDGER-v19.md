@@ -17,6 +17,7 @@ Sam: "我們有辦法先評估這個 query 出來的資料量級會多大嗎？�
 會 OOM 或是 AI 直接炸掉"
 
 Current state before v19:
+
 - No pre-flight size estimation. Huge result sets load into Python list,
   then normalized to JSON for equivalence check → 2x memory → OOM risk.
 - No read-only enforcement. AI could (in principle) generate DML/DDL.
@@ -49,12 +50,12 @@ Current state before v19:
 
 ## Changes
 
-| File | Change |
-|------|--------|
-| `genie/skills/mcp_trino/preflight.py` | NEW — pre-flight gate logic |
-| `genie/skills/mcp_trino/research.py` | `run_trino_research_via_mcp`: inject preflight + safe_limit + query_timeout; `_measure_mcp`: honour `max_capture_rows`; iteration loop: truncation-safe row count check |
-| `genie/chat.py` | Parse `--safe-limit`, `--query-timeout` flags; updated help text |
-| `tests/test_mcp_preflight.py` | NEW — 25 tests for all preflight surfaces |
+| File                                  | Change                                                                                                                                                                  |
+| ------------------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `genie/skills/mcp_trino/preflight.py` | NEW — pre-flight gate logic                                                                                                                                             |
+| `genie/skills/mcp_trino/research.py`  | `run_trino_research_via_mcp`: inject preflight + safe_limit + query_timeout; `_measure_mcp`: honour `max_capture_rows`; iteration loop: truncation-safe row count check |
+| `genie/chat.py`                       | Parse `--safe-limit`, `--query-timeout` flags; updated help text                                                                                                        |
+| `tests/test_mcp_preflight.py`         | NEW — 25 tests for all preflight surfaces                                                                                                                               |
 
 ## Verification
 

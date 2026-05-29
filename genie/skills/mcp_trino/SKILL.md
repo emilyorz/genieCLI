@@ -92,35 +92,36 @@ the side effects:
 
 ## Runtime Bottleneck Patterns
 
-| Symptom | Likely cause | Model guidance |
-|---------|--------------|----------------|
-| Huge scan bytes, small output | Missing partition/predicate/projection pushdown | Push filters to leaves; use native partition column types; list needed columns |
-| One stage/task much larger than peers | Data skew / hot join or group key | Filter NULL/hot keys, pre-aggregate, consider salting only after evidence |
-| High peak memory or spill | Large build side, high-cardinality aggregation/window/sort | Narrow columns, filter earlier, pre-aggregate, avoid broadcast for large build |
-| Many fragments/exchanges/repeated subplans | Nested CTE plan explosion | Flatten or recommend managed step materialization |
-| Bad join order/distribution | Missing/stale stats | Suggest stats refresh / `ANALYZE`; only recommend session property override with evidence |
+| Symptom                                    | Likely cause                                               | Model guidance                                                                            |
+| ------------------------------------------ | ---------------------------------------------------------- | ----------------------------------------------------------------------------------------- |
+| Huge scan bytes, small output              | Missing partition/predicate/projection pushdown            | Push filters to leaves; use native partition column types; list needed columns            |
+| One stage/task much larger than peers      | Data skew / hot join or group key                          | Filter NULL/hot keys, pre-aggregate, consider salting only after evidence                 |
+| High peak memory or spill                  | Large build side, high-cardinality aggregation/window/sort | Narrow columns, filter earlier, pre-aggregate, avoid broadcast for large build            |
+| Many fragments/exchanges/repeated subplans | Nested CTE plan explosion                                  | Flatten or recommend managed step materialization                                         |
+| Bad join order/distribution                | Missing/stale stats                                        | Suggest stats refresh / `ANALYZE`; only recommend session property override with evidence |
 
 ## Anti-patterns to Rewrite
 
-| Pattern | Rewrite |
-|---------|---------|
-| `NVL(x, y)` | `COALESCE(x, y)` |
-| `DECODE(a, b, c, d)` | `CASE WHEN a = b THEN c ELSE d END` |
-| `SYSDATE` | `CURRENT_TIMESTAMP` |
-| `ROWNUM <= N` | `LIMIT N` (or `ROW_NUMBER() OVER(...)` for partition-scoped limits) |
-| Implicit cross join (`FROM a, b WHERE a.id = b.id`) | Explicit `JOIN ... ON` |
-| `SELECT *` | Named column list |
-| `(+)` outer join | Standard `LEFT JOIN` / `RIGHT JOIN` |
-| `WHERE TO_CHAR(col, 'YYYY-MM') = '2026-04'` | `WHERE col >= DATE '2026-04-01' AND col < DATE '2026-05-01'` (sargable) |
-| Leading wildcard `LIKE '%foo'` | Consider reverse-index or full-text; if unavoidable, flag as known-slow |
-| `UNION` (deduplicating) | `UNION ALL` when inputs are guaranteed distinct — avoids sort + dedup |
-| `IN (SELECT ...)` correlated | `EXISTS (SELECT 1 FROM ... WHERE ...)` or `JOIN` — Trino handles EXISTS more efficiently for correlated patterns |
-| `ORDER BY` on full result | Move `ORDER BY` into a CTE or subquery with `LIMIT` — sorting unbounded result sets spills to disk |
-| `CAST(partition_col AS VARCHAR)` in WHERE | Use native type comparison — casting partition columns disables partition pruning |
+| Pattern                                             | Rewrite                                                                                                          |
+| --------------------------------------------------- | ---------------------------------------------------------------------------------------------------------------- |
+| `NVL(x, y)`                                         | `COALESCE(x, y)`                                                                                                 |
+| `DECODE(a, b, c, d)`                                | `CASE WHEN a = b THEN c ELSE d END`                                                                              |
+| `SYSDATE`                                           | `CURRENT_TIMESTAMP`                                                                                              |
+| `ROWNUM <= N`                                       | `LIMIT N` (or `ROW_NUMBER() OVER(...)` for partition-scoped limits)                                              |
+| Implicit cross join (`FROM a, b WHERE a.id = b.id`) | Explicit `JOIN ... ON`                                                                                           |
+| `SELECT *`                                          | Named column list                                                                                                |
+| `(+)` outer join                                    | Standard `LEFT JOIN` / `RIGHT JOIN`                                                                              |
+| `WHERE TO_CHAR(col, 'YYYY-MM') = '2026-04'`         | `WHERE col >= DATE '2026-04-01' AND col < DATE '2026-05-01'` (sargable)                                          |
+| Leading wildcard `LIKE '%foo'`                      | Consider reverse-index or full-text; if unavoidable, flag as known-slow                                          |
+| `UNION` (deduplicating)                             | `UNION ALL` when inputs are guaranteed distinct — avoids sort + dedup                                            |
+| `IN (SELECT ...)` correlated                        | `EXISTS (SELECT 1 FROM ... WHERE ...)` or `JOIN` — Trino handles EXISTS more efficiently for correlated patterns |
+| `ORDER BY` on full result                           | Move `ORDER BY` into a CTE or subquery with `LIMIT` — sorting unbounded result sets spills to disk               |
+| `CAST(partition_col AS VARCHAR)` in WHERE           | Use native type comparison — casting partition columns disables partition pruning                                |
 
 ## Connector-Specific Optimizations
 
 ### Hive Connector
+
 - Partition columns must appear as direct equality or range filters
   (not inside functions) for partition pruning to work.
 - ORC/Parquet pushdown supports `=`, `<`, `>`, `BETWEEN`, `IN` but
@@ -128,6 +129,7 @@ the side effects:
 - Bucketed tables: filter on the bucket column to reduce split count.
 
 ### Iceberg Connector
+
 - Iceberg supports hidden partitioning (e.g. `day(ts)`, `bucket(id, 16)`).
   Filter on the SOURCE column (`ts >= ...`), not the partition transform —
   Trino + Iceberg will derive the partition filter automatically.
@@ -139,6 +141,7 @@ the side effects:
   consider rewriting as `CREATE TABLE ... AS SELECT ... WHERE NOT ...`.
 
 ### Delta Lake Connector
+
 - Z-ordering columns benefit from range-filter predicates — equality
   is less useful.
 - Delta's transaction log is scanned at query time; tables with many
@@ -146,14 +149,14 @@ the side effects:
 
 ## Join Strategy Selection
 
-| Scenario | Strategy | How to guide |
-|----------|----------|--------------|
-| Small filtered dimension joined to fact | Broadcast can help | Keep the small side as build side; verify it fits per-worker memory |
-| Two large tables on equi-key | Partitioned hash join | Default/safest; reduce both sides before join |
-| Medium table joined to large fact | Depends on filtered size | Let CBO choose when stats exist; otherwise recommend stats refresh first |
-| Selective dimension filter | Dynamic filtering | Preserve dimension-side filters and equi-join keys so probe-side scan can prune |
-| Cross join | Avoid unless intentional | Require explicit `CROSS JOIN` and explain the fan-out |
-| Bad CBO choice with evidence | Session property only | Mention `join_distribution_type` / `join_reordering_strategy` as environment-level levers, not SQL hints |
+| Scenario                                | Strategy                 | How to guide                                                                                             |
+| --------------------------------------- | ------------------------ | -------------------------------------------------------------------------------------------------------- |
+| Small filtered dimension joined to fact | Broadcast can help       | Keep the small side as build side; verify it fits per-worker memory                                      |
+| Two large tables on equi-key            | Partitioned hash join    | Default/safest; reduce both sides before join                                                            |
+| Medium table joined to large fact       | Depends on filtered size | Let CBO choose when stats exist; otherwise recommend stats refresh first                                 |
+| Selective dimension filter              | Dynamic filtering        | Preserve dimension-side filters and equi-join keys so probe-side scan can prune                          |
+| Cross join                              | Avoid unless intentional | Require explicit `CROSS JOIN` and explain the fan-out                                                    |
+| Bad CBO choice with evidence            | Session property only    | Mention `join_distribution_type` / `join_reordering_strategy` as environment-level levers, not SQL hints |
 
 ## Window Function Optimization
 

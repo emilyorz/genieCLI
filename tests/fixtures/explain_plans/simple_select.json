@@ -1,12 +1,12 @@
 {
   "name": "Output[col]",
-  "descriptor": {"columnNames": "[col]"},
-  "estimates": [{"outputRowCount": 1000.0, "outputSizeInBytes": 8000.0}],
+  "descriptor": { "columnNames": "[col]" },
+  "estimates": [{ "outputRowCount": 1000.0, "outputSizeInBytes": 8000.0 }],
   "children": [
     {
       "name": "TableScan[hive.default.t]",
-      "descriptor": {"table": "hive.default.t"},
-      "estimates": [{"outputRowCount": 1000.0, "outputSizeInBytes": 8000.0}],
+      "descriptor": { "table": "hive.default.t" },
+      "estimates": [{ "outputRowCount": 1000.0, "outputSizeInBytes": 8000.0 }],
       "children": []
     }
   ]

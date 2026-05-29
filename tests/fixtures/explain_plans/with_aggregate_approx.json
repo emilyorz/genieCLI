@@ -1,27 +1,27 @@
 {
   "name": "Output[total]",
-  "descriptor": {"columnNames": "[total]"},
-  "estimates": [{"outputRowCount": 1.0}],
+  "descriptor": { "columnNames": "[total]" },
+  "estimates": [{ "outputRowCount": 1.0 }],
   "children": [
     {
       "name": "Aggregate[FINAL]",
-      "descriptor": {"functions": "approx_distinct(user_id)"},
-      "estimates": [{"outputRowCount": 1.0}],
+      "descriptor": { "functions": "approx_distinct(user_id)" },
+      "estimates": [{ "outputRowCount": 1.0 }],
       "children": [
         {
           "name": "RemoteExchange",
           "descriptor": {},
-          "estimates": [{"outputRowCount": 4.0}],
+          "estimates": [{ "outputRowCount": 4.0 }],
           "children": [
             {
               "name": "Aggregate[PARTIAL]",
-              "descriptor": {"functions": "approx_distinct(user_id)"},
-              "estimates": [{"outputRowCount": 4.0}],
+              "descriptor": { "functions": "approx_distinct(user_id)" },
+              "estimates": [{ "outputRowCount": 4.0 }],
               "children": [
                 {
                   "name": "TableScan[hive.default.events]",
-                  "descriptor": {"table": "hive.default.events"},
-                  "estimates": [{"outputRowCount": 1000000.0}],
+                  "descriptor": { "table": "hive.default.events" },
+                  "estimates": [{ "outputRowCount": 1000000.0 }],
                   "children": []
                 }
               ]

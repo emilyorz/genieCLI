@@ -35,18 +35,18 @@
 
 ## Todo
 
-| ID | Status | Pri | Task | Owner | Note |
-|----|--------|-----|------|-------|------|
-| T1 | done | P0 | Implement MCP client (`client.py`) — JSON-RPC 2.0 Streamable HTTP transport | Emily | `McpClient`, `McpConfig`, `load_mcp_config()`, `save_mcp_config()` |
-| T2 | done | P0 | Implement MCP skill registration (`__init__.py`) — dynamic tool discovery + BaseSkill wrappers | Emily | `McpTrinoSkill`, `McpTrinoStatusSkill`, `_build_args()`, `register()` |
-| T3 | done | P1 | MCP config system — TOML `[mcp.trino]`, JSON `mcp.json`, env vars (`GENIE_MCP_TRINO_*`) | Emily | 3-layer config: JSON < TOML < env |
-| T4 | done | P2 | Move top-level experiment files to `experiments/` | Emily | 6 files moved |
-| T5 | done | P1 | Unit tests for MCP client + skill registration | Emily | 14 tests in `tests/test_mcp_trino.py` |
-| T6 | done | P0 | Implement MCP autoresearch enhancement loop (`research.py`) | Emily | `run_mcp_enhancement()` — 5-iteration loop with metric/equivalence guards |
-| T7 | done | P0 | Define fixed-format report template (`generate_report()`) | Emily | 9 sections: Meta, Perf Comparison, Summary, Iteration History, Original SQL/Result, Enhanced SQL/Result, Footer |
-| T8 | done | P1 | Unit tests for MCP research + report | Emily | 16 tests in `tests/test_mcp_research.py` |
-| T9 | blocked | P0 | Live verify: run enhancement against Sam's MCP server at localhost:8811 | Sam | Emily cannot reach localhost:8811 — must be done on Sam's dev server |
-| T10 | not started | P1 | Commit all changes to genieCLI repo | Emily | After Sam confirms approach |
+| ID  | Status      | Pri | Task                                                                                           | Owner | Note                                                                                                            |
+| --- | ----------- | --- | ---------------------------------------------------------------------------------------------- | ----- | --------------------------------------------------------------------------------------------------------------- |
+| T1  | done        | P0  | Implement MCP client (`client.py`) — JSON-RPC 2.0 Streamable HTTP transport                    | Emily | `McpClient`, `McpConfig`, `load_mcp_config()`, `save_mcp_config()`                                              |
+| T2  | done        | P0  | Implement MCP skill registration (`__init__.py`) — dynamic tool discovery + BaseSkill wrappers | Emily | `McpTrinoSkill`, `McpTrinoStatusSkill`, `_build_args()`, `register()`                                           |
+| T3  | done        | P1  | MCP config system — TOML `[mcp.trino]`, JSON `mcp.json`, env vars (`GENIE_MCP_TRINO_*`)        | Emily | 3-layer config: JSON < TOML < env                                                                               |
+| T4  | done        | P2  | Move top-level experiment files to `experiments/`                                              | Emily | 6 files moved                                                                                                   |
+| T5  | done        | P1  | Unit tests for MCP client + skill registration                                                 | Emily | 14 tests in `tests/test_mcp_trino.py`                                                                           |
+| T6  | done        | P0  | Implement MCP autoresearch enhancement loop (`research.py`)                                    | Emily | `run_mcp_enhancement()` — 5-iteration loop with metric/equivalence guards                                       |
+| T7  | done        | P0  | Define fixed-format report template (`generate_report()`)                                      | Emily | 9 sections: Meta, Perf Comparison, Summary, Iteration History, Original SQL/Result, Enhanced SQL/Result, Footer |
+| T8  | done        | P1  | Unit tests for MCP research + report                                                           | Emily | 16 tests in `tests/test_mcp_research.py`                                                                        |
+| T9  | blocked     | P0  | Live verify: run enhancement against Sam's MCP server at localhost:8811                        | Sam   | Emily cannot reach localhost:8811 — must be done on Sam's dev server                                            |
+| T10 | not started | P1  | Commit all changes to genieCLI repo                                                            | Emily | After Sam confirms approach                                                                                     |
 
 ## Verify
 
@@ -76,6 +76,7 @@
 - **CHECK**: Code-complete for all implementable tasks. Remaining blocker: T9 (live verify on Sam's dev server)
 
 Files created/modified:
+
 - NEW: `genie/skills/mcp_trino/__init__.py` — MCP skill registration + dynamic wrappers
 - NEW: `genie/skills/mcp_trino/client.py` — MCP JSON-RPC 2.0 client
 - NEW: `genie/skills/mcp_trino/research.py` — autoresearch enhancement loop + fixed report template
@@ -89,6 +90,7 @@ Files created/modified:
 ### Report Template (fixed format)
 
 The report always contains these 9 sections in this exact order:
+
 1. **Meta** — timestamp, MCP server URL, metric, verify runs, iteration count
 2. **Performance Comparison** — table: query_time, cpu_time, wall_time, rows, splits, memory, input bytes (original vs enhanced vs delta vs %)
 3. **Summary** — baseline/best metric, improvement, row counts, data consistency verdict

@@ -41,17 +41,17 @@ Top promotes from v29's retro (at cap 3):
 
 ## Theme Tracker
 
-| Theme | Appearances | Status |
-|-------|-------------|--------|
+| Theme                                                                      | Appearances                                                        | Status                                                                |
+| -------------------------------------------------------------------------- | ------------------------------------------------------------------ | --------------------------------------------------------------------- |
 | UX polish (cards / banners / spinners / syntax highlights / output layout) | v22, v23, v24, v26 (banner fast-fail), v27 (trino-research output) | long-term — no per-instance lifecycle; v27 is a substantial new entry |
-| E2E signal hygiene (what the test measures vs what the output looks like) | v27 parks (deferred) | dormant — activates when a park trigger fires |
+| E2E signal hygiene (what the test measures vs what the output looks like)  | v27 parks (deferred)                                               | dormant — activates when a park trigger fires                         |
 
 ## Feature Index
 
-| Feature | Doc | Last touched |
-|---------|-----|--------------|
+| Feature        | Doc                                                      | Last touched                                                                                |
+| -------------- | -------------------------------------------------------- | ------------------------------------------------------------------------------------------- |
 | trino-research | [features/trino-research.md](features/trino-research.md) | v31 complete (rule-first gate before AI, compact TUI, shared MCP/direct/plan-cost behavior) |
-| mcp-banner | [features/mcp-banner.md](features/mcp-banner.md) | v26 (fast-fail 200ms probe; 14× cold-start improvement) |
+| mcp-banner     | [features/mcp-banner.md](features/mcp-banner.md)         | v26 (fast-fail 200ms probe; 14× cold-start improvement)                                     |
 
 ## Archive
 

@@ -20,9 +20,11 @@ actually ran it against his Trino 467 MCP server.
 ## Round 1 — Paste-mode session leak (PR #42)
 
 ### Symptom
+
 "跑完 /trino-research 後任何動作變得只能 Ctrl-D，而且沒法退出 genieCLI."
 
 ### Root cause
+
 `_read_paste_mode` reused the shared global `_ps` PromptSession with
 `multiline=True` + a custom Ctrl-D submit key binding. Although these
 are per-call params in prompt_toolkit, state leaked back to the
@@ -31,30 +33,36 @@ worked, and on an empty line Ctrl-D raises EOFError which
 `_read_input` catches as "/exit".
 
 ### Fix
+
 `_read_paste_mode` now creates its own fresh `PromptSession`. Nothing
 leaks back to the chat loop prompt.
 
 ### Changed
+
 - `genie/input.py` — isolated paste-mode session
 
 ## Round 2 — Debug traceback aid (PR #43, transient)
 
 ### Symptom
-Sam wanted a full traceback for a short "ERROR  unsupported operand..."
+
+Sam wanted a full traceback for a short "ERROR unsupported operand..."
 message. The chat-mode exception handler was calling `output.error(str(exc))`
 and swallowing the trace.
 
 ### Fix (temporary)
+
 Added `traceback.format_exc()` dump inside the exception handler in
 `_do_send`. Shipped as a debug aid so Sam could reproduce the error
 and get a real stack trace.
 
 ### Changed
+
 - `genie/chat.py` — temporary traceback dump (reverted in Round 3)
 
 ## Round 3 — Null tool signals task-done + revert debug (PR #44)
 
 ### Symptom (real root cause from R2's traceback)
+
 ```
 File "chat.py", line 131, in _send_with_tools
   action_key = tool_name + json.dumps(tool_args, sort_keys=True, default=str)
@@ -62,6 +70,7 @@ TypeError: unsupported operand type(s) for +: 'NoneType' and 'str'
 ```
 
 ### Root cause
+
 Our system prompt tells the AI to signal task completion with
 `{"tool": null, "args": {}}`. The AI complied. But:
 
@@ -73,20 +82,24 @@ When the key is present with value `None`, `dict.get()` returns `None`,
 not the default. The next line did `None + json.dumps(...)` — boom.
 
 ### Fix
+
 Treat a missing OR `None` tool name as the end-of-tools signal — return
 the reply immediately instead of attempting tool dispatch.
 
 Reverted the temporary traceback dump from PR #43.
 
 ### Changed
+
 - `genie/chat.py` — null-tool guard; revert debug dump
 
 ## Round 4 — EXPLAIN parser us/ns units + first-match-wins (PR #45)
 
 ### Symptom
+
 "CPU, Memory, Input Rows, Output Rows 等都是 0 不確定是不是有甚麼問題"
 
 ### Root cause (two bugs)
+
 Sam's Trino 467 EXPLAIN ANALYZE output:
 
 ```
@@ -106,6 +119,7 @@ writes `CPU: 0.00ns` on a later line, overwriting the fragment-level
 aggregate.
 
 ### Fix
+
 - Expanded unit table: `ns / us / µs / ms / s / min / h` with correct
   ms conversion
 - Memory units extended: B / KB / MB / GB / TB
@@ -115,6 +129,7 @@ aggregate.
 - 3 regression tests using Sam's real Trino 467 output as fixture.
 
 ### Changed
+
 - `genie/skills/mcp_trino/research.py` — `_parse_explain_stages`
 - `tests/test_mcp_research.py` — 3 new tests
 

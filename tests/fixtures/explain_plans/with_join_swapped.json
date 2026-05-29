@@ -1,23 +1,23 @@
 {
   "name": "Output[a_x, b_y]",
-  "descriptor": {"columnNames": "[a_x, b_y]"},
-  "estimates": [{"outputRowCount": 5000.0}],
+  "descriptor": { "columnNames": "[a_x, b_y]" },
+  "estimates": [{ "outputRowCount": 5000.0 }],
   "children": [
     {
       "name": "Join[INNER]",
-      "descriptor": {"type": "INNER", "criteria": "(b.id = a.id)"},
-      "estimates": [{"outputRowCount": 5000.0}],
+      "descriptor": { "type": "INNER", "criteria": "(b.id = a.id)" },
+      "estimates": [{ "outputRowCount": 5000.0 }],
       "children": [
         {
           "name": "TableScan[hive.default.b]",
-          "descriptor": {"table": "hive.default.b"},
-          "estimates": [{"outputRowCount": 8000.0}],
+          "descriptor": { "table": "hive.default.b" },
+          "estimates": [{ "outputRowCount": 8000.0 }],
           "children": []
         },
         {
           "name": "TableScan[hive.default.a]",
-          "descriptor": {"table": "hive.default.a"},
-          "estimates": [{"outputRowCount": 10000.0}],
+          "descriptor": { "table": "hive.default.a" },
+          "estimates": [{ "outputRowCount": 10000.0 }],
           "children": []
         }
       ]

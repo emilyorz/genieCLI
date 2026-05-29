@@ -26,6 +26,7 @@
 > reading the diff, the tests, and the surrounding code.
 
 ### Strengths
+
 - `mcp_trino/research.py:628` `_assemble_mcp_directions` — single source of truth for all
   three MCP call sites (prompt injection, gate-trip, `--diagnose-only`). Genuine DRY, not
   copy-paste; returns `(directions, table_metadata)` so the success path reuses the one
@@ -33,7 +34,7 @@
 - `trino_query/research.py:646` `_assemble_direct_directions` is a faithful mirror of the
   MCP assembler — same `plan_cost` import, same never-raise contract, differing only in
   `table_metadata=None` (correct: the direct path has no metadata fetcher). By code reading
-  the symmetry is real; the drift risk is the *absence of a test*, not present divergence.
+  the symmetry is real; the drift risk is the _absence of a test_, not present divergence.
 - `pre_execution_diagnosis.py:402` pipe-escape `rationale.replace("|","\\|")` is applied,
   and the empty-directions branch (`:387`) returns before emitting a table header.
 - `preflight.py:234` `LongQueryAbort.report_markdown` added as an optional kwarg with a
@@ -46,6 +47,7 @@
   mirrors each path's pre-existing abort mechanics, confirmed in T1 Explore findings.
 
 ### Issues (round 1)
+
 - [Important] every path-level test mocked BOTH assemblers → dual-path **symmetry had zero
   test coverage**; the "symmetry" test only compared report headers. Tests were NOT
   tautological (zero-query-cost proven via real `assert_not_called`), but the
@@ -66,6 +68,7 @@
 not taken on claim.
 
 ### Fix 1 — orphaned `"aborted"` branch DELETED — VERIFIED
+
 - `grep -rn aborted genie/skills/trino_query/research.py` → no matches.
 - `grep '"status".*"aborted"' genie/` (whole package) → **zero producers anywhere**, so
   deleting the handler creates no silent fall-through regression: no live path emits
@@ -75,6 +78,7 @@ not taken on claim.
   actually returns.
 
 ### Fix 2 — dual-path symmetry now has a REAL unmocked guard — VERIFIED
+
 - `tests/test_zero_cost_directed_report.py:311` `test_both_assemblers_produce_identical_directions_for_same_inputs`
   drives BOTH `_assemble_mcp_directions` and `_assemble_direct_directions` UNMOCKED with the
   same `static_report` + same peak, asserts `mcp_metadata == []` (MagicMock client → no
@@ -92,16 +96,19 @@ not taken on claim.
   Symmetry is now VERIFIED for the contributors that matter, not merely implemented.
 
 ### Fix 3 — Nit reworded — VERIFIED
+
 - `pre_execution_diagnosis.py:411` now reads
   "(the table above is ranked by severity)" — disambiguates the ranked-directions table from
   a SQL table. Correct.
 
 ### Parked (accepted)
+
 - `_direct_explain_runner` / `_build_mcp_explain_runner` lack direct unit tests — both
   trivial, None-safe, exercised indirectly. Parked to RETRO together. Reasonable.
 - Repeated local `from datetime import datetime` — cosmetic, left as-is. Fine.
 
 ### Score rationale
+
 9.3/10. Both Important items resolved and independently re-verified; suite green at 781
 with zero regression; the symmetry guard is genuine and well-scoped (not a fig-leaf).
 Docked 0.7: the equivalence test cannot compare the explain-sourced axis across paths
@@ -109,11 +116,13 @@ Docked 0.7: the equivalence test cannot compare the explain-sourced axis across 
 minor residual coverage gaps, none blocking. Clears the >9.0 strict gate.
 
 ### Standing caveat (unchanged, controller's call)
+
 The T3 **spec-verifier verdict** was PENDING when round 1 ran. If spec-verifier has since
 returned `SPEC_COMPLIANT`, this APPROVED quality verdict stands and T3 may proceed. If the
 spec verdict is still outstanding, the controller must still gate the merge on it — quality
 APPROVED does not substitute for spec compliance.
 
 ### Top items (none blocking)
+
 1. Confirm the T3 spec-verifier verdict is `SPEC_COMPLIANT` before merge (controller gate).
 2. RETRO: park the two explain-runner unit-test gaps together with the T2 sibling.

@@ -8,7 +8,7 @@
 - Owner: Emily (Claude Code)
 - Status: done
 - Updated: 2026-04-16T23:10+0800
-- Focus: Make `/trino-research` *feel* different. Clearer pre-launch
+- Focus: Make `/trino-research` _feel_ different. Clearer pre-launch
   card, visible SQL diffs, colored iteration outcomes, structured
   final summary.
 
@@ -41,11 +41,14 @@ and AI's proposed SQL. Caps at 20 lines + trailing truncation note.
 
 Replaces four scattered `output.progress()` calls per iteration with
 one structured render:
+
 ```
 KEPT   1/5  query_time_ms=0.053  Δ=-0.012  (1.24s)
        add partition filter on event_date
 ```
+
 `_render_iteration_result()` color-codes status:
+
 - KEPT (green), WORSE (yellow), REVERT (red), FAIL (red), SKIP (dim)
 
 Each iteration tracked with `time.monotonic()` — elapsed time visible
@@ -55,6 +58,7 @@ so user knows if anything is stuck.
 
 Before the baseline run, `_render_plan_card()` prints a compact
 one-shot card with the full plan:
+
 ```
 ── Research Plan ──
 sql          query.sql (45 lines, 1,234B)
@@ -65,12 +69,14 @@ server       http://localhost:8811/mcp
 safe-limit   LIMIT 1000 wrapper active
 timeout      300s per query
 ```
+
 User sees exactly what's about to run — SQL source + size, params,
 server, safety settings. Removes "wait what's it doing?" moments.
 
 ## Round 4 — Final visual summary with improvement bar
 
 Replaces the plain Enhancement Summary with a visual card:
+
 ```
 ── Final Result ──
 baseline        1.0    ██████████████████████████████
@@ -79,6 +85,7 @@ change         -0.6 (-60.0%) ↓
 data check     PASS
 iterations     5 rounds
 ```
+
 Bar width scales to peak value. Arrow + color indicates improvement
 direction. Data check renders PASS/FAIL with consistency reason.
 
@@ -90,10 +97,10 @@ output in addition to the markdown report.
 
 ## Changes
 
-| File | Change |
-|------|--------|
+| File                                 | Change                                                                                                                                                                                                                                                                                                                      |
+| ------------------------------------ | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
 | `genie/skills/mcp_trino/research.py` | Added `_fmt_metric_value`, `_render_plan_card`, `_render_sql_diff`, `_render_iteration_result`, `_render_summary_card`. Wired into `run_mcp_enhancement` iteration loop + `run_trino_research_via_mcp` pre-launch. Replaced legacy Enhancement Summary with summary card. Removed scattered progress() lines per iteration. |
-| `tests/test_mcp_research.py` | New `TestUxHelpers` class — 8 tests covering all renderers + edge cases |
+| `tests/test_mcp_research.py`         | New `TestUxHelpers` class — 8 tests covering all renderers + edge cases                                                                                                                                                                                                                                                     |
 
 ## Verification
 

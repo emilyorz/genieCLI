@@ -107,6 +107,7 @@ path fixed (R2), the fallback is no longer needed.
 ### Fix
 
 Replaced auto-route + silent fallback with:
+
 - MCP not configured → error: "Run: genie setup mcp"
 - MCP unreachable → error with URL + hint to use `--direct`
 - `--direct` flag preserved as explicit opt-in for direct Trino
@@ -135,6 +136,7 @@ Sam's MCP server exposes `execute_query`, not `query`.
 ### Fix
 
 New `_resolve_query_tool()`:
+
 1. Check known names: query, trino_query, execute, execute_query, run_query
 2. Fallback: scan inputSchema for tool with "sql" property
 3. No match → actionable error listing available tools
@@ -179,14 +181,14 @@ param name. Sam's `execute_query` might use `query` not `sql`.
 
 Tools available on Sam's MCP Trino server at localhost:8811/mcp:
 
-| Tool | Description |
-|------|-------------|
-| execute_query | Execute SQL queries on Trino |
-| explain_query | Analyze query execution plans |
+| Tool             | Description                         |
+| ---------------- | ----------------------------------- |
+| execute_query    | Execute SQL queries on Trino        |
+| explain_query    | Analyze query execution plans       |
 | get_table_schema | Inspect table structure and columns |
-| list_catalogs | Discover available catalogs |
-| list_schemas | Browse schemas within a catalog |
-| list_tables | Discover tables and views |
+| list_catalogs    | Discover available catalogs         |
+| list_schemas     | Browse schemas within a catalog     |
+| list_tables      | Discover tables and views           |
 
 `_resolve_query_tool()` will match `execute_query` from the known
 names list.

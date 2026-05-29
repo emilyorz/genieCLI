@@ -40,13 +40,16 @@ today — without guessing, and without relying on memory.
 ### What actually exists (verified against the repo, not memory)
 
 1. **CLI entry point `genie`.** Declared in `pyproject.toml`:
+
    ```toml
    [project.scripts]
    genie = "genie.cli:main"
    ```
+
    `main()` is at `genie/cli.py:376`. Confirmed exists.
 
 2. **`genie setup mcp` command.** Declared in `genie/cli.py:301-313`:
+
    ```python
    @app.command()
    def setup(target: str = typer.Argument("llm", help="What to set up: llm, trino, mcp")) -> None:
@@ -56,6 +59,7 @@ today — without guessing, and without relying on memory.
        ...
        wizard()
    ```
+
    `setup_mcp` lives in `genie/setup_wizard.py`. Confirmed exists.
 
 3. **MCP config loader.** `genie/skills/mcp_trino/client.py:39-90`.
@@ -64,7 +68,7 @@ today — without guessing, and without relying on memory.
    - TOML `~/.genie/config.toml` `[mcp.trino]`
    - JSON `~/.config/genie/mcp.json`
    - defaults (`url=http://localhost:8811`, `enabled=True`)
-   Returns an `McpConfig` dataclass.
+     Returns an `McpConfig` dataclass.
 
 4. **MCP client.** `genie/skills/mcp_trino/client.py:114` — `McpClient`
    wraps JSON-RPC 2.0 over HTTP with `Mcp-Session-Id`. Has
@@ -80,12 +84,14 @@ today — without guessing, and without relying on memory.
 
 6. **The `/trino-research` slash command is wired to the DIRECT path.**
    `genie/chat.py:741-763`:
+
    ```python
    elif cmd == "/trino-research":
        from genie.skills.trino_query.research import run_trino_research
        ...
        run_trino_research(provider, cfg, model, current_reasoning, output, build_prompt, **kwargs)
    ```
+
    There is no branch that routes to `mcp_trino.research` at all.
 
 7. **`run_mcp_enhancement` has zero production callers.** Grep result:
@@ -101,8 +107,8 @@ today — without guessing, and without relying on memory.
 
 ### Root cause
 
-`/trino-research` is wired in `chat.py` to the *direct-Trino* research
-module. The *MCP-aware* research module exists, is complete enough to
+`/trino-research` is wired in `chat.py` to the _direct-Trino_ research
+module. The _MCP-aware_ research module exists, is complete enough to
 ship, but is orphaned — no CLI surface, no registry hook, no slash
 command. This is not an "MCP is optional" situation in the sense of a
 runtime toggle; it is "MCP is orphaned" at the import level.
@@ -153,10 +159,10 @@ runtime toggle; it is "MCP is orphaned" at the import level.
   1. Calls `load_mcp_config()`.
   2. Requires `enabled=True` and a reachable endpoint — otherwise
      print a single-line, actionable error (`MCP not configured — run
-     'genie setup mcp'`) and return.
+'genie setup mcp'`) and return.
   3. Instantiates `McpClient(config)` and calls
      `run_mcp_enhancement(client, sql, metric_key, max_iterations,
-     verify_runs, provider, model, reasoning, output, build_prompt)`
+verify_runs, provider, model, reasoning, output, build_prompt)`
      — with the flag parsing (`--file`, `--metric`, `--iterations`,
      `--runs`) adapted to the MCP entry's parameter names.
   4. Writes the returned `EnhancementReport` through
@@ -200,7 +206,7 @@ runtime toggle; it is "MCP is orphaned" at the import level.
 
 - **Goal:** find the actual reason `/trino-research` doesn't use MCP,
   and verify that the CLI surface Sam referenced (`genie`, `genie
-  setup mcp`) truly exists.
+setup mcp`) truly exists.
 - **Changed files:** none (read-only investigation).
 - **Verification evidence:** see "Round 1 — verification evidence"
   above; every claim ties back to a specific file + line range in the

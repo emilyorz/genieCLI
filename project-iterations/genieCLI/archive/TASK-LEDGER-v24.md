@@ -28,6 +28,7 @@ Unknown sub-commands fall through to the full help listing with a note.
 ## Round 3 — MCP status in startup banner
 
 Chat startup now probes MCP reachability (if configured) and shows:
+
 - `mcp    ok http://localhost:8811/mcp (6 tools)` — green
 - `mcp    offline http://localhost:8811/mcp` — red
 - `mcp    not configured` — dim
@@ -40,6 +41,7 @@ hang. Exceptions are silently swallowed.
 SKILL.md body expanded from 3.5KB to ~6KB with expert-level content:
 
 **New sections:**
+
 - **Connector-Specific Optimizations** — Hive (partition column filter
   requirements, ORC/Parquet pushdown rules, bucket columns), Iceberg
   (hidden partitioning, time-travel perf, metadata table warnings,
@@ -50,6 +52,7 @@ SKILL.md body expanded from 3.5KB to ~6KB with expert-level content:
   top-1 needed; avoid mixed PARTITION BY keys; LAG/LEAD IGNORE NULLS
 
 **Expanded existing sections:**
+
 - Anti-patterns: added UNION→UNION ALL, IN→EXISTS, ORDER BY pushdown,
   CAST on partition columns
 - Common Wins: added processed_rows guidance, UDF warning, Parquet
@@ -58,11 +61,11 @@ SKILL.md body expanded from 3.5KB to ~6KB with expert-level content:
 
 ## Changes
 
-| File | Change |
-|------|--------|
-| `genie/skills/mcp_trino/research.py` | Plan card: SQL preview with Rich Syntax |
-| `genie/chat.py` | Extracted `_print_trino_research_help()`; `/help <cmd>` routing; MCP status in startup banner |
-| `genie/skills/mcp_trino/SKILL.md` | Expert content expansion (v1.1.0 → v1.2.0) |
+| File                                 | Change                                                                                        |
+| ------------------------------------ | --------------------------------------------------------------------------------------------- |
+| `genie/skills/mcp_trino/research.py` | Plan card: SQL preview with Rich Syntax                                                       |
+| `genie/chat.py`                      | Extracted `_print_trino_research_help()`; `/help <cmd>` routing; MCP status in startup banner |
+| `genie/skills/mcp_trino/SKILL.md`    | Expert content expansion (v1.1.0 → v1.2.0)                                                    |
 
 ## Verification
 

@@ -74,13 +74,13 @@ Examples
 
 ## Changes
 
-| File | Change |
-|------|--------|
-| `genie/output/human.py` | Added `status()` method returning Rich spinner context |
-| `genie/output/machine.py` | Added no-op `status()` returning `nullcontext()` |
+| File                                 | Change                                                                                                        |
+| ------------------------------------ | ------------------------------------------------------------------------------------------------------------- |
+| `genie/output/human.py`              | Added `status()` method returning Rich spinner context                                                        |
+| `genie/output/machine.py`            | Added no-op `status()` returning `nullcontext()`                                                              |
 | `genie/skills/mcp_trino/research.py` | Wrapped AI call + `_measure_mcp` runs in `output.status()`; added `output` + `label` params to `_measure_mcp` |
-| `genie/chat.py` | `--help`/`-h` branch at top of `/trino-research` handler |
-| `tests/test_mcp_research.py` | New test asserting `_measure_mcp` invokes `status()` per run |
+| `genie/chat.py`                      | `--help`/`-h` branch at top of `/trino-research` handler                                                      |
+| `tests/test_mcp_research.py`         | New test asserting `_measure_mcp` invokes `status()` per run                                                  |
 
 ## Verification
 

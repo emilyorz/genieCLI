@@ -1,4 +1,5 @@
 <!-- BEGIN EMILY_PROJECT_SHADOW_BOOTSTRAP -->
+
 # Emily Project Shadow Bootstrap
 
 This repo is operated by Sam's project-bound **Emily shadow** runner (`project-codex`).

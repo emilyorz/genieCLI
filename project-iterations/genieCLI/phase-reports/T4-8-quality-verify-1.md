@@ -33,19 +33,23 @@ No stale v29-final skip/count claims remain. v29 design log (line 32) and v29 to
 - Feature-doc Current-capability "Pre-execution diagnosis (v29 T1-T4)" bullet (line 16) matches the actual injection wiring on both paths.
 
 ## Strengths
+
 - `features/trino-research.md:16,32,47` - The v29 design-log entry is genuinely maintainer-grade: it states WHY (deterministic diagnosis leads, LLM consumes — "不只靠 AI"), names the four contributors + the total-order ranker, and ties each Tkt to file-level evidence. A reader months out will understand the directed-prompt rationale and the dual-path symmetry without re-reading the diff.
 - `features/trino-research.md:53` - The touchpoint is honest about the v3-strict deviation label (hooks-installed-not-live, single-runtime) rather than overclaiming `full-v3-success`.
 - The doc does NOT overstate the symmetry test's coverage — it describes exactly the non-explain axis it guards, and the Known-follow-ups carry the explain-axis limitation forward. Accurate, not aspirational.
 - Test-count correction (stale "10 skip" → "0 skip") was applied consistently across both feature doc and ledger in the same pass.
 
 ## Issues
+
 - [Minor] `features/trino-research.md:15-16` - The long-query-gate bullet (v28 T5 + v29 T3) and the Pre-execution-diagnosis bullet (v29 T1-T4) overlap substantially on the zero-cost-report description. Not inaccurate, but a future reader hits the same "EXPLAIN FORMAT JSON + static + ranked directions, no EXPLAIN ANALYZE" prose twice. A one-line cross-reference would reduce drift risk if one is later edited. Park to RETRO.
 - [Minor] `features/trino-research.md:32` - The v29 design-log entry is a single very long paragraph (~40 lines unwrapped). It is accurate and complete, but T1/T2/T3/T4 sub-structure would scan faster as labeled sub-bullets (consistent with how the older v28 entry at line 29 is also a wall of text — so this matches existing house style, hence Minor not Important). No fix required.
 
 ## Assessment
+
 This is a clean, accurate docs close-out. Every v29-final claim in the design log, capability bullets, and touchpoint maps to real shipped code verified by file:line, the corrected 781/0-skip figure matches my own pytest re-run, and there is no feature-doc ↔ ledger ↔ code drift. The only findings are two cosmetic Minor items (prose overlap, paragraph density) that match existing house style and do not mislead. No Critical, no Important — clears the strict > 9.0 gate. Recommend merge.
 
 ## Top items to fix first
+
 1. (Optional, RETRO) Add a one-line cross-reference between the long-query-gate bullet and the pre-execution-diagnosis bullet to avoid duplicated zero-cost-report prose drifting apart.
 2. (Optional) Break the v29 design-log mega-paragraph into T1-T4 sub-bullets for scannability.
 3. None blocking.

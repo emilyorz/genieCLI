@@ -33,7 +33,7 @@
 | T1  | complete | P0  | Inspect current genieCLI state, read STATUS.md and the active code paths, and lock the highest-value scope for this iteration | Main Agent | Scope: /compact. Rationale: fills clear/undo gap; pairs with /stats; low-risk list-slice |
 | T2  | complete | P1  | Implement the selected improvement end-to-end                                                                                 | Main Agent | /compact [N] in chat.py + input.py + /help; keeps system msgs + last N turns + marker    |
 | T3  | complete | P1  | Add or update tests for the new behavior                                                                                      | Main Agent | 9 new tests in test_new_commands.py; 550 total pass (+9, 0 regressions)                  |
-| T4  | complete | P0  | Verify the change with observable evidence and update the ledger/status handoff                                               | Main Agent | Verified via full pytest; landed on main in PR #20                                 |
+| T4  | complete | P0  | Verify the change with observable evidence and update the ledger/status handoff                                               | Main Agent | Verified via full pytest; landed on main in PR #20                                       |
 
 ## Verify
 

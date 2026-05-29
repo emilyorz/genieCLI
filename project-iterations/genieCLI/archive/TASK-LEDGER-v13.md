@@ -27,12 +27,12 @@
 
 ## Todo
 
-| ID | Status | Pri | Task | Owner | Note |
-|----|--------|-----|------|-------|------|
-| T1 | done | P0 | Delete oracle2trino/patterns.py + runtime/eval_loop.py shims | Emily | 3 importers updated |
-| T2 | done | P0 | Extract `_extract_sql_from_reply` to genie/core/sql_extraction.py | Emily | 2 research modules + 1 test updated |
-| T3 | done | P1 | Move `_msg()` helper to conftest.py, remove from 3 test files | Emily | Provider test dedup |
-| T4 | done | P1 | Run tests + verify all rounds | Emily | 587 passed, 10 skipped, 0 failed |
+| ID  | Status | Pri | Task                                                              | Owner | Note                                |
+| --- | ------ | --- | ----------------------------------------------------------------- | ----- | ----------------------------------- |
+| T1  | done   | P0  | Delete oracle2trino/patterns.py + runtime/eval_loop.py shims      | Emily | 3 importers updated                 |
+| T2  | done   | P0  | Extract `_extract_sql_from_reply` to genie/core/sql_extraction.py | Emily | 2 research modules + 1 test updated |
+| T3  | done   | P1  | Move `_msg()` helper to conftest.py, remove from 3 test files     | Emily | Provider test dedup                 |
+| T4  | done   | P1  | Run tests + verify all rounds                                     | Emily | 587 passed, 10 skipped, 0 failed    |
 
 ## Reports
 
@@ -46,6 +46,7 @@
 **Goal:** Remove `oracle2trino/patterns.py` and `runtime/eval_loop.py` — both were thin re-export shims adding indirection with no value.
 
 **Files changed:**
+
 - `genie/skills/oracle2trino/patterns.py` — DELETED (re-exported from `genie/core/sql_patterns`)
 - `genie/runtime/eval_loop.py` — DELETED (re-exported from `genie/runtime/autoresearch_cli`)
 - `genie/skills/oracle2trino/__init__.py` — import path updated
@@ -60,6 +61,7 @@
 **Goal:** Deduplicate `_extract_sql_from_reply` — identical 15-line function copy-pasted in `trino_query/research.py` and `mcp_trino/research.py`.
 
 **Files changed:**
+
 - `genie/core/sql_extraction.py` — NEW: canonical `extract_sql_from_reply()`
 - `genie/skills/trino_query/research.py` — replaced inline def with import
 - `genie/skills/mcp_trino/research.py` — replaced inline def with import
@@ -67,11 +69,12 @@
 
 **Verification:** 100 targeted tests passed (0 failures).
 
-### Round 3 — Deduplicate _msg() test helper — 2026-04-14T13:00+08:00
+### Round 3 — Deduplicate \_msg() test helper — 2026-04-14T13:00+08:00
 
 **Goal:** Three provider test files had identical `_msg(role, text)` helper. Moved to `tests/conftest.py`.
 
 **Files changed:**
+
 - `tests/conftest.py` — added `_msg()` helper
 - `tests/test_anthropic_provider.py` — removed local `_msg`, added `from conftest import _msg`
 - `tests/test_openai_provider.py` — same
@@ -82,11 +85,11 @@
 
 ## Summary
 
-| Metric | Before | After | Delta |
-|--------|--------|-------|-------|
-| Python files | 92 | 90 | -2 (shims deleted) + 1 (sql_extraction) = net -1 |
-| Duplicate code | 3× `_msg()` + 2× `_extract_sql` + 2 shim files | 0 | -7 duplication sites |
-| Tests | 588 pass | 587 pass, 10 skip | -1 (stale shim test removed), +10 skip (sqlglot-conditional, pre-existing) |
+| Metric         | Before                                         | After             | Delta                                                                      |
+| -------------- | ---------------------------------------------- | ----------------- | -------------------------------------------------------------------------- |
+| Python files   | 92                                             | 90                | -2 (shims deleted) + 1 (sql_extraction) = net -1                           |
+| Duplicate code | 3× `_msg()` + 2× `_extract_sql` + 2 shim files | 0                 | -7 duplication sites                                                       |
+| Tests          | 588 pass                                       | 587 pass, 10 skip | -1 (stale shim test removed), +10 skip (sqlglot-conditional, pre-existing) |
 
 ## Remaining risks
 

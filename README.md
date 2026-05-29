@@ -69,15 +69,15 @@ AI-powered Trino query tuning CLI. 用 LLM 自動優化 Trino SQL，結合靜態
 
 #### Skills（`genie/skills/`）— 可插拔工具
 
-| Skill           | Tools | 說明                                                        |
-| --------------- | ----- | ----------------------------------------------------------- |
-| `trino_query/`  | 4     | Trino query 執行 + EXPLAIN + schema 查詢 + **自動優化**    |
-| `mcp_trino/`    | dynamic | MCP Trino client + autoresearch via MCP server            |
-| `oracle2trino/` | 5     | Oracle → Trino SQL 轉換（sqlglot + AI 補完）               |
-| `trino_linter/` | 1     | Trino SQL 靜態分析（11 rules：Oracle 殘留 + anti-patterns）|
-| `file_ops/`     | 4     | 檔案讀寫、目錄列表、file_patch                              |
-| `git_ops/`      | 5     | Git 操作（status / diff / log / checkpoint / restore）      |
-| `shell_ops/`    | 1     | Shell 指令執行（whitelisted profiles）                      |
+| Skill           | Tools   | 說明                                                        |
+| --------------- | ------- | ----------------------------------------------------------- |
+| `trino_query/`  | 4       | Trino query 執行 + EXPLAIN + schema 查詢 + **自動優化**     |
+| `mcp_trino/`    | dynamic | MCP Trino client + autoresearch via MCP server              |
+| `oracle2trino/` | 5       | Oracle → Trino SQL 轉換（sqlglot + AI 補完）                |
+| `trino_linter/` | 1       | Trino SQL 靜態分析（11 rules：Oracle 殘留 + anti-patterns） |
+| `file_ops/`     | 4       | 檔案讀寫、目錄列表、file_patch                              |
+| `git_ops/`      | 5       | Git 操作（status / diff / log / checkpoint / restore）      |
+| `shell_ops/`    | 1       | Shell 指令執行（whitelisted profiles）                      |
 
 #### Runtime（`genie/runtime/`）— Autoresearch 引擎
 
@@ -203,29 +203,29 @@ genie --skills
 
 報告輸出：
 
-| 情境 | 輸出 |
-| ---- | ---- |
-| 一般 direct path | `./report/trino-research-YYYYMMDD-HHMMSS.md` |
-| 一般 MCP path | `trino-research-mcp-YYYYMMDD-HHMMSS.md` |
+| 情境                                 | 輸出                                                  |
+| ------------------------------------ | ----------------------------------------------------- |
+| 一般 direct path                     | `./report/trino-research-YYYYMMDD-HHMMSS.md`          |
+| 一般 MCP path                        | `trino-research-mcp-YYYYMMDD-HHMMSS.md`               |
 | `--diagnose-only` 或長查詢 gate-trip | `./report/trino-research-diagnose-YYYYMMDD-HHMMSS.md` |
-| table/schema/catalog no-data | `./report/trino-research-nodata-YYYYMMDD-HHMMSS.md` |
+| table/schema/catalog no-data         | `./report/trino-research-nodata-YYYYMMDD-HHMMSS.md`   |
 
 ---
 
 ## 互動指令
 
-| 指令              | 說明                                           |
-| ----------------- | ---------------------------------------------- |
-| `/trino`          | Trino 連線管理（profiles / test）              |
+| 指令              | 說明                                             |
+| ----------------- | ------------------------------------------------ |
+| `/trino`          | Trino 連線管理（profiles / test）                |
 | `/trino-research` | **Trino SQL 自動優化 + pre-execution diagnosis** |
-| `/autoresearch`   | 通用自主迭代 loop                              |
-| `/new`            | 新對話                                         |
-| `/sessions`       | 列出已儲存的對話                               |
-| `/load <n>`       | 載入對話                                       |
-| `/skills`         | 列出所有可用 tools                             |
-| `/reasoning`      | 切換 reasoning 等級（disable/low/medium/high） |
-| `/model <name>`   | 切換模型                                       |
-| `/exit`           | 結束                                           |
+| `/autoresearch`   | 通用自主迭代 loop                                |
+| `/new`            | 新對話                                           |
+| `/sessions`       | 列出已儲存的對話                                 |
+| `/load <n>`       | 載入對話                                         |
+| `/skills`         | 列出所有可用 tools                               |
+| `/reasoning`      | 切換 reasoning 等級（disable/low/medium/high）   |
+| `/model <name>`   | 切換模型                                         |
+| `/exit`           | 結束                                             |
 
 ---
 
@@ -249,24 +249,24 @@ AI 驅動的 Trino SQL 自動優化。流程不是讓 AI 盲猜改法，而是�
 
 `/trino-research` 會在第一輪優化前組合五種訊號：
 
-| 訊號 | 來源 | 用途 |
-| ---- | ---- | ---- |
-| Static AST findings | sqlglot rules | 找 cartesian join、select star、predicate pushdown 等結構問題 |
-| SQL shape heuristics | sqlglot AST | 偵測多層 heavy CTE、可能重複 raw scan，轉成 materialize-cte-steps / reduce-raw-rescan 方向 |
-| Plan cost | `EXPLAIN (FORMAT JSON)` | 估 rows / bytes，做 reduce-scan、memory-pressure 等方向排序 |
-| Table metadata | MCP path | 偵測 partition / sort hints，建議 leverage partitioning / ordering |
-| Peak memory | baseline runtime metrics | 把 memory pressure 納入目標 metric |
+| 訊號                 | 來源                     | 用途                                                                                       |
+| -------------------- | ------------------------ | ------------------------------------------------------------------------------------------ |
+| Static AST findings  | sqlglot rules            | 找 cartesian join、select star、predicate pushdown 等結構問題                              |
+| SQL shape heuristics | sqlglot AST              | 偵測多層 heavy CTE、可能重複 raw scan，轉成 materialize-cte-steps / reduce-raw-rescan 方向 |
+| Plan cost            | `EXPLAIN (FORMAT JSON)`  | 估 rows / bytes，做 reduce-scan、memory-pressure 等方向排序                                |
+| Table metadata       | MCP path                 | 偵測 partition / sort hints，建議 leverage partitioning / ordering                         |
+| Peak memory          | baseline runtime metrics | 把 memory pressure 納入目標 metric                                                         |
 
 診斷結果會以 `OptimizationDirection(kind, severity, rationale, evidence, target_metric)` 排序後放進 optimizer prompt。`--direct` 路徑也有同等診斷能力；差別是沒有 MCP metadata。
 
 在 optimizer prompt 的 Trino guide 之前，`/trino-research` 會先插入一段 capped `Rule-based gate`。這不是另一個 LLM 建議，而是 deterministic findings 的 action taxonomy：
 
-| Action | 代表意思 | v31 行為 |
-| ------ | -------- | -------- |
-| `BLOCK` | 高風險語義問題，例如 cartesian join / NULL unsafe equality | 不讓 AI 自動「猜」語義修法；繼續診斷和產報告，不直接 abort CLI |
-| `REWRITE` | 高信心 rewrite candidate class，例如 redundant DISTINCT、predicate pushdown、redundant cast | 只建議模型優先處理；v31 不自動改 SQL，仍需 result equivalence |
-| `ADVISE` | 有幫助但證據較弱或需要環境判斷，例如 CTE step materialization、raw rescan、memory pressure | 作為 AI context；不把 advisory 當成硬規則 |
-| `PASS` | 沒有 actionable gate finding | 不渲染 TUI block，也不污染 prompt |
+| Action    | 代表意思                                                                                    | v31 行為                                                       |
+| --------- | ------------------------------------------------------------------------------------------- | -------------------------------------------------------------- |
+| `BLOCK`   | 高風險語義問題，例如 cartesian join / NULL unsafe equality                                  | 不讓 AI 自動「猜」語義修法；繼續診斷和產報告，不直接 abort CLI |
+| `REWRITE` | 高信心 rewrite candidate class，例如 redundant DISTINCT、predicate pushdown、redundant cast | 只建議模型優先處理；v31 不自動改 SQL，仍需 result equivalence  |
+| `ADVISE`  | 有幫助但證據較弱或需要環境判斷，例如 CTE step materialization、raw rescan、memory pressure  | 作為 AI context；不把 advisory 當成硬規則                      |
+| `PASS`    | 沒有 actionable gate finding                                                                | 不渲染 TUI block，也不污染 prompt                              |
 
 TUI 只顯示一個 compact block，避免把 terminal 變成 rule dump：
 
@@ -285,15 +285,15 @@ Rule gate fail-open：如果上游 diagnostic object malformed，會跳過 gate 
 
 `/trino-research` 不只把原 SQL 丟給模型。每次 optimizer prompt 都會帶入以下方向，讓模型優先處理 Trino 真正常見的 bottleneck：
 
-| 方向 | 觸發線索 | 給 AI 的要求 |
-| ---- | -------- | ------------ |
-| CTE / `WITH` plan explosion | 3+ chained CTE，且多個 step 有 JOIN / GROUP BY / window / set operation | 假設 `WITH` 會被 inline，不要當成 cache；優先簡化 plan，必要時建議 managed CTAS / materialized view step 化 |
-| Repeated raw scan | 同一個 raw / fact / source table 被多次引用 | 優先減少 raw scan；不要把小型 curated / presum / dimension table 的重複讀誤判成主要瓶頸 |
-| Pushdown / pruning | scan bytes 大、output 小、partition predicate 被 function 包住 | 把 filter 推到 scan leaf；保留 partition column 原生型別；只選需要的欄位 |
-| Join distribution / CBO | large-large join、build side 過大、stats 缺失 | 先建議 stats refresh / `ANALYZE`；broadcast 只適合 filtered build side 可放進每台 worker memory 的情境 |
-| Dynamic filtering | fact table join filtered dimension | 保留 selective dimension predicate 和 equi-join key，讓 Trino 能把 runtime filter 推回 probe-side scan |
-| Skew / spill | `EXPLAIN ANALYZE` 顯示 per-task input 差距大、blocked time 高、spill 或 peak memory 高 | 先定位 hot key / large build / high-cardinality aggregation，再建議 pre-aggregate、filter NULL/hot keys、縮欄位或改 join shape |
-| Worker 數限制 | shared cluster worker 少、scan/shuffle throughput 不足 | 可以建議增加 worker / dedicated cluster，但要明確說它不能解 plan depth、per-node memory、skew、spill 的根因 |
+| 方向                        | 觸發線索                                                                               | 給 AI 的要求                                                                                                                   |
+| --------------------------- | -------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------ |
+| CTE / `WITH` plan explosion | 3+ chained CTE，且多個 step 有 JOIN / GROUP BY / window / set operation                | 假設 `WITH` 會被 inline，不要當成 cache；優先簡化 plan，必要時建議 managed CTAS / materialized view step 化                    |
+| Repeated raw scan           | 同一個 raw / fact / source table 被多次引用                                            | 優先減少 raw scan；不要把小型 curated / presum / dimension table 的重複讀誤判成主要瓶頸                                        |
+| Pushdown / pruning          | scan bytes 大、output 小、partition predicate 被 function 包住                         | 把 filter 推到 scan leaf；保留 partition column 原生型別；只選需要的欄位                                                       |
+| Join distribution / CBO     | large-large join、build side 過大、stats 缺失                                          | 先建議 stats refresh / `ANALYZE`；broadcast 只適合 filtered build side 可放進每台 worker memory 的情境                         |
+| Dynamic filtering           | fact table join filtered dimension                                                     | 保留 selective dimension predicate 和 equi-join key，讓 Trino 能把 runtime filter 推回 probe-side scan                         |
+| Skew / spill                | `EXPLAIN ANALYZE` 顯示 per-task input 差距大、blocked time 高、spill 或 peak memory 高 | 先定位 hot key / large build / high-cardinality aggregation，再建議 pre-aggregate、filter NULL/hot keys、縮欄位或改 join shape |
+| Worker 數限制               | shared cluster worker 少、scan/shuffle throughput 不足                                 | 可以建議增加 worker / dedicated cluster，但要明確說它不能解 plan depth、per-node memory、skew、spill 的根因                    |
 
 Materialization 是 side-effecting strategy，不是一般 loop 的自動 rewrite。正常 read-only `/trino-research` 只會建議「可考慮 step 化」，不會直接回傳 `CREATE TABLE` / `DROP TABLE` chain；未來若要支援，必須另外開 dedicated materialization mode，明確指定 scratch schema、命名、TTL/cleanup、權限與失敗復原。
 
@@ -301,16 +301,16 @@ Materialization 是 side-effecting strategy，不是一般 loop 的自動 rewrit
 
 這些是目前 prompt guidance 對齊的官方 Trino 文件：
 
-| 主題 | Reference |
-| ---- | --------- |
-| `WITH` / CTE semantics | [Trino SELECT — WITH clause](https://trino.io/docs/current/sql/select.html#with-clause) |
-| `EXPLAIN` supported types / formats | [Trino EXPLAIN](https://trino.io/docs/current/sql/explain.html) |
-| Runtime CPU / blocked time / skew statistics | [Trino EXPLAIN ANALYZE](https://trino.io/docs/current/sql/explain-analyze.html) |
-| Join ordering, join distribution, CBO stats | [Trino cost-based optimizations](https://trino.io/docs/current/optimizer/cost-based-optimizations.html) |
-| Predicate / projection / aggregation / join pushdown | [Trino pushdown](https://trino.io/docs/current/optimizer/pushdown.html) |
-| Dynamic filtering / dynamic partition pruning | [Trino dynamic filtering](https://trino.io/docs/current/admin/dynamic-filtering.html) |
-| Materialized view semantics and staleness | [Trino CREATE MATERIALIZED VIEW](https://trino.io/docs/current/sql/create-materialized-view.html) |
-| Object storage file-system cache | [Trino file system cache](https://trino.io/docs/current/object-storage/file-system-cache.html) |
+| 主題                                                 | Reference                                                                                               |
+| ---------------------------------------------------- | ------------------------------------------------------------------------------------------------------- |
+| `WITH` / CTE semantics                               | [Trino SELECT — WITH clause](https://trino.io/docs/current/sql/select.html#with-clause)                 |
+| `EXPLAIN` supported types / formats                  | [Trino EXPLAIN](https://trino.io/docs/current/sql/explain.html)                                         |
+| Runtime CPU / blocked time / skew statistics         | [Trino EXPLAIN ANALYZE](https://trino.io/docs/current/sql/explain-analyze.html)                         |
+| Join ordering, join distribution, CBO stats          | [Trino cost-based optimizations](https://trino.io/docs/current/optimizer/cost-based-optimizations.html) |
+| Predicate / projection / aggregation / join pushdown | [Trino pushdown](https://trino.io/docs/current/optimizer/pushdown.html)                                 |
+| Dynamic filtering / dynamic partition pruning        | [Trino dynamic filtering](https://trino.io/docs/current/admin/dynamic-filtering.html)                   |
+| Materialized view semantics and staleness            | [Trino CREATE MATERIALIZED VIEW](https://trino.io/docs/current/sql/create-materialized-view.html)       |
+| Object storage file-system cache                     | [Trino file system cache](https://trino.io/docs/current/object-storage/file-system-cache.html)          |
 
 `WITH (cached = TRUE)` 沒有列入 baseline OSS Trino reference；目前只能視為 fork / vendor / version-specific capability。若公司 Trino 有支援，應先做 capability probe，再把它加入 prompt guidance。
 
@@ -324,14 +324,14 @@ Materialization 是 side-effecting strategy，不是一般 loop 的自動 rewrit
 
 ### Guard 機制
 
-| Guard | 說明 | 失敗時 |
-| ----- | ---- | ------ |
-| **Preflight** | read-only whitelist + EXPLAIN size estimate + optional `--safe-limit` | STOP |
-| **Rule gate** | deterministic findings 分類成 BLOCK / REWRITE / ADVISE / PASS，先渲染 compact TUI 並餵給 AI | FAIL OPEN / PROMPT GUIDANCE |
-| **Lint/static** | SQL 語法與 anti-pattern 分析 | REVERT / REPORT |
-| **Execution** | 必須在 Trino 上成功執行 | REVERT |
-| **Plan-cost structural guard** | 長查詢模式用 plan signature 過濾結構偏移 candidate | REJECT |
-| **Result equivalence** | 優化後結果必須與 baseline 逐行一致 | REVERT |
+| Guard                          | 說明                                                                                        | 失敗時                      |
+| ------------------------------ | ------------------------------------------------------------------------------------------- | --------------------------- |
+| **Preflight**                  | read-only whitelist + EXPLAIN size estimate + optional `--safe-limit`                       | STOP                        |
+| **Rule gate**                  | deterministic findings 分類成 BLOCK / REWRITE / ADVISE / PASS，先渲染 compact TUI 並餵給 AI | FAIL OPEN / PROMPT GUIDANCE |
+| **Lint/static**                | SQL 語法與 anti-pattern 分析                                                                | REVERT / REPORT             |
+| **Execution**                  | 必須在 Trino 上成功執行                                                                     | REVERT                      |
+| **Plan-cost structural guard** | 長查詢模式用 plan signature 過濾結構偏移 candidate                                          | REJECT                      |
+| **Result equivalence**         | 優化後結果必須與 baseline 逐行一致                                                          | REVERT                      |
 
 ### Long-query handling
 
@@ -345,20 +345,20 @@ Materialization 是 side-effecting strategy，不是一般 loop 的自動 rewrit
 
 長查詢模式會用 EXPLAIN plan cost 排序 candidate，最後再用 row-equivalence 做 L3 驗證；`--max-fallbacks` 控制候選失敗時最多重試幾個 fallback。進入 iteration 後，candidate / verify run 若超過 baseline wall-time 會視為失敗，不會取代目前 best SQL；MCP path 會 best-effort 設定 Trino `query_max_run_time`，direct path 會用 cursor cancel。長時間執行 baseline、candidate、verify 或 EXPLAIN ANALYZE 時，終端 status 會顯示 `elapsed=<秒數>s`，candidate status 也會顯示 `limit=<秒數>s`；MCP iteration summary 會用 compact block 分行顯示 verdict、metric/delta/elapsed、reason 與 note。
 
-| 參數           | 說明               | 預設        |
-| -------------- | ------------------ | ----------- |
-| `--file`       | SQL 檔案路徑       | 互動貼上    |
-| `--metric`     | 優化目標 metric    | cpu_time_ms |
-| `--iterations` | 最大迭代次數       | 5           |
-| `--runs`       | 每次驗證重複跑幾次 | 3           |
-| `--safe-limit` | 外層包一層 `LIMIT n` | off |
-| `--query-timeout` | 單次 query timeout 秒數 | 300 |
-| `--long-query` | 允許慢 baseline 進入 tuning（相容旗標） | on |
-| `--no-long-query` | 慢 baseline 後只產 directed report，不跑後續迭代 | off |
-| `--long-query-threshold` | 超過幾秒視為長查詢 | 60 |
-| `--max-fallbacks` | row-equivalence fallback 重試上限 | 3 |
-| `--diagnose-only` | 只產 directed report，不執行原 SQL | off |
-| `--direct` | 強制走 local Trino driver，不走 MCP | off |
+| 參數                     | 說明                                             | 預設        |
+| ------------------------ | ------------------------------------------------ | ----------- |
+| `--file`                 | SQL 檔案路徑                                     | 互動貼上    |
+| `--metric`               | 優化目標 metric                                  | cpu_time_ms |
+| `--iterations`           | 最大迭代次數                                     | 5           |
+| `--runs`                 | 每次驗證重複跑幾次                               | 3           |
+| `--safe-limit`           | 外層包一層 `LIMIT n`                             | off         |
+| `--query-timeout`        | 單次 query timeout 秒數                          | 300         |
+| `--long-query`           | 允許慢 baseline 進入 tuning（相容旗標）          | on          |
+| `--no-long-query`        | 慢 baseline 後只產 directed report，不跑後續迭代 | off         |
+| `--long-query-threshold` | 超過幾秒視為長查詢                               | 60          |
+| `--max-fallbacks`        | row-equivalence fallback 重試上限                | 3           |
+| `--diagnose-only`        | 只產 directed report，不執行原 SQL               | off         |
+| `--direct`               | 強制走 local Trino driver，不走 MCP              | off         |
 
 **可選 metric：** `query_time_ms` / `cpu_time_ms` / `wall_time_ms` / `physical_input_bytes` / `processed_rows` / `total_splits` / `peak_memory_bytes`
 
@@ -419,10 +419,10 @@ timeout = 30
 
 每個 skill 是 `genie/skills/<name>/` 下的一個目錄：
 
-| 檔案            | 用途                          |
-| --------------- | ----------------------------- |
-| `SKILL.md`      | Metadata（discovery 的依據） |
-| `__init__.py`   | BaseSkill 子類別 + register() |
+| 檔案          | 用途                          |
+| ------------- | ----------------------------- |
+| `SKILL.md`    | Metadata（discovery 的依據）  |
+| `__init__.py` | BaseSkill 子類別 + register() |
 
 ```python
 from genie.core.arg import Arg
