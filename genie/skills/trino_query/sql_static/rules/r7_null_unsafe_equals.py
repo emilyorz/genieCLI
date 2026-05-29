@@ -4,6 +4,7 @@ from __future__ import annotations
 import re
 
 from .. import Finding
+from ..rule_ids import RULE_NULL_UNSAFE_EQUALS
 
 
 def apply(sql: str, statements: list) -> list[Finding]:
@@ -33,7 +34,7 @@ def apply(sql: str, statements: list) -> list[Finding]:
                 replacement = "IS NULL" if isinstance(cmp_node, exp.EQ) else "IS NOT NULL"
                 findings.append(Finding(
                     severity="high",
-                    rule_id="null-unsafe-equals",
+                    rule_id=RULE_NULL_UNSAFE_EQUALS,
                     message=f"`{op} NULL` always evaluates UNKNOWN — the predicate is silently false",
                     suggestion=f"Use `{replacement}` for null checks",
                     line=line,

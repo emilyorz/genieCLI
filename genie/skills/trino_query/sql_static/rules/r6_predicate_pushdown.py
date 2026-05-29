@@ -5,6 +5,7 @@ import copy
 import re
 
 from .. import Finding
+from ..rule_ids import RULE_PREDICATE_NOT_PUSHED_TO_CTE
 
 
 def apply(sql: str, statements: list) -> list[Finding]:
@@ -53,7 +54,7 @@ def apply(sql: str, statements: list) -> list[Finding]:
         seen_lines.add(line)
         findings.append(Finding(
             severity="medium",
-            rule_id="predicate-not-pushed-to-cte",
+            rule_id=RULE_PREDICATE_NOT_PUSHED_TO_CTE,
             message="Outer WHERE predicate could be pushed into the CTE / subquery to scan less data",
             suggestion="Move the predicate inside the CTE/subquery so the inner scan filters early",
             line=line,

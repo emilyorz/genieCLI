@@ -4,6 +4,7 @@ from __future__ import annotations
 import re
 
 from .. import Finding
+from ..rule_ids import RULE_SELECT_STAR
 
 
 def apply(sql: str, statements: list) -> list[Finding]:
@@ -50,7 +51,7 @@ def apply(sql: str, statements: list) -> list[Finding]:
             seen_lines.add(line)
             findings.append(Finding(
                 severity="medium",
-                rule_id="select-star",
+                rule_id=RULE_SELECT_STAR,
                 message="SELECT * reads every column — wider IO and brittle to schema drift",
                 suggestion="List columns explicitly so the planner can prune projections and the query survives schema changes",
                 line=line,

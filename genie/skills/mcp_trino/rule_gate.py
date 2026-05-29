@@ -6,10 +6,24 @@ the optimizer prompt before the AI proposes a candidate.
 """
 from __future__ import annotations
 
+import logging
 from dataclasses import dataclass
 from typing import Any
 
 from rich.markup import escape
+
+from genie.skills.trino_query.sql_static.rule_ids import (
+    RULE_CARTESIAN_JOIN,
+    RULE_NULL_UNSAFE_EQUALS,
+    RULE_PREDICATE_NOT_PUSHED_TO_CTE,
+    RULE_REDUNDANT_CAST_CHAIN,
+    RULE_REDUNDANT_DISTINCT_AFTER_GROUP_BY,
+    RULE_SELECT_STAR,
+    RULE_SUBQUERY_IN_SELECT_PUSHABLE_TO_JOIN,
+    RULE_UNNECESSARY_ORDER_BY_IN_SUBQUERY,
+)
+
+logger = logging.getLogger(__name__)
 
 
 ACTION_BLOCK = "block"
@@ -69,42 +83,42 @@ class RuleGateSummary:
 
 
 _STATIC_ACTIONS: dict[str, tuple[str, str, str]] = {
-    "cartesian-join": (
+    RULE_CARTESIAN_JOIN: (
         ACTION_BLOCK,
         "high",
         "Do not invent missing join predicates automatically; inspect join intent.",
     ),
-    "null-unsafe-equals": (
+    RULE_NULL_UNSAFE_EQUALS: (
         ACTION_BLOCK,
         "high",
         "Correct NULL semantics before tuning; do not silently rewrite results.",
     ),
-    "distinct-after-group-by": (
+    RULE_REDUNDANT_DISTINCT_AFTER_GROUP_BY: (
         ACTION_REWRITE,
         "high",
         "Candidate rewrite: remove redundant DISTINCT, then verify equivalence.",
     ),
-    "order-by-in-subquery": (
+    RULE_UNNECESSARY_ORDER_BY_IN_SUBQUERY: (
         ACTION_REWRITE,
         "medium",
         "Candidate rewrite: remove subquery ORDER BY when no LIMIT/top-N depends on it.",
     ),
-    "predicate-pushdown": (
+    RULE_PREDICATE_NOT_PUSHED_TO_CTE: (
         ACTION_REWRITE,
         "medium",
         "Candidate rewrite: push predicate into the CTE/subquery and verify.",
     ),
-    "redundant-cast": (
+    RULE_REDUNDANT_CAST_CHAIN: (
         ACTION_REWRITE,
         "high",
         "Candidate rewrite: remove redundant cast chain and verify.",
     ),
-    "select-star": (
+    RULE_SELECT_STAR: (
         ACTION_ADVISE,
         "medium",
         "Prefer an explicit projection only when the output column contract is preserved.",
     ),
-    "subquery-in-select": (
+    RULE_SUBQUERY_IN_SELECT_PUSHABLE_TO_JOIN: (
         ACTION_ADVISE,
         "medium",
         "Consider join/pre-aggregation rewrite, but preserve scalar-subquery semantics.",
@@ -162,10 +176,18 @@ def _static_items(static_report: Any) -> list[RuleGateItem]:
     items: list[RuleGateItem] = []
     for finding in getattr(static_report, "findings", None) or []:
         rule_id = str(getattr(finding, "rule_id", "unknown"))
-        action, confidence, gate_suggestion = _STATIC_ACTIONS.get(
-            rule_id,
-            (ACTION_ADVISE, "low", "Review this finding before changing SQL."),
-        )
+        mapping = _STATIC_ACTIONS.get(rule_id)
+        if mapping is None:
+            # Loud-on-unknown: a static rule_id with no gate action almost always
+            # means a producer/consumer id drift (the v32 bug). Warn so it is
+            # caught, but fail open to a safe advisory rather than dropping it.
+            logger.warning(
+                "rule_gate: static rule_id %r has no _STATIC_ACTIONS entry; "
+                "defaulting to advise (possible rule_id drift)",
+                rule_id,
+            )
+            mapping = (ACTION_ADVISE, "low", "Review this finding before changing SQL.")
+        action, confidence, gate_suggestion = mapping
         severity = str(getattr(finding, "severity", "low"))
         line = int(getattr(finding, "line", 1) or 1)
         message = str(getattr(finding, "message", "") or rule_id)

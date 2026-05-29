@@ -24,7 +24,7 @@ def test_rule_gate_classifies_static_findings_by_action():
     summary = build_rule_gate_summary(
         _report(
             Finding("high", "cartesian-join", "cross join", "add join condition", 2),
-            Finding("medium", "predicate-pushdown", "pushable", "move predicate", 5),
+            Finding("medium", "predicate-not-pushed-to-cte", "pushable", "move predicate", 5),
             Finding("medium", "select-star", "star", "name columns", 1),
         )
     )
@@ -122,7 +122,7 @@ def test_render_rule_gate_summary_uses_compact_human_block():
     summary = build_rule_gate_summary(
         _report(
             Finding("high", "cartesian-join", "cross join", "add join condition", 2),
-            Finding("medium", "predicate-pushdown", "pushable", "move predicate", 5),
+            Finding("medium", "predicate-not-pushed-to-cte", "pushable", "move predicate", 5),
         )
     )
 
@@ -133,4 +133,4 @@ def test_render_rule_gate_summary_uses_compact_human_block():
     assert "block[/dim]=1" in rendered
     assert "rewrite[/dim]=1" in rendered
     assert "cartesian-join" in rendered
-    assert "predicate-pushdown" in rendered
+    assert "predicate-not-pushed" in rendered

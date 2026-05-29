@@ -4,6 +4,7 @@ from __future__ import annotations
 import re
 
 from .. import Finding
+from ..rule_ids import RULE_CARTESIAN_JOIN
 
 
 def _line_of(sql: str, pattern: str) -> int:
@@ -36,7 +37,7 @@ def apply(sql: str, statements: list) -> list[Finding]:
                         seen_lines.add(line)
                         findings.append(Finding(
                             severity="high",
-                            rule_id="cartesian-join",
+                            rule_id=RULE_CARTESIAN_JOIN,
                             message="CROSS JOIN produces a cartesian product — every row × every row",
                             suggestion="Replace with INNER/LEFT JOIN ... ON <predicate>; if cartesian is intended, document why",
                             line=line,
@@ -49,7 +50,7 @@ def apply(sql: str, statements: list) -> list[Finding]:
                         seen_lines.add(line)
                         findings.append(Finding(
                             severity="high",
-                            rule_id="cartesian-join",
+                            rule_id=RULE_CARTESIAN_JOIN,
                             message="JOIN without ON/USING clause yields a cartesian product",
                             suggestion="Add an ON <predicate> clause to specify the join condition",
                             line=line,
@@ -64,7 +65,7 @@ def apply(sql: str, statements: list) -> list[Finding]:
         seen_lines.add(line)
         findings.append(Finding(
             severity="high",
-            rule_id="cartesian-join",
+            rule_id=RULE_CARTESIAN_JOIN,
             message="Comma-separated tables in FROM (implicit cross join) — easy to miss missing predicates",
             suggestion="Use explicit JOIN ... ON syntax to make the join condition explicit",
             line=line,

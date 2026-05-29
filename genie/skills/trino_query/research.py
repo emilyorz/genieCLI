@@ -1029,7 +1029,12 @@ def _run_optimization_loop(
 
     best_sql = original_sql
     best_metric = baseline_metric
+    best_metrics_obj = baseline["metrics"]  # v32 T2: track best candidate's full metrics
     history = []
+    # v32 T1: per-iteration re-diagnosis cache keyed by SQL (mirrors the MCP
+    # path). Seeded with the original block (already in the system prompt) so a
+    # stable best_sql is never re-diagnosed.
+    rediag_cache: dict[str, str] = {original_sql: directions_block}
 
     # ── Iteration loop ──
     for iteration in range(1, max_iterations + 1):
@@ -1050,6 +1055,24 @@ def _run_optimization_loop(
                 f"{_format_static_findings(static_report)}\n\n"
             )
 
+        # v32 T1: re-diagnose the current best_sql once it diverges from the
+        # original (the system-prompt directions describe original_sql). Zero
+        # query cost (static + EXPLAIN FORMAT JSON); cached by SQL so a stable
+        # best_sql is not re-diagnosed.
+        fresh_block = rediag_cache.get(best_sql)
+        if fresh_block is None:
+            try:
+                fresh_block = format_directions_for_prompt(
+                    _assemble_direct_directions(
+                        best_sql, static_analyze(best_sql), explain_runner,
+                        peak_memory_bytes=None,
+                    )
+                )
+            except Exception:
+                fresh_block = ""
+            rediag_cache[best_sql] = fresh_block
+        diag_line = f"{fresh_block}\n\n" if (fresh_block and best_sql != original_sql) else ""
+
         context = (
             f"[Trino Query Optimization — Iteration {iteration}]\n"
             f"Target metric: {metric_key} (lower is better)\n"
@@ -1058,6 +1081,7 @@ def _run_optimization_loop(
             f"Last iteration: {last_str}\n\n"
             f"{static_block}"
             f"Current SQL:\n```sql\n{best_sql}\n```\n\n"
+            f"{diag_line}"
             f"Return the COMPLETE optimized SQL in a ```sql block. ONE change only. "
             f"Do NOT include a trailing semicolon."
         )
@@ -1182,6 +1206,7 @@ def _run_optimization_loop(
         if improved:
             best_sql = candidate_sql
             best_metric = candidate_metric
+            best_metrics_obj = candidate["metrics"]  # v32 T2
             status = "KEPT"
             status_icon = "+"
         else:
@@ -1226,6 +1251,32 @@ def _run_optimization_loop(
                     f"optimization has plateaued."
                 )
                 break
+
+    # ── Direction efficacy (v32 T2) — observational attribution (mirrors MCP) ──
+    from genie.skills.mcp_trino.pre_execution_diagnosis import (
+        attribute_directions as _attribute_directions,
+        format_attribution_report as _format_attribution_report,
+    )
+    _ATTR_KEYS = (
+        "wall_time_ms", "query_time_ms", "cpu_time_ms",
+        "peak_memory_bytes", "physical_input_bytes", "processed_rows", "total_splits",
+    )
+
+    def _metrics_attr_map(m):
+        return {
+            k: float(getattr(m, k))
+            for k in _ATTR_KEYS
+            if isinstance(getattr(m, k, None), (int, float))
+        }
+
+    _outcomes = _attribute_directions(
+        directions, _metrics_attr_map(baseline["metrics"]), _metrics_attr_map(best_metrics_obj)
+    )
+    _attr_block = _format_attribution_report(_outcomes)
+    if _attr_block:
+        output.print("")
+        for _line in _attr_block.splitlines():
+            output.print(f"  {_line}")
 
     # ── Summary ──
     kept_count = sum(1 for h in history if h["status"] == "improved")

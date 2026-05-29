@@ -4,6 +4,7 @@ from __future__ import annotations
 import re
 
 from .. import Finding
+from ..rule_ids import RULE_SUBQUERY_IN_SELECT_PUSHABLE_TO_JOIN
 
 
 def apply(sql: str, statements: list) -> list[Finding]:
@@ -49,7 +50,7 @@ def apply(sql: str, statements: list) -> list[Finding]:
                 seen_lines.add(line)
                 findings.append(Finding(
                     severity="medium",
-                    rule_id="subquery-in-select-pushable-to-join",
+                    rule_id=RULE_SUBQUERY_IN_SELECT_PUSHABLE_TO_JOIN,
                     message="Scalar subquery in SELECT projection — Trino re-evaluates it per outer row when correlated",
                     suggestion="Rewrite as a LEFT JOIN against an aggregated subquery so the inner scan runs once",
                     line=line,

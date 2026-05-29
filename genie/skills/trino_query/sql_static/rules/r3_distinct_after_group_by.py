@@ -4,6 +4,7 @@ from __future__ import annotations
 import re
 
 from .. import Finding
+from ..rule_ids import RULE_REDUNDANT_DISTINCT_AFTER_GROUP_BY
 
 
 def _line_of_distinct(sql: str) -> int:
@@ -52,7 +53,7 @@ def apply(sql: str, statements: list) -> list[Finding]:
             seen_lines.add(line)
             findings.append(Finding(
                 severity="medium",
-                rule_id="redundant-distinct-after-group-by",
+                rule_id=RULE_REDUNDANT_DISTINCT_AFTER_GROUP_BY,
                 message="SELECT DISTINCT is redundant when GROUP BY already covers all projected non-aggregate columns",
                 suggestion="Drop DISTINCT — GROUP BY guarantees distinct rows over its keys",
                 line=line,

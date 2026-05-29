@@ -19,6 +19,17 @@ import re
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any
 
+from genie.skills.trino_query.sql_static.rule_ids import (
+    RULE_CARTESIAN_JOIN,
+    RULE_NULL_UNSAFE_EQUALS,
+    RULE_PREDICATE_NOT_PUSHED_TO_CTE,
+    RULE_REDUNDANT_CAST_CHAIN,
+    RULE_REDUNDANT_DISTINCT_AFTER_GROUP_BY,
+    RULE_SELECT_STAR,
+    RULE_SUBQUERY_IN_SELECT_PUSHABLE_TO_JOIN,
+    RULE_UNNECESSARY_ORDER_BY_IN_SUBQUERY,
+)
+
 # ---------------------------------------------------------------------------
 # Module-level thresholds — single source of truth
 # ---------------------------------------------------------------------------
@@ -79,14 +90,14 @@ def _sort_key(d: OptimizationDirection) -> tuple[int, int, str, str]:
 # ---------------------------------------------------------------------------
 
 _RULE_KIND_MAP: dict[str, str] = {
-    "cartesian-join": "fix-cartesian-join",
-    "select-star": "fix-select-star",
-    "distinct-after-group-by": "fix-distinct-after-group-by",
-    "order-by-in-subquery": "fix-order-by-in-subquery",
-    "subquery-in-select": "fix-subquery-in-select",
-    "predicate-pushdown": "fix-predicate-pushdown",
-    "null-unsafe-equals": "fix-null-unsafe-equals",
-    "redundant-cast": "fix-redundant-cast",
+    RULE_CARTESIAN_JOIN: "fix-cartesian-join",
+    RULE_SELECT_STAR: "fix-select-star",
+    RULE_REDUNDANT_DISTINCT_AFTER_GROUP_BY: "fix-distinct-after-group-by",
+    RULE_UNNECESSARY_ORDER_BY_IN_SUBQUERY: "fix-order-by-in-subquery",
+    RULE_SUBQUERY_IN_SELECT_PUSHABLE_TO_JOIN: "fix-subquery-in-select",
+    RULE_PREDICATE_NOT_PUSHED_TO_CTE: "fix-predicate-pushdown",
+    RULE_NULL_UNSAFE_EQUALS: "fix-null-unsafe-equals",
+    RULE_REDUNDANT_CAST_CHAIN: "fix-redundant-cast",
 }
 
 
@@ -585,6 +596,101 @@ def format_directions_report(
 
 
 # ---------------------------------------------------------------------------
+# Observational efficacy / attribution (v32 T2)
+# ---------------------------------------------------------------------------
+
+
+@dataclass(frozen=True)
+class DirectionOutcome:
+    """Observational record of whether a direction's target metric moved.
+
+    Attribution is observational, not causal: we only report whether the metric
+    the direction *targets* improved between baseline and best. When two or more
+    directions target the same metric, none can claim sole credit — they are
+    flagged ``co_attributed``.
+    """
+
+    kind: str
+    target_metric: str
+    baseline_value: float | None
+    best_value: float | None
+    delta: float | None          # best - baseline (negative == improved, lower is better)
+    observed_moved: bool
+    co_attributed: bool
+
+
+def attribute_directions(
+    directions: list[OptimizationDirection],
+    baseline_metrics: dict[str, float] | None,
+    best_metrics: dict[str, float] | None,
+    *,
+    epsilon: float = 0.0,
+) -> list[DirectionOutcome]:
+    """Map each direction to whether its target metric improved (observational).
+
+    ``baseline_metrics`` / ``best_metrics`` are ``{metric_name: value}`` maps.
+    A direction is ``observed_moved`` when its target metric dropped by more than
+    ``epsilon`` (lower is better). Directions sharing a target metric are
+    ``co_attributed`` so the report never assigns per-direction causal credit.
+    Never raises; missing metrics yield ``delta=None`` and ``observed_moved=False``.
+    """
+    if not directions:
+        return []
+    baseline_metrics = baseline_metrics or {}
+    best_metrics = best_metrics or {}
+    counts: dict[str, int] = {}
+    for d in directions:
+        counts[d.target_metric] = counts.get(d.target_metric, 0) + 1
+
+    outcomes: list[DirectionOutcome] = []
+    for d in directions:
+        tm = d.target_metric
+        base = baseline_metrics.get(tm)
+        best = best_metrics.get(tm)
+        delta: float | None = None
+        moved = False
+        if isinstance(base, (int, float)) and isinstance(best, (int, float)):
+            delta = float(best) - float(base)
+            moved = delta < -epsilon
+        outcomes.append(
+            DirectionOutcome(
+                kind=d.kind,
+                target_metric=tm,
+                baseline_value=float(base) if isinstance(base, (int, float)) else None,
+                best_value=float(best) if isinstance(best, (int, float)) else None,
+                delta=delta,
+                observed_moved=moved,
+                co_attributed=counts[tm] > 1,
+            )
+        )
+    return outcomes
+
+
+def format_attribution_report(outcomes: list[DirectionOutcome]) -> str:
+    """Render direction outcomes as a compact block, or "" when empty."""
+    if not outcomes:
+        return ""
+
+    def _fmt(v: float | None) -> str:
+        return "n/a" if v is None else f"{v:.0f}"
+
+    lines = [
+        "Direction efficacy (observational — did the targeted metric move?):",
+        "| Direction | Target metric | Baseline | Best | Delta | Moved | Attribution |",
+        "|---|---|---|---|---|---|---|",
+    ]
+    for o in outcomes:
+        delta = "n/a" if o.delta is None else f"{o.delta:+.0f}"
+        moved = "yes" if o.observed_moved else "no"
+        attribution = "co-attributed" if o.co_attributed else "sole"
+        lines.append(
+            f"| {o.kind} | {o.target_metric} | {_fmt(o.baseline_value)} | "
+            f"{_fmt(o.best_value)} | {delta} | {moved} | {attribution} |"
+        )
+    return "\n".join(lines)
+
+
+# ---------------------------------------------------------------------------
 # Public API
 # ---------------------------------------------------------------------------
 
@@ -633,9 +739,12 @@ def pre_execution_diagnosis(
 
 __all__ = [
     "OptimizationDirection",
+    "DirectionOutcome",
     "pre_execution_diagnosis",
+    "attribute_directions",
     "format_directions_for_prompt",
     "format_directions_report",
+    "format_attribution_report",
     "LARGE_SCAN_BYTES",
     "HIGH_PEAK_MEMORY_BYTES",
 ]

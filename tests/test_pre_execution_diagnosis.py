@@ -113,12 +113,12 @@ def test_should_map_known_rule_id_to_canonical_kind():
     known_rules = [
         ("cartesian-join", "fix-cartesian-join"),
         ("select-star", "fix-select-star"),
-        ("distinct-after-group-by", "fix-distinct-after-group-by"),
-        ("order-by-in-subquery", "fix-order-by-in-subquery"),
-        ("subquery-in-select", "fix-subquery-in-select"),
-        ("predicate-pushdown", "fix-predicate-pushdown"),
+        ("redundant-distinct-after-group-by", "fix-distinct-after-group-by"),
+        ("unnecessary-order-by-in-subquery", "fix-order-by-in-subquery"),
+        ("subquery-in-select-pushable-to-join", "fix-subquery-in-select"),
+        ("predicate-not-pushed-to-cte", "fix-predicate-pushdown"),
         ("null-unsafe-equals", "fix-null-unsafe-equals"),
-        ("redundant-cast", "fix-redundant-cast"),
+        ("redundant-cast-chain", "fix-redundant-cast"),
     ]
     for rule_id, expected_kind in known_rules:
         finding = _make_finding(rule_id=rule_id)

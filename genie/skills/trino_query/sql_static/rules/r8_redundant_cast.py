@@ -4,6 +4,7 @@ from __future__ import annotations
 import re
 
 from .. import Finding
+from ..rule_ids import RULE_REDUNDANT_CAST_CHAIN
 
 
 def apply(sql: str, statements: list) -> list[Finding]:
@@ -40,7 +41,7 @@ def apply(sql: str, statements: list) -> list[Finding]:
             )
             findings.append(Finding(
                 severity="low" if same_type else "low",
-                rule_id="redundant-cast-chain",
+                rule_id=RULE_REDUNDANT_CAST_CHAIN,
                 message=msg,
                 suggestion="Cast the original expression directly to the final target type once",
                 line=line,

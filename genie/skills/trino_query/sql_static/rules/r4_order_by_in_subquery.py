@@ -4,6 +4,7 @@ from __future__ import annotations
 import re
 
 from .. import Finding
+from ..rule_ids import RULE_UNNECESSARY_ORDER_BY_IN_SUBQUERY
 
 
 def apply(sql: str, statements: list) -> list[Finding]:
@@ -49,7 +50,7 @@ def apply(sql: str, statements: list) -> list[Finding]:
             seen_lines.add(key)
             findings.append(Finding(
                 severity="low",
-                rule_id="unnecessary-order-by-in-subquery",
+                rule_id=RULE_UNNECESSARY_ORDER_BY_IN_SUBQUERY,
                 message="ORDER BY inside a subquery/CTE without LIMIT — Trino is free to discard the ordering",
                 suggestion="Move ORDER BY to the outermost SELECT, or pair the inner ORDER BY with a LIMIT",
                 line=line,

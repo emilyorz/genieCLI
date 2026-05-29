@@ -640,7 +640,7 @@ def _build_mcp_explain_runner(client: McpClient):
     return _runner
 
 
-def _assemble_mcp_directions(client, sql, static_report, *, peak_memory_bytes=None):
+def _assemble_mcp_directions(client, sql, static_report, *, peak_memory_bytes=None, table_metadata=None):
     """Gather diagnostics → ranked directions at zero query-execution cost.
 
     Single source of truth for the three MCP call sites that need a diagnosis:
@@ -653,13 +653,18 @@ def _assemble_mcp_directions(client, sql, static_report, *, peak_memory_bytes=No
     from genie.skills.mcp_trino.pre_execution_diagnosis import pre_execution_diagnosis
     from .preflight import plan_cost
 
-    pre_table_metadata: list[TableMetadata] = []
-    diag_refs = [(c, s, t) for (c, s, t) in _extract_table_names(sql) if c and s]
-    if diag_refs:
-        try:
-            pre_table_metadata = _fetch_table_metadata(client, diag_refs)
-        except Exception:
-            pre_table_metadata = []
+    if table_metadata is not None:
+        # Reuse already-fetched metadata (same tables across a rewrite) to avoid
+        # a redundant catalog round-trip on per-iteration re-diagnosis (v32 T1).
+        pre_table_metadata = list(table_metadata)
+    else:
+        pre_table_metadata = []
+        diag_refs = [(c, s, t) for (c, s, t) in _extract_table_names(sql) if c and s]
+        if diag_refs:
+            try:
+                pre_table_metadata = _fetch_table_metadata(client, diag_refs)
+            except Exception:
+                pre_table_metadata = []
 
     explain_cost = None
     try:
@@ -1396,6 +1401,10 @@ def run_mcp_enhancement(
     best_metric = baseline.median_metric
     best_measure = baseline
     iterations: list[IterationRecord] = []
+    # v32 T1: cache of rendered direction blocks keyed by SQL. Seeded with the
+    # original (already in the system prompt) so a stable best_sql is never
+    # re-diagnosed; refreshed only when an improvement changes best_sql.
+    rediag_cache: dict[str, str] = {sql: directions_block}
 
     # ── Iteration loop ──
     for iteration in range(1, max_iterations + 1):
@@ -1409,6 +1418,27 @@ def run_mcp_enhancement(
             last = iterations[-1]
             last_str = f"{last.status} (metric={last.metric_value:.1f}, delta={last.delta:+.1f})"
 
+        # v32 T1: re-diagnose the CURRENT best_sql. The system-prompt directions
+        # describe the original query; once an improvement changes best_sql they
+        # go stale. Recompute at zero query cost (static + EXPLAIN FORMAT JSON;
+        # table metadata reused) and feed fresh directions into this turn. Cached
+        # by SQL, so an unchanged best_sql across iterations is not re-diagnosed.
+        fresh_block = rediag_cache.get(best_sql)
+        if fresh_block is None:
+            try:
+                _rd, _ = _assemble_mcp_directions(
+                    client, best_sql, static_analyze(best_sql),
+                    peak_memory_bytes=getattr(best_measure.metrics, "peak_memory_bytes", 0) or None,
+                    table_metadata=pre_table_metadata or None,
+                )
+                fresh_block = format_directions_for_prompt(_rd)
+            except Exception:
+                fresh_block = ""
+            rediag_cache[best_sql] = fresh_block
+        # Only inject when the query has actually changed (iter 1 is already
+        # covered by the system prompt) and the diagnosis produced directions.
+        diag_line = f"{fresh_block}\n\n" if (fresh_block and best_sql != sql) else ""
+
         context = (
             f"[Trino Query Enhancement — Iteration {iteration}]\n"
             f"Target metric: {metric_key} (lower is better)\n"
@@ -1416,6 +1446,7 @@ def run_mcp_enhancement(
             f"Current best: {best_metric:.1f}\n"
             f"Last iteration: {last_str}\n\n"
             f"Current SQL:\n```sql\n{best_sql}\n```\n\n"
+            f"{diag_line}"
             f"Return the COMPLETE optimized SQL in a ```sql block. ONE change only. "
             f"Do NOT include a trailing semicolon."
         )
@@ -1575,6 +1606,36 @@ def run_mcp_enhancement(
             metric_value=candidate_metric, delta=delta,
             hypothesis=hypothesis, sql=candidate_sql,
         ))
+
+    # ── Direction efficacy (v32 T2) ──
+    # Observational attribution: did each diagnosed direction's target metric
+    # actually improve from baseline to the final best? Rendered so "directed
+    # optimization" is measurable, not asserted. No causal claim — directions
+    # sharing a metric are flagged co-attributed.
+    from genie.skills.mcp_trino.pre_execution_diagnosis import (
+        attribute_directions,
+        format_attribution_report,
+    )
+    _ATTR_KEYS = (
+        "wall_time_ms", "query_time_ms", "cpu_time_ms",
+        "peak_memory_bytes", "physical_input_bytes", "processed_rows", "total_splits",
+    )
+
+    def _metrics_attr_map(m):
+        return {
+            k: float(getattr(m, k))
+            for k in _ATTR_KEYS
+            if isinstance(getattr(m, k, None), (int, float))
+        }
+
+    direction_outcomes = attribute_directions(
+        directions, _metrics_attr_map(baseline.metrics), _metrics_attr_map(best_measure.metrics)
+    )
+    attribution_block = format_attribution_report(direction_outcomes)
+    if output and attribution_block:
+        output.print("")
+        for _line in attribution_block.splitlines():
+            output.print(f"  {_line}")
 
     # ── EXPLAIN ANALYZE enhanced ──
     enhanced_explain: ExplainAnalyzeResult | None = None
