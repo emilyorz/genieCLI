@@ -303,3 +303,56 @@ def test_mcp_standard_loop_runs_when_long_query_opt_in_false():
     labels = [call.kwargs.get("label") for call in measure.call_args_list]
     assert labels == ["baseline", "iter 1 candidate"]
     assert report.enhanced_sql == cand_sql
+
+
+def test_mcp_falls_back_to_standard_loop_when_explain_has_no_estimates():
+    # A cluster without table statistics returns a plan but NO row/byte estimates.
+    # Plan-cost ranking is impossible there (every candidate would skip), so the
+    # optimizer must fall back to the standard measure loop, not silently do
+    # nothing. Regression test for the real-cluster no-stats case.
+    output = MagicMock()
+    client = _make_client()
+    baseline = _make_result(rows=100, wall_ms=10_000)
+    candidate = _make_result(rows=100, wall_ms=5_000)
+    cand_sql = "SELECT a FROM t WHERE a > 0"
+    no_estimates_plan = json.dumps({
+        "name": "TableScan[hive.default.t]",
+        "descriptor": {"table": "hive.default.t"},
+        "estimates": [],  # plan present, but NO cost estimates
+        "children": [],
+    })
+
+    def _runner(_sql):
+        return no_estimates_plan
+
+    provider = _llm_provider_with_replies([_wrap_sql(cand_sql)])
+    explain = ExplainAnalyzeResult(raw_text="", available=False)
+
+    with patch.object(mcp_research, "_build_mcp_explain_runner", return_value=_runner), \
+         patch.object(mcp_research, "_run_mcp_plan_cost_loop") as plan_loop, \
+         patch.object(mcp_research, "_execute_via_mcp", side_effect=_no_error_execute), \
+         patch.object(mcp_research, "_fetch_explain_analyze", return_value=explain), \
+         patch.object(mcp_research, "_assemble_mcp_directions", return_value=([], [])), \
+         patch.object(mcp_research, "_measure_mcp", side_effect=[baseline, candidate]) as measure:
+        report = mcp_research.run_mcp_enhancement(
+            client=client,
+            sql="SELECT * FROM t",
+            metric_key="wall_time_ms",
+            max_iterations=1,
+            verify_runs=1,
+            provider=provider,
+            model="m",
+            reasoning="disable",
+            output=output,
+            build_prompt=lambda *a, **k: "SKILL",
+            long_query_opt_in=True,  # opt-in TRUE but no estimates → must NOT use plan-cost
+        )
+
+    plan_loop.assert_not_called()
+    labels = [call.kwargs.get("label") for call in measure.call_args_list]
+    assert labels == ["baseline", "iter 1 candidate"]
+    assert report.enhanced_sql == cand_sql
+    printed = " ".join(
+        str(c.args[0]) for c in output.progress.call_args_list if c.args
+    )
+    assert "Plan-cost mode unavailable" in printed

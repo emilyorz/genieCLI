@@ -968,10 +968,28 @@ def _run_optimization_loop(
         }
 
     # ── v28 T4 dispatch: long-query plan-cost loop ──
-    # When the user opts into long-query mode AND we have an EXPLAIN runner,
-    # skip per-iteration execution; rank candidates by plan cost; verify only
-    # the top-K via real _measure with row-equivalence check.
+    # When the user opts into long-query mode AND EXPLAIN yields real cost
+    # ESTIMATES, skip per-iteration execution; rank candidates by plan cost;
+    # verify only the top-K via real _measure with row-equivalence check.
+    # A cluster without table statistics returns a plan but no estimates — then
+    # plan-cost ranking is impossible (every candidate skips), so fall back to
+    # the standard measure loop.
+    plan_cost_available = False
+    plan_seen_no_estimates = False
     if long_query_opt_in and explain_runner is not None:
+        from genie.skills.mcp_trino.preflight import plan_cost as _plan_cost_probe
+        try:
+            _pr, _pb, _pp = _plan_cost_probe(original_sql, explain_runner)
+            plan_cost_available = _pr is not None or _pb is not None
+            plan_seen_no_estimates = (not plan_cost_available) and _pp is not None
+        except Exception:
+            plan_cost_available = False
+    if plan_seen_no_estimates:
+        output.progress(
+            "  [info] Plan-cost mode unavailable: EXPLAIN returned a plan but no cost "
+            "estimates (table statistics missing — run ANALYZE). Using standard iteration loop."
+        )
+    if plan_cost_available:
         return _run_plan_cost_loop(
             provider=provider,
             model=model,

@@ -1681,14 +1681,23 @@ def run_mcp_enhancement(
 
     mcp_explain_runner = _build_mcp_explain_runner(client)
     mcp_explain_available = False
+    mcp_plan_seen_no_estimates = False
     if long_query_opt_in and max_iterations > 0 and mcp_explain_runner is not None:
         try:
             rows_est, bytes_est, raw_plan = plan_cost(sql, mcp_explain_runner)
-            mcp_explain_available = (
-                rows_est is not None or bytes_est is not None or raw_plan is not None
-            )
+            # Plan-cost ranking needs real row/byte ESTIMATES, not just a plan.
+            # A cluster without table statistics returns a plan with no estimates
+            # (CBO can't estimate) — in that case every candidate would skip and
+            # the loop would do nothing, so fall back to the standard measure loop.
+            mcp_explain_available = rows_est is not None or bytes_est is not None
+            mcp_plan_seen_no_estimates = (not mcp_explain_available) and raw_plan is not None
         except Exception:
             mcp_explain_available = False
+    if output and mcp_plan_seen_no_estimates:
+        output.progress(
+            "  [info] Plan-cost mode unavailable: EXPLAIN returned a plan but no cost "
+            "estimates (table statistics missing — run ANALYZE). Using standard iteration loop."
+        )
 
     # ── Per-candidate wall-clock kill (best-effort) ──
     # mcp-trino may or may not persist SET SESSION across separate tool calls.
