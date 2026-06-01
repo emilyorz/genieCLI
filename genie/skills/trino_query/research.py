@@ -846,6 +846,7 @@ def _run_optimization_loop(
     from genie.session.manager import new_msg, new_session
     from genie.skills.mcp_trino.preflight import detect_no_data_reason
     from genie.skills.trino_query.sql_static import analyze as static_analyze
+    from genie.skills.trino_query.sql_static import summary_line as _static_summary_line
 
     # ── Static analysis (cheap; runs in both paths) ──
     try:
@@ -853,6 +854,8 @@ def _run_optimization_loop(
     except Exception as exc:
         output.progress(f"  [warn] static analysis skipped: {exc}")
         static_report = None
+    if static_report is not None:
+        output.progress(f"  Static analysis: {_static_summary_line(static_report)}")
 
     # ── --diagnose-only short-circuit (v29 T3): zero query cost ──
     # No baseline, no iteration loop, no EXPLAIN ANALYZE. EXPLAIN (FORMAT JSON)

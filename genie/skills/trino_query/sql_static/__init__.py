@@ -130,4 +130,21 @@ def analyze(sql: str) -> StaticAnalysisReport:
     return StaticAnalysisReport(findings=findings)
 
 
-__all__ = ["Finding", "StaticAnalysisReport", "analyze"]
+def summary_line(report: "StaticAnalysisReport | None") -> str:
+    """One-line human/log summary of a static analysis report.
+
+    Used to surface the (otherwise silent) static-analysis step in the
+    `/trino-research` console output so the user can see the rules ran and what
+    they found — and so it doubles as a debug log.
+    """
+    if report is None:
+        return "skipped"
+    if getattr(report, "parse_error", None):
+        return f"parse error ({report.parse_error})"
+    if not report.findings:
+        return "no issues found"
+    rules = ", ".join(sorted({f.rule_id for f in report.findings}))
+    return f"{report.summary} — {rules}"
+
+
+__all__ = ["Finding", "StaticAnalysisReport", "analyze", "summary_line"]

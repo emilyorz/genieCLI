@@ -1553,12 +1553,15 @@ def run_mcp_enhancement(
 
     # ── Static analysis (cheap; runs in both has-data and no-data paths) ──
     from genie.skills.trino_query.sql_static import analyze as static_analyze
+    from genie.skills.trino_query.sql_static import summary_line as _static_summary_line
     try:
         static_report = static_analyze(sql)
     except Exception as exc:
         if output:
             output.progress(f"  [warn] static analysis skipped: {exc}")
         static_report = None
+    if output and static_report is not None:
+        output.progress(f"  Static analysis: {_static_summary_line(static_report)}")
 
     from .preflight import (
         DEFAULT_LONG_QUERY_THRESHOLD_S,
