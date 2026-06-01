@@ -114,7 +114,7 @@ def test_plan_cost_loop_picks_lowest_cost_when_l3_passes():
             explain_runner=runner,
             max_fallbacks=3,
         )
-    assert measure.call_args.kwargs["timeout_ms"] == 80_000
+    assert measure.call_args.kwargs["timeout_ms"] == 160_000  # 80s baseline × 2x headroom
     assert result["status"] == "completed"
     assert result["mode"] == "plan_cost"
     assert result["best_sql"] == cand_b  # lower plan cost won

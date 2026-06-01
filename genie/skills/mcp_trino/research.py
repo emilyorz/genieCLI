@@ -725,15 +725,29 @@ def _measure_mcp(client: McpClient, sql: str, metric_key: str,
             ea_label = f"{label}: explain-analyze backfill {i + 1}/{runs}"
             if timeout_ms is not None:
                 ea_label = f"{ea_label} limit={timeout_ms / 1000.0:.1f}s"
-            if output and hasattr(output, "status"):
-                with output.status(ea_label):
+            # The EXPLAIN ANALYZE backfill only ENRICHES cpu/memory stats; it
+            # re-runs the query with instrumentation and is normally slower than
+            # the plain run, so it must NOT inherit the candidate kill-timeout —
+            # otherwise a slow backfill rejects an otherwise-valid candidate
+            # (and the primary metric, query_time_ms, is already measured above).
+            # Keep the plain-run metrics if the backfill times out or errors.
+            try:
+                if output and hasattr(output, "status"):
+                    with output.status(ea_label):
+                        ea = _fetch_explain_analyze(
+                            client, sql, timeout_ms=timeout_ms, label=f"{label} explain-analyze backfill",
+                        )
+                else:
                     ea = _fetch_explain_analyze(
                         client, sql, timeout_ms=timeout_ms, label=f"{label} explain-analyze backfill",
                     )
-            else:
-                ea = _fetch_explain_analyze(
-                    client, sql, timeout_ms=timeout_ms, label=f"{label} explain-analyze backfill",
-                )
+            except CandidateTimeoutError:
+                ea = ExplainAnalyzeResult(raw_text="backfill exceeded timeout", available=False)
+                if output:
+                    output.progress(
+                        "    [dim]explain-analyze backfill skipped (over candidate timeout) "
+                        "— ranking on measured query_time_ms[/dim]"
+                    )
             if ea.available:
                 metrics.cpu_time_ms = ea.total_cpu_ms
                 metrics.wall_time_ms = ea.total_wall_ms
@@ -843,7 +857,13 @@ def _run_mcp_plan_cost_loop(
 
     baseline_metric = baseline.median_metric
     if candidate_timeout_ms is None:
-        baseline_wall_ms = float(baseline.metrics.wall_time_ms or baseline.metrics.query_time_ms or 0)
+        # Use the LARGER of the measured end-to-end query time and the (often 0
+        # or tiny, EXPLAIN-stage-derived) wall time, so the kill-timeout basis
+        # never under-estimates how long baseline actually took.
+        baseline_wall_ms = float(max(
+            baseline.metrics.query_time_ms or 0,
+            baseline.metrics.wall_time_ms or 0,
+        ))
         candidate_timeout_ms = make_candidate_timeout_ms(baseline_wall_ms) if baseline_wall_ms > 0 else None
 
     baseline_rows_est, baseline_bytes_est, baseline_plan = plan_cost(

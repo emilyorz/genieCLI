@@ -217,6 +217,10 @@ def run_preflight(
 DEFAULT_LONG_QUERY_THRESHOLD_S = 60
 DEFAULT_MAX_FALLBACKS = 3
 PER_CANDIDATE_TIMEOUT_FACTOR = 1.0
+# Per-candidate kill-timeout headroom: a candidate is only killed when it runs
+# substantially slower than baseline (2x), not at baseline speed. Kept separate
+# from PER_CANDIDATE_TIMEOUT_FACTOR (which models the gate's worst-case total).
+CANDIDATE_TIMEOUT_HEADROOM = 2.0
 
 
 class CandidateTimeoutError(TimeoutError):
@@ -335,9 +339,17 @@ def make_query_max_run_time_sql(baseline_wall_ms: float) -> str:
 
 
 def make_candidate_timeout_ms(baseline_wall_ms: float) -> int:
-    """Return the per-candidate timeout derived from baseline wall time."""
+    """Return the per-candidate kill-timeout derived from baseline wall time.
+
+    Uses ``CANDIDATE_TIMEOUT_HEADROOM`` (> 1) so a candidate that runs at roughly
+    baseline speed is NOT killed — only candidates substantially slower than
+    baseline are. The 2s floor protects fast baselines (a sub-second baseline
+    must not produce a sub-second timeout that the candidate's own EXPLAIN /
+    measurement overhead would blow through). The long-query gate's worst-case
+    prediction keeps using ``PER_CANDIDATE_TIMEOUT_FACTOR`` separately.
+    """
     import math
-    return max(1000, int(math.ceil(baseline_wall_ms * PER_CANDIDATE_TIMEOUT_FACTOR)))
+    return max(2000, int(math.ceil(baseline_wall_ms * CANDIDATE_TIMEOUT_HEADROOM)))
 
 
 def apply_safe_limit(sql: str, limit: int) -> str:

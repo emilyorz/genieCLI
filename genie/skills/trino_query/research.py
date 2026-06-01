@@ -181,12 +181,21 @@ def _measure(
 
 
 def _baseline_wall_ms(metrics) -> float:
-    """Best available wall-clock duration from Trino metrics."""
+    """Best available wall-clock duration from Trino metrics.
+
+    Takes the LARGEST available numeric measure so the per-candidate kill-timeout
+    basis never under-estimates baseline (the EXPLAIN-stage wall_time is often
+    0/tiny). Non-numeric attribute values are treated as 0.
+    """
+    def _num(v) -> float:
+        return float(v) if isinstance(v, (int, float)) and not isinstance(v, bool) else 0.0
+
     return float(
-        getattr(metrics, "wall_time_ms", 0)
-        or getattr(metrics, "elapsed_time_ms", 0)
-        or getattr(metrics, "query_time_ms", 0)
-        or 0
+        max(
+            _num(getattr(metrics, "query_time_ms", 0)),
+            _num(getattr(metrics, "wall_time_ms", 0)),
+            _num(getattr(metrics, "elapsed_time_ms", 0)),
+        )
     )
 
 

@@ -248,20 +248,20 @@ class TestLongQueryGate:
 
 class TestMakeQueryMaxRunTimeSql:
     def test_builds_valid_set_session_syntax(self):
-        sql = make_query_max_run_time_sql(10_000)  # 10s baseline
-        assert sql == "SET SESSION query_max_run_time = '10000ms'"
+        sql = make_query_max_run_time_sql(10_000)  # 10s baseline → 2x headroom
+        assert sql == "SET SESSION query_max_run_time = '20000ms'"
 
-    def test_clamps_tiny_baseline_to_1000ms_minimum(self):
-        sql = make_query_max_run_time_sql(100)  # would be 100ms otherwise
-        assert sql == "SET SESSION query_max_run_time = '1000ms'"
+    def test_clamps_tiny_baseline_to_2000ms_minimum(self):
+        sql = make_query_max_run_time_sql(100)  # would be 200ms otherwise → 2s floor
+        assert sql == "SET SESSION query_max_run_time = '2000ms'"
 
     def test_rounds_up_fractional_ms(self):
-        sql = make_query_max_run_time_sql(10_000.4)
-        assert sql == "SET SESSION query_max_run_time = '10001ms'"
+        sql = make_query_max_run_time_sql(10_000.4)  # *2 = 20000.8 → ceil
+        assert sql == "SET SESSION query_max_run_time = '20001ms'"
 
     def test_one_hour_baseline(self):
-        sql = make_query_max_run_time_sql(3_600_000)  # 1h
-        assert sql == "SET SESSION query_max_run_time = '3600000ms'"
+        sql = make_query_max_run_time_sql(3_600_000)  # 1h → 2x headroom
+        assert sql == "SET SESSION query_max_run_time = '7200000ms'"
 
 
 class TestApplySafeLimit:
