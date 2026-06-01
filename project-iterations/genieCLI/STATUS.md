@@ -5,22 +5,23 @@
 
 ## Active Iteration
 
-- **Ledger:** [CURRENT.md](CURRENT.md) holds **v31** (last _formal_ strict-V3 iteration, DONE). **v32 shipped as an out-of-process hotfix** — see [archive/v32.md](archive/v32.md).
-- **Status:** v31 (formal) + v32 (deviation hotfix) both complete and on `main`. **No iteration currently active — ready to start v33.**
-- **v32 (out-of-process, on `main` `12e954a`):** rule_id contract repair (revived v31's never-firing rule-gate `REWRITE` class) + per-iteration re-diagnosis + observational direction efficacy, both paths. **809 pass.** Built hooks-off (V3 deviation, no telemetry) after the live-hook bootstrap dead-locked three times — full retro in archive/v32.md.
+- **Ledger:** [CURRENT.md](CURRENT.md) holds **v31** (last _formal_ strict-V3 iteration, DONE). v32 + v33 shipped as out-of-process iterations — see [archive/v32.md](archive/v32.md), [archive/v33.md](archive/v33.md).
+- **Status:** v31 (formal) + v32 + v33 (deviation iterations) all complete and on `main`. **No iteration currently active — ready to start v34.**
+- **v33 (out-of-process, orchestrated):** MCP long-query plan-cost parity (T1, quality-verified 9.3) + dual-path real-rule*id equivalence test (T2) + memory-pressure threshold calibration **mechanism** (T3 — \_not yet wired to a live limit*, see residual #1). **819 pass.** Hooks-off deviation but with **full dispatched review** (Claude orchestrator + local Codex executor + sonnet spec-verifier + opus quality-verifier). Full retro: archive/v33.md.
+- **v32 (on `main` `12e954a`):** rule_id contract repair (revived v31's never-firing `REWRITE` class) + per-iteration re-diagnosis + observational direction efficacy. archive/v32.md.
 - **Touched features:** [trino-research](features/trino-research.md)
-- **Last commit:** `12e954a` (v32) → merged to `main` `1fc1f81`.
-- **Resume action:** Start the next product change as **v33**. NOTE: `CURRENT.md` still reads v31 because v32 was out-of-process (a DONE strict CURRENT.md would require dispatch telemetry that v32 honestly never produced); v33 PLAN creates the next formal CURRENT.md and consumes the v32 residual below. For a Claude-Code-driven iteration, author CURRENT.md **atomically** OR run **hooks-off as a documented deviation** — do NOT switch activation `runtime` mid-iteration (it orphans telemetry and hard-blocks every tool).
+- **Last commit:** v33 (T1+T2+T3) → on `main`.
+- **Resume action:** Start the next product change as **v34**; consume the v33 residual below. `CURRENT.md` still reads v31 (v32/v33 were out-of-process). If v34 runs via the **codex-runner under live hooks** it authors the next formal CURRENT.md; if **Claude-orchestrated**, run hooks-off + dispatched review + an archive record (the v33 model) — do NOT switch activation `runtime` mid-iteration.
 
-## Next Iteration Focus (v33 — carryover from v32 retro)
+## Next Iteration Focus (v34 — carryover from v33 retro)
 
-From v32 retro (see [archive/v32.md](archive/v32.md)):
+From v33 retro (see [archive/v33.md](archive/v33.md)):
 
-1. ⭐ P1 — **T3 (deferred from v32):** dual-path unmocked equivalence test using **REAL rule_ids** + close the **MCP long-query plan-cost asymmetry** (MCP runs `_measure_mcp` per iter while `--direct` uses `_run_plan_cost_loop`) + feature-doc parity.
-2. ⭐ P1 — **T4 (deferred from v32):** memory-pressure threshold calibration from `query.max-memory-per-node`/session (currently hard-coded 1 GiB) + cite official Trino docs in rule files.
-3. ⭐ P1 — Upgrade `validate_ledger.py` to recognize the v3 ledger schema (v29→v31 promote, still unaddressed → v3 ledgers still need blanket `--no-verify`).
+1. ⭐ P1 — **T3 live wiring (#1):** read `query.max-memory-per-node` (MCP `SHOW SESSION`) and pass it into `pre_execution_diagnosis`; validate against a real cluster. Until wired, memory-pressure uses the 1 GiB fallback (v33's mechanism is calibratable but not calibrated).
+2. ⭐ P1 — **Strengthen + clean:** pin expected kinds for all 8 rules in the dual-path equivalence test (T2 gap); remove the dead `mcp_explain_runner is not None` sub-condition; track/​fix the partial-EXPLAIN cost distortion `(rows or 0)*(bytes or 1)` (both paths) + extract the shared plan-cost iteration core before a 3rd copy.
+3. ⭐ P1 — Upgrade `validate_ledger.py` to recognize the v3 ledger schema (carried v29→v33, still open → v3 ledgers still need blanket `--no-verify`).
 
-(3 promotes — at cap.) Also open, below cap: MCP-path T2 efficacy **integration** test (loop-driven, not just unit+mirror); **process** — a Claude-Code V3 iteration must be authored atomically-or-hooks-off, never switching activation runtime mid-iteration. Backlog: EXPLAIN depth (join distribution/build-side); `--direct` permanent `table_metadata=None` asymmetry; LH-PRISM predictive cost engine.
+(3 promotes — at cap.) **Process (carried):** strict-V3 telemetry bottlenecks ad-hoc iterations on BOTH runtimes (dead-locked 3 Claude sessions + stalled 1 Codex, all on ceremony) — reserve full strict V3 for codex-runner iterations; ad-hoc work = hooks-off + dispatched review + archive record. Backlog: EXPLAIN depth (join distribution/build-side); `--direct` permanent `table_metadata=None` asymmetry; LH-PRISM predictive cost engine.
 
 ## Active Parks
 
@@ -47,13 +48,14 @@ From v32 retro (see [archive/v32.md](archive/v32.md)):
 
 ## Feature Index
 
-| Feature        | Doc                                                      | Last touched                                                                                                                 |
-| -------------- | -------------------------------------------------------- | ---------------------------------------------------------------------------------------------------------------------------- |
-| trino-research | [features/trino-research.md](features/trino-research.md) | v32 (rule_id contract repair + per-iteration re-diagnosis + observational direction efficacy; out-of-process hotfix on main) |
-| mcp-banner     | [features/mcp-banner.md](features/mcp-banner.md)         | v26 (fast-fail 200ms probe; 14× cold-start improvement)                                                                      |
+| Feature        | Doc                                                      | Last touched                                                                                                                                 |
+| -------------- | -------------------------------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------- |
+| trino-research | [features/trino-research.md](features/trino-research.md) | v33 (MCP long-query plan-cost parity + dual-path rule_id equivalence test + memory-threshold calibration mechanism; out-of-process, on main) |
+| mcp-banner     | [features/mcp-banner.md](features/mcp-banner.md)         | v26 (fast-fail 200ms probe; 14× cold-start improvement)                                                                                      |
 
 ## Archive
 
+- [archive/v33.md](archive/v33.md) — directed-loop continuation (out-of-process, hooks-off + full dispatched review): MCP long-query plan-cost parity (T1, quality 9.3) + dual-path real-rule_id equivalence test (T2) + memory-threshold calibration mechanism (T3, not yet wired to a live limit); 819 pass; orchestrator=Claude, executor=local Codex CLI, verifiers=Claude sonnet/opus
 - [archive/v32.md](archive/v32.md) — directed-loop repair (out-of-process hotfix, V3 deviation): rule_id contract fix (revived v31's never-firing rule-gate `REWRITE` class) + per-iteration re-diagnosis + observational direction efficacy, both paths; 809 pass; commit `12e954a` on main
 - [archive/v31.md](archive/v31.md) — rule-first pre-AI gate (BLOCK/REWRITE/ADVISE/PASS) with compact TUI + shared MCP/direct/plan-cost behavior; 799 pass; commits `bc82bdf`/`21ca729`/`f274f10`
 - [archive/v29.md](archive/v29.md) — directed pre-execution diagnosis (LH-PRISM) on both paths: ranked `OptimizationDirection` injected pre-iter-1 + zero-cost long-query report (`--diagnose-only`/gate-trip) + dual-path symmetry test; C2 hypothesis-structure closed; 781 pass 0 skip; built v3-strict (label `v3-deviation`, enforcement via dispatched spec+quality verifiers not live hooks); commits `006a2f9`/`62e4503`/`4acb7c4`

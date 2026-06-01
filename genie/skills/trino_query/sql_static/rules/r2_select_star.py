@@ -13,6 +13,9 @@ def apply(sql: str, statements: list) -> list[Finding]:
     except ImportError:
         return []
 
+    # Trino projection pushdown reference: explicit columns let the connector
+    # limit TableScan access to the relevant projected columns.
+    # https://trino.io/docs/current/optimizer/pushdown.html#projection-pushdown
     findings: list[Finding] = []
     seen_lines: set[int] = set()
     search_pos = 0

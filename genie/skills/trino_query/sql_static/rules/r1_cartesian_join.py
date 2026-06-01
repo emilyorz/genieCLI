@@ -18,6 +18,10 @@ def apply(sql: str, statements: list) -> list[Finding]:
     except ImportError:
         return []
 
+    # Trino join optimization reference: broadcast vs partitioned joins and
+    # cross-join elimination both depend on usable join shape/statistics.
+    # https://trino.io/docs/current/optimizer/cost-based-optimizations.html#join-distribution-selection
+    # https://trino.io/docs/current/optimizer/cost-based-optimizations.html#join-enumeration
     findings: list[Finding] = []
     seen_lines: set[int] = set()
 

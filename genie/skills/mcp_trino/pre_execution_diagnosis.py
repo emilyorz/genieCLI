@@ -6,7 +6,8 @@ diagnostics and returns a ranked list of OptimizationDirection objects.
 Public API
 ----------
 pre_execution_diagnosis(sql, *, static_report, explain_cost,
-                        table_metadata, peak_memory_bytes)
+                        table_metadata, peak_memory_bytes,
+                        peak_memory_limit_bytes)
     -> list[OptimizationDirection]
 
 All input arguments are optional (keyword-only, default None).  The function
@@ -35,11 +36,29 @@ from genie.skills.trino_query.sql_static.rule_ids import (
 # ---------------------------------------------------------------------------
 
 LARGE_SCAN_BYTES: int = 1 * 1024**3       # 1 GiB — bytes_est above which reduce-scan emits
-HIGH_PEAK_MEMORY_BYTES: int = 1 * 1024**3  # 1 GiB — peak/build-side above which memory-pressure emits
+HIGH_PEAK_MEMORY_BYTES: int = 1 * 1024**3  # 1 GiB fallback when no cluster/session memory limit is supplied
+MEMORY_PRESSURE_FRACTION: float = 0.5      # warn once peak/build-side exceeds this fraction of the per-node limit
 HIGH_SEVERITY_SCAN_MULTIPLIER: int = 10    # bytes_est above this × LARGE_SCAN_BYTES → reduce-scan is "high"
 COMPLEX_CTE_COUNT: int = 3                 # chained WITH steps above this are worth diagnosis
 HEAVY_CTE_COUNT: int = 2                   # JOIN/GROUP/window/set-heavy CTE steps above this trigger materialization advice
 REPEATED_RAW_SCAN_COUNT: int = 2            # same likely-raw table seen at least this many times
+
+
+def _memory_pressure_threshold(peak_memory_limit_bytes: Any = None) -> int:
+    """Return the memory-pressure threshold.
+
+    If callers know the effective Trino ``query.max-memory-per-node`` value,
+    derive the warning threshold as a documented fraction of that per-worker
+    limit. Otherwise keep the historical 1 GiB fallback.
+
+    Trino reference:
+    https://trino.io/docs/current/admin/properties-resource-management.html#query-max-memory-per-node
+    """
+    if isinstance(peak_memory_limit_bytes, bool):
+        return HIGH_PEAK_MEMORY_BYTES
+    if isinstance(peak_memory_limit_bytes, (int, float)) and peak_memory_limit_bytes > 0:
+        return max(1, int(peak_memory_limit_bytes * MEMORY_PRESSURE_FRACTION))
+    return HIGH_PEAK_MEMORY_BYTES
 
 # ---------------------------------------------------------------------------
 # Evidence-prefix → sort rank mapping (lower = higher priority)
@@ -302,7 +321,11 @@ def _max_non_leaf_output_bytes(node: Any) -> int | None:
     return local_max
 
 
-def _explain_cost_contributor(explain_cost: Any) -> list[OptimizationDirection]:
+def _explain_cost_contributor(
+    explain_cost: Any,
+    *,
+    peak_memory_limit_bytes: Any = None,
+) -> list[OptimizationDirection]:
     """Emit reduce-scan and/or memory-pressure from plan estimates."""
     if explain_cost is None:
         return []
@@ -335,10 +358,11 @@ def _explain_cost_contributor(explain_cost: Any) -> list[OptimizationDirection]:
         )
 
     # memory-pressure: max non-leaf build-side from plan tree
+    memory_threshold = _memory_pressure_threshold(peak_memory_limit_bytes)
     if isinstance(raw_plan_json, dict):
         try:
             max_build_bytes = _max_non_leaf_output_bytes(raw_plan_json)
-            if max_build_bytes is not None and max_build_bytes > HIGH_PEAK_MEMORY_BYTES:
+            if max_build_bytes is not None and max_build_bytes > memory_threshold:
                 directions.append(
                     OptimizationDirection(
                         kind="memory-pressure",
@@ -433,13 +457,18 @@ def _metadata_contributor(table_metadata: Any) -> list[OptimizationDirection]:
 # ---------------------------------------------------------------------------
 
 
-def _memory_contributor(peak_memory_bytes: Any) -> list[OptimizationDirection]:
+def _memory_contributor(
+    peak_memory_bytes: Any,
+    *,
+    peak_memory_limit_bytes: Any = None,
+) -> list[OptimizationDirection]:
     """Emit memory-pressure from actual runtime peak memory."""
     if peak_memory_bytes is None:
         return []
     if not isinstance(peak_memory_bytes, (int, float)):
         return []
-    if peak_memory_bytes > HIGH_PEAK_MEMORY_BYTES:
+    memory_threshold = _memory_pressure_threshold(peak_memory_limit_bytes)
+    if peak_memory_bytes > memory_threshold:
         return [
             OptimizationDirection(
                 kind="memory-pressure",
@@ -702,6 +731,7 @@ def pre_execution_diagnosis(
     explain_cost: Any = None,
     table_metadata: Any = None,
     peak_memory_bytes: int | None = None,
+    peak_memory_limit_bytes: int | None = None,
 ) -> list[OptimizationDirection]:
     """Combine diagnostics into a ranked list of optimization directions.
 
@@ -719,6 +749,10 @@ def pre_execution_diagnosis(
         List of TableMetadata (duck-typed) or None.
     peak_memory_bytes:
         Actual peak memory from a completed query run, or None.
+    peak_memory_limit_bytes:
+        Effective Trino ``query.max-memory-per-node`` in bytes, or None. When
+        supplied, memory-pressure uses ``MEMORY_PRESSURE_FRACTION`` of this
+        value; when None, the historical 1 GiB fallback is preserved.
 
     Returns
     -------
@@ -728,9 +762,19 @@ def pre_execution_diagnosis(
     directions: list[OptimizationDirection] = []
     directions.extend(_static_contributor(static_report))
     directions.extend(_sql_shape_contributor(sql))
-    directions.extend(_explain_cost_contributor(explain_cost))
+    directions.extend(
+        _explain_cost_contributor(
+            explain_cost,
+            peak_memory_limit_bytes=peak_memory_limit_bytes,
+        )
+    )
     directions.extend(_metadata_contributor(table_metadata))
-    directions.extend(_memory_contributor(peak_memory_bytes))
+    directions.extend(
+        _memory_contributor(
+            peak_memory_bytes,
+            peak_memory_limit_bytes=peak_memory_limit_bytes,
+        )
+    )
 
     # Stable deterministic sort: (severity_rank, source_rank, kind)
     directions.sort(key=_sort_key)
@@ -747,4 +791,5 @@ __all__ = [
     "format_attribution_report",
     "LARGE_SCAN_BYTES",
     "HIGH_PEAK_MEMORY_BYTES",
+    "MEMORY_PRESSURE_FRACTION",
 ]

@@ -13,6 +13,7 @@ import pytest
 from genie.skills.mcp_trino.pre_execution_diagnosis import (
     HIGH_PEAK_MEMORY_BYTES,
     LARGE_SCAN_BYTES,
+    MEMORY_PRESSURE_FRACTION,
     OptimizationDirection,
     format_directions_for_prompt,
     pre_execution_diagnosis,
@@ -510,6 +511,71 @@ def test_should_not_emit_memory_pressure_when_peak_at_or_below_threshold():
 
     runtime_dirs = [d for d in result if d.evidence.startswith("runtime:")]
     assert runtime_dirs == []
+
+
+def test_should_derive_runtime_memory_threshold_from_supplied_per_node_limit():
+    per_node_limit = 8 * 1024**3
+    derived_threshold = int(per_node_limit * MEMORY_PRESSURE_FRACTION)
+
+    under = pre_execution_diagnosis(
+        "SELECT 1",
+        peak_memory_bytes=derived_threshold - 1,
+        peak_memory_limit_bytes=per_node_limit,
+    )
+    over = pre_execution_diagnosis(
+        "SELECT 1",
+        peak_memory_bytes=derived_threshold + 1,
+        peak_memory_limit_bytes=per_node_limit,
+    )
+
+    assert [d for d in under if d.evidence.startswith("runtime:")] == []
+    over_runtime = [d for d in over if d.evidence.startswith("runtime:")]
+    assert len(over_runtime) == 1
+    assert over_runtime[0].kind == "memory-pressure"
+
+
+def test_should_derive_explain_memory_threshold_from_supplied_per_node_limit():
+    per_node_limit = 8 * 1024**3
+    derived_threshold = int(per_node_limit * MEMORY_PRESSURE_FRACTION)
+
+    under = pre_execution_diagnosis(
+        "SELECT 1",
+        explain_cost=(None, None, _large_plan_with_non_leaf_build(derived_threshold - 1)),
+        peak_memory_limit_bytes=per_node_limit,
+    )
+    over = pre_execution_diagnosis(
+        "SELECT 1",
+        explain_cost=(None, None, _large_plan_with_non_leaf_build(derived_threshold + 1)),
+        peak_memory_limit_bytes=per_node_limit,
+    )
+
+    assert [
+        d for d in under
+        if d.kind == "memory-pressure" and d.evidence.startswith("explain:")
+    ] == []
+    over_explain = [
+        d for d in over
+        if d.kind == "memory-pressure" and d.evidence.startswith("explain:")
+    ]
+    assert len(over_explain) == 1
+
+
+def test_should_use_one_gib_memory_threshold_when_limit_is_none():
+    under = pre_execution_diagnosis(
+        "SELECT 1",
+        peak_memory_bytes=HIGH_PEAK_MEMORY_BYTES,
+        peak_memory_limit_bytes=None,
+    )
+    over = pre_execution_diagnosis(
+        "SELECT 1",
+        peak_memory_bytes=HIGH_PEAK_MEMORY_BYTES + 1,
+        peak_memory_limit_bytes=None,
+    )
+
+    assert [d for d in under if d.evidence.startswith("runtime:")] == []
+    assert [d.kind for d in over if d.evidence.startswith("runtime:")] == [
+        "memory-pressure"
+    ]
 
 
 # ---------------------------------------------------------------------------

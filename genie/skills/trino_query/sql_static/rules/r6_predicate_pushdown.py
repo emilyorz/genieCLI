@@ -16,6 +16,11 @@ def apply(sql: str, statements: list) -> list[Finding]:
     except ImportError:
         return []
 
+    # Trino predicate pushdown reference: WHERE-derived filters can be pushed
+    # into the data source to omit unnecessary rows.
+    # https://trino.io/docs/current/optimizer/pushdown.html#predicate-pushdown
+    # Connector-specific pruning reference: Hive dynamic partition pruning.
+    # https://trino.io/docs/current/connector/hive.html#dynamic-filtering
     findings: list[Finding] = []
     seen_lines: set[int] = set()
 

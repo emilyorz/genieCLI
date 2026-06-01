@@ -792,6 +792,371 @@ def _results_equivalent(rows_a: list, rows_b: list) -> tuple[bool, str]:
     return True, "exact match"
 
 
+# ---------------------------------------------------------------------------
+# Long-query plan-cost loop (MCP parity)
+# ---------------------------------------------------------------------------
+
+def _run_mcp_plan_cost_loop(
+    *,
+    client: McpClient,
+    provider,
+    model: str,
+    reasoning: str,
+    original_sql: str,
+    metric_key: str,
+    max_iterations: int,
+    verify_runs: int,
+    output,
+    build_prompt: Callable[..., str] | None,
+    baseline: MeasureResult,
+    static_report,
+    explain_runner: Callable[[str], Optional[str]],
+    max_fallbacks: int,
+    candidate_timeout_ms: Optional[float] = None,
+) -> EnhancementReport:
+    """Plan-cost ranking + L1 structural guard + K-retry for the MCP path.
+
+    Iterations run only LLM + EXPLAIN (FORMAT JSON). Real MCP execution is
+    delayed until verification, where candidates are tried by ascending plan
+    cost until one passes row-equivalence.
+    """
+    from genie.core.provider import CompletionRequest
+    from genie.session.manager import new_msg, new_session
+    from genie.skills.mcp_trino.pre_execution_diagnosis import (
+        format_directions_for_prompt,
+        pre_execution_diagnosis,
+    )
+    from genie.skills.mcp_trino.preflight import plan_cost
+    from genie.skills.mcp_trino.rule_gate import (
+        build_rule_gate_summary,
+        format_rule_gate_for_prompt,
+        render_rule_gate_summary,
+    )
+    from genie.skills.trino_query.plan_signature import (
+        plan_signature,
+        structural_equivalent,
+    )
+    from genie.skills.trino_query.research import (
+        _format_static_findings,
+        _lint_sql,
+    )
+
+    baseline_metric = baseline.median_metric
+    if candidate_timeout_ms is None:
+        baseline_wall_ms = float(baseline.metrics.wall_time_ms or baseline.metrics.query_time_ms or 0)
+        candidate_timeout_ms = make_candidate_timeout_ms(baseline_wall_ms) if baseline_wall_ms > 0 else None
+
+    baseline_rows_est, baseline_bytes_est, baseline_plan = plan_cost(
+        original_sql, explain_runner
+    )
+    baseline_sig = plan_signature(baseline_plan) if baseline_plan is not None else None
+    baseline_cost = (baseline_rows_est or 0) * (baseline_bytes_est or 1)
+    directions = pre_execution_diagnosis(
+        original_sql,
+        static_report=static_report,
+        explain_cost=(baseline_rows_est, baseline_bytes_est, baseline_plan),
+        table_metadata=None,
+        peak_memory_bytes=getattr(baseline.metrics, "peak_memory_bytes", 0) or None,
+    )
+    rule_gate = build_rule_gate_summary(static_report, directions)
+    rule_gate_block = format_rule_gate_for_prompt(rule_gate)
+    directions_block = format_directions_for_prompt(directions)
+
+    if output:
+        output.print("")
+        timeout_text = (
+            f", candidate_timeout={candidate_timeout_ms / 1000.0:.1f}s"
+            if candidate_timeout_ms is not None else ""
+        )
+        output.progress(
+            f"  [long-query] MCP plan-cost loop active "
+            f"(baseline rows~{baseline_rows_est}, bytes~{baseline_bytes_est}, "
+            f"max_fallbacks={max_fallbacks}{timeout_text})"
+        )
+        render_rule_gate_summary(output, rule_gate)
+
+    skill_prompt = build_prompt(True, model) if build_prompt else ""
+    sys_prompt = (
+        f"You are optimizing a Trino SQL query for performance.\n"
+        f"Target metric: {metric_key} (lower is better).\n\n"
+        f"Rules:\n"
+        f"- Return the COMPLETE optimized SQL in a ```sql code block\n"
+        f"- Do NOT use file_patch or any tool calls\n"
+        f"- Keep the EXACT same result set — same columns, same rows, same values\n"
+        f"- Make ONE focused change per iteration\n"
+        f"- Trino best practices: partition filters, named columns, predicate pushdown, "
+        f"projection pruning, APPROX_DISTINCT over COUNT(DISTINCT), COALESCE instead of NVL\n"
+        f"- Treat CTE step materialization as advisory only; keep this loop read-only\n\n"
+        f"{(rule_gate_block + chr(10) + chr(10)) if rule_gate_block else ''}"
+        f"{(directions_block + chr(10) + chr(10)) if directions_block else ''}"
+        f"{skill_prompt}"
+    )
+    session = new_session(sys_prompt)
+
+    candidates: list[dict] = []
+    history: list[dict] = []
+
+    for iteration in range(1, max_iterations + 1):
+        if output:
+            output.print("")
+            output.progress(f"  ── Iteration {iteration}/{max_iterations} (MCP plan-cost mode) ──")
+
+        static_block = ""
+        if iteration == 1 and static_report and static_report.findings:
+            static_block = (
+                "Static analysis findings (sqlglot AST rules — apply these in priority order):\n"
+                f"{_format_static_findings(static_report)}\n\n"
+            )
+
+        sys_msgs = [m for m in session["history"] if m["role"] == "system"]
+        non_sys = [m for m in session["history"] if m["role"] != "system"]
+        session["history"] = sys_msgs + non_sys[-4:]
+
+        context = (
+            f"[Long-query MCP plan-cost iteration {iteration}]\n"
+            f"Baseline rows estimate: {baseline_rows_est}\n"
+            f"Baseline bytes estimate: {baseline_bytes_est}\n"
+            f"{static_block}"
+            f"Current SQL:\n```sql\n{original_sql}\n```\n\n"
+            f"Return the COMPLETE optimized SQL in a ```sql block. ONE change only. "
+            f"Do NOT include a trailing semicolon."
+        )
+        session["history"].append(new_msg("user", context))
+
+        if output:
+            output.progress("  AI thinking...")
+        req = CompletionRequest(messages=session["history"], model=model, reasoning=reasoning)
+        reply = provider.complete_text(req)
+        if not reply:
+            if output:
+                output.error("  Empty AI response — stopping iteration phase.")
+            break
+        session["history"].append(new_msg("assistant", reply))
+
+        candidate_sql = extract_sql_from_reply(reply)
+        if not candidate_sql:
+            if output:
+                output.progress("  [SKIP] No SQL extracted")
+            history.append({
+                "iteration": iteration, "status": "no_sql",
+                "candidate_sql": None, "plan_cost": None,
+            })
+            continue
+
+        lint_ok, lint_msg = _lint_sql(candidate_sql)
+        if not lint_ok:
+            if output:
+                output.progress(f"  [SKIP] Lint failed: {lint_msg}")
+            history.append({
+                "iteration": iteration, "status": "lint_failed",
+                "candidate_sql": candidate_sql, "plan_cost": None,
+            })
+            session["history"].append(new_msg("user", f"SQL failed lint: {lint_msg}. Try a different change."))
+            continue
+
+        try:
+            cand_rows_est, cand_bytes_est, cand_plan = plan_cost(candidate_sql, explain_runner)
+        except Exception as exc:
+            if output:
+                output.progress(f"  [SKIP] EXPLAIN failed: {exc}")
+            history.append({
+                "iteration": iteration, "status": "explain_failed",
+                "candidate_sql": candidate_sql, "plan_cost": None,
+            })
+            continue
+
+        if cand_rows_est is None and cand_bytes_est is None:
+            if output:
+                output.progress("  [SKIP] EXPLAIN returned no estimates")
+            history.append({
+                "iteration": iteration, "status": "explain_failed",
+                "candidate_sql": candidate_sql, "plan_cost": None,
+            })
+            continue
+
+        cand_cost = (cand_rows_est or 0) * (cand_bytes_est or 1)
+        cand_sig = plan_signature(cand_plan) if cand_plan is not None else None
+
+        if baseline_sig is not None and cand_sig is not None:
+            if not structural_equivalent(baseline_plan, cand_plan):
+                if output:
+                    output.progress(
+                        "  [REJECT] Structural divergence (L1) — candidate plan shape differs from baseline"
+                    )
+                history.append({
+                    "iteration": iteration, "status": "structural_reject",
+                    "candidate_sql": candidate_sql, "plan_cost": cand_cost,
+                })
+                session["history"].append(new_msg(
+                    "user",
+                    "Candidate plan shape differs from baseline (L1 reject) — likely lost a column / "
+                    "filter / aggregation. Try a different change that preserves the plan structure."
+                ))
+                continue
+
+        verdict = "plan_cost_better" if cand_cost < baseline_cost else "plan_cost_worse"
+        if output:
+            output.progress(
+                f"  [{'+' if verdict == 'plan_cost_better' else '-'}] {verdict} "
+                f"(cand_cost={cand_cost:.2e}, baseline_cost={baseline_cost:.2e})"
+            )
+
+        candidates.append({
+            "iteration": iteration,
+            "sql": candidate_sql,
+            "plan_cost": cand_cost,
+            "rows_est": cand_rows_est,
+            "bytes_est": cand_bytes_est,
+            "verdict": verdict,
+        })
+        history.append({
+            "iteration": iteration, "status": verdict,
+            "candidate_sql": candidate_sql, "plan_cost": cand_cost,
+        })
+        session["history"].append(new_msg(
+            "user",
+            f"Candidate accepted into ranking pool with plan cost {cand_cost:.2e} "
+            f"(baseline {baseline_cost:.2e}). Suggest another rewrite for the next iteration."
+        ))
+
+    if output:
+        output.print("")
+        output.progress(f"  [verify] {len(candidates)} candidate(s) survived L1; ranking by plan cost")
+
+    surviving_better = sorted(
+        [c for c in candidates if c["plan_cost"] < baseline_cost],
+        key=lambda c: c["plan_cost"],
+    )
+
+    fallbacks_used = 0
+    winner: dict | None = None
+    verify_log: list[dict] = []
+    if surviving_better:
+        for ranked in surviving_better:
+            if fallbacks_used > max_fallbacks:
+                if output:
+                    output.progress(f"  [verify] Exhausted K={max_fallbacks} fallbacks")
+                break
+            if output:
+                output.progress(
+                    f"  [verify] Trying iter#{ranked['iteration']} "
+                    f"(plan_cost={ranked['plan_cost']:.2e})"
+                )
+            try:
+                measured = _measure_mcp(
+                    client, ranked["sql"], metric_key, verify_runs,
+                    capture_rows=True,
+                    output=output,
+                    label=f"verify iter {ranked['iteration']}",
+                    timeout_ms=candidate_timeout_ms,
+                )
+            except CandidateTimeoutError as exc:
+                if output:
+                    output.progress(f"  [verify] timeout_worse: {exc}")
+                verify_log.append({"iter": ranked["iteration"], "result": "timeout_worse", "reason": str(exc)})
+                fallbacks_used += 1
+                continue
+            except Exception as exc:
+                if output:
+                    output.progress(f"  [verify] _measure_mcp failed: {exc}")
+                verify_log.append({"iter": ranked["iteration"], "result": "exec_failed", "reason": str(exc)})
+                fallbacks_used += 1
+                continue
+
+            if baseline.row_count != measured.row_count:
+                equiv = False
+                reason = f"row count differs: {baseline.row_count} vs {measured.row_count}"
+            else:
+                equiv, reason = _results_equivalent(baseline.rows, measured.rows)
+            if not equiv:
+                if output:
+                    output.progress(f"  [verify] L3 row-equiv FAIL — {reason}")
+                verify_log.append({"iter": ranked["iteration"], "result": "row_equiv_fail", "reason": reason})
+                fallbacks_used += 1
+                continue
+
+            winner = {
+                **ranked,
+                "measure": measured,
+            }
+            verify_log.append({"iter": ranked["iteration"], "result": "verified", "metric": measured.median_metric})
+            break
+    elif output:
+        output.progress("  [verify] No candidate beats baseline plan cost — original SQL unchanged")
+
+    best_sql = original_sql
+    best_measure = baseline
+    best_value = baseline_metric
+    if winner is not None:
+        best_sql = winner["sql"]
+        best_measure = winner["measure"]
+        best_value = best_measure.median_metric
+
+    iterations = [
+        IterationRecord(
+            iteration=h["iteration"],
+            status="improved" if (winner is not None and h.get("candidate_sql") == winner["sql"]) else h["status"],
+            metric_value=best_value if (winner is not None and h.get("candidate_sql") == winner["sql"]) else baseline_metric,
+            delta=(best_value - baseline_metric) if (winner is not None and h.get("candidate_sql") == winner["sql"]) else 0.0,
+            hypothesis="(plan-cost-loop)",
+            sql=h.get("candidate_sql") or "",
+        )
+        for h in history
+    ]
+
+    if baseline.row_count != best_measure.row_count:
+        final_equiv = False
+        final_reason = f"row count differs: {baseline.row_count} vs {best_measure.row_count}"
+    else:
+        final_equiv, final_reason = _results_equivalent(baseline.rows, best_measure.rows)
+
+    improvement_abs = best_value - baseline_metric
+    improvement_pct = (improvement_abs / baseline_metric * 100) if baseline_metric else 0.0
+    qualified_refs = [(c, s, t) for (c, s, t) in _extract_table_names(original_sql) if c and s]
+
+    report = EnhancementReport(
+        timestamp=datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+        original_sql=original_sql,
+        original_result_sample=baseline.rows[:10],
+        original_columns=baseline.columns,
+        original_row_count=baseline.row_count,
+        original_metrics=baseline.metrics,
+        enhanced_sql=best_sql,
+        enhanced_result_sample=best_measure.rows[:10],
+        enhanced_columns=best_measure.columns,
+        enhanced_row_count=best_measure.row_count,
+        enhanced_metrics=best_measure.metrics,
+        metric_key=metric_key,
+        baseline_value=baseline_metric,
+        best_value=best_value,
+        improvement_abs=improvement_abs,
+        improvement_pct=improvement_pct,
+        iterations=iterations,
+        data_consistent=final_equiv,
+        data_consistency_reason=final_reason,
+        mcp_server_url=client.config.url,
+        verify_runs=verify_runs,
+        table_suggestions=[],
+        had_qualified_tables=bool(qualified_refs),
+        original_explain=None,
+        enhanced_explain=None,
+    )
+
+    _render_summary_card(
+        output,
+        baseline_value=baseline_metric,
+        best_value=best_value,
+        metric_key=metric_key,
+        improvement_abs=improvement_abs,
+        improvement_pct=improvement_pct,
+        data_consistent=final_equiv,
+        data_consistency_reason=final_reason,
+        iterations_ran=len(iterations),
+    )
+
+    return report
+
+
 
 
 # ---------------------------------------------------------------------------
@@ -1311,6 +1676,17 @@ def run_mcp_enhancement(
             report_markdown=report_md,
         )
 
+    mcp_explain_runner = _build_mcp_explain_runner(client)
+    mcp_explain_available = False
+    if long_query_opt_in and max_iterations > 0 and mcp_explain_runner is not None:
+        try:
+            rows_est, bytes_est, raw_plan = plan_cost(sql, mcp_explain_runner)
+            mcp_explain_available = (
+                rows_est is not None or bytes_est is not None or raw_plan is not None
+            )
+        except Exception:
+            mcp_explain_available = False
+
     # ── Per-candidate wall-clock kill (best-effort) ──
     # mcp-trino may or may not persist SET SESSION across separate tool calls.
     # We emit it anyway; if the server ignores it, candidates that overshoot
@@ -1331,6 +1707,28 @@ def run_mcp_enhancement(
                 f"  Candidate timeout: {candidate_timeout_ms / 1000.0:.1f}s "
                 f"(baseline wall-time)"
             )
+
+    # ── Long-query plan-cost loop ──
+    # Avoid per-iteration real execution: EXPLAIN candidates first, then verify
+    # only ranked survivors with real MCP queries.
+    if long_query_opt_in and mcp_explain_available and max_iterations > 0:
+        return _run_mcp_plan_cost_loop(
+            client=client,
+            provider=provider,
+            model=model,
+            reasoning=reasoning,
+            original_sql=sql,
+            metric_key=metric_key,
+            max_iterations=max_iterations,
+            verify_runs=verify_runs,
+            output=output,
+            build_prompt=build_prompt,
+            baseline=baseline,
+            static_report=static_report,
+            explain_runner=mcp_explain_runner,
+            max_fallbacks=fallbacks,
+            candidate_timeout_ms=candidate_timeout_ms,
+        )
 
     # ── EXPLAIN ANALYZE baseline ──
     original_explain: ExplainAnalyzeResult | None = None
