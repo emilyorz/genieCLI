@@ -5,23 +5,22 @@
 
 ## Active Iteration
 
-- **Ledger:** [CURRENT.md](CURRENT.md) (v31 — strict V3 active)
-- **Status:** v31 complete and pushed. Rule-first pre-AI gate for `/trino-research` implemented with compact TUI and shared MCP/direct/plan-cost behavior; post-closeout README now documents Task Ledger V3 verification and Quality Loop guard expectations.
-- **Focus (v31, complete):** RuleGate framework classifies deterministic findings as BLOCK / REWRITE / ADVISE / PASS, feeds a capped prompt block into AI, and renders a readable rule-gate summary before iteration.
-- **Touched features:** [trino-research](features/trino-research.md) + `mcp_trino/rule_gate.py` + `mcp_trino/research.py` + `trino_query/research.py`
-- **Started:** 2026-05-28
-- **Last commit:** v31 close-out + README/process follow-up; see git log
-- **Resume action:** Start the next product change as v32; before any non-trivial edit, run Task Ledger doctor and validate the active ledger.
+- **Ledger:** [CURRENT.md](CURRENT.md) holds **v31** (last _formal_ strict-V3 iteration, DONE). **v32 shipped as an out-of-process hotfix** — see [archive/v32.md](archive/v32.md).
+- **Status:** v31 (formal) + v32 (deviation hotfix) both complete and on `main`. **No iteration currently active — ready to start v33.**
+- **v32 (out-of-process, on `main` `12e954a`):** rule_id contract repair (revived v31's never-firing rule-gate `REWRITE` class) + per-iteration re-diagnosis + observational direction efficacy, both paths. **809 pass.** Built hooks-off (V3 deviation, no telemetry) after the live-hook bootstrap dead-locked three times — full retro in archive/v32.md.
+- **Touched features:** [trino-research](features/trino-research.md)
+- **Last commit:** `12e954a` (v32) → merged to `main` `1fc1f81`.
+- **Resume action:** Start the next product change as **v33**. NOTE: `CURRENT.md` still reads v31 because v32 was out-of-process (a DONE strict CURRENT.md would require dispatch telemetry that v32 honestly never produced); v33 PLAN creates the next formal CURRENT.md and consumes the v32 residual below. For a Claude-Code-driven iteration, author CURRENT.md **atomically** OR run **hooks-off as a documented deviation** — do NOT switch activation `runtime` mid-iteration (it orphans telemetry and hard-blocks every tool).
 
-## Next Iteration Focus (promotes from v29 retro)
+## Next Iteration Focus (v33 — carryover from v32 retro)
 
-Top promotes from v29's retro (at cap 3):
+From v32 retro (see [archive/v32.md](archive/v32.md)):
 
-1. ⭐ P0 S — Test-count honesty rule → SKILL.md / feature-doc process. Re-run pytest in-turn, quote the literal current figure; never carry a remembered baseline. (Origin: stale `781+10` vs actual `781+0`, spec-verifier caught it.)
-2. ⭐ P1 S — Symmetry/parity Todos require the unmocked equivalence test as a Step-6 Tkt Verify line → SKILL.md. (Origin: v29 T3 retro-fitted it; T2 parity code shipped a row ahead of its guard.)
-3. ⭐ P1 S — Upgrade `validate_ledger.py` to recognize the v3 ledger schema → process. (Origin: v3 ledgers commit with blanket `--no-verify`; v2-only validator fail-opens on v3.)
+1. ⭐ P1 — **T3 (deferred from v32):** dual-path unmocked equivalence test using **REAL rule_ids** + close the **MCP long-query plan-cost asymmetry** (MCP runs `_measure_mcp` per iter while `--direct` uses `_run_plan_cost_loop`) + feature-doc parity.
+2. ⭐ P1 — **T4 (deferred from v32):** memory-pressure threshold calibration from `query.max-memory-per-node`/session (currently hard-coded 1 GiB) + cite official Trino docs in rule files.
+3. ⭐ P1 — Upgrade `validate_ledger.py` to recognize the v3 ledger schema (v29→v31 promote, still unaddressed → v3 ledgers still need blanket `--no-verify`).
 
-(3 promotes — at cap. v27's two promotes (validator dry-run, hypothesis prompt structure) both landed in v29 — C2 hypothesis-structure folded into T2/T4; validator-dry-run subsumed by promote #3.)
+(3 promotes — at cap.) Also open, below cap: MCP-path T2 efficacy **integration** test (loop-driven, not just unit+mirror); **process** — a Claude-Code V3 iteration must be authored atomically-or-hooks-off, never switching activation runtime mid-iteration. Backlog: EXPLAIN depth (join distribution/build-side); `--direct` permanent `table_metadata=None` asymmetry; LH-PRISM predictive cost engine.
 
 ## Active Parks
 
@@ -48,13 +47,15 @@ Top promotes from v29's retro (at cap 3):
 
 ## Feature Index
 
-| Feature        | Doc                                                      | Last touched                                                                                |
-| -------------- | -------------------------------------------------------- | ------------------------------------------------------------------------------------------- |
-| trino-research | [features/trino-research.md](features/trino-research.md) | v31 complete (rule-first gate before AI, compact TUI, shared MCP/direct/plan-cost behavior) |
-| mcp-banner     | [features/mcp-banner.md](features/mcp-banner.md)         | v26 (fast-fail 200ms probe; 14× cold-start improvement)                                     |
+| Feature        | Doc                                                      | Last touched                                                                                                                 |
+| -------------- | -------------------------------------------------------- | ---------------------------------------------------------------------------------------------------------------------------- |
+| trino-research | [features/trino-research.md](features/trino-research.md) | v32 (rule_id contract repair + per-iteration re-diagnosis + observational direction efficacy; out-of-process hotfix on main) |
+| mcp-banner     | [features/mcp-banner.md](features/mcp-banner.md)         | v26 (fast-fail 200ms probe; 14× cold-start improvement)                                                                      |
 
 ## Archive
 
+- [archive/v32.md](archive/v32.md) — directed-loop repair (out-of-process hotfix, V3 deviation): rule_id contract fix (revived v31's never-firing rule-gate `REWRITE` class) + per-iteration re-diagnosis + observational direction efficacy, both paths; 809 pass; commit `12e954a` on main
+- [archive/v31.md](archive/v31.md) — rule-first pre-AI gate (BLOCK/REWRITE/ADVISE/PASS) with compact TUI + shared MCP/direct/plan-cost behavior; 799 pass; commits `bc82bdf`/`21ca729`/`f274f10`
 - [archive/v29.md](archive/v29.md) — directed pre-execution diagnosis (LH-PRISM) on both paths: ranked `OptimizationDirection` injected pre-iter-1 + zero-cost long-query report (`--diagnose-only`/gate-trip) + dual-path symmetry test; C2 hypothesis-structure closed; 781 pass 0 skip; built v3-strict (label `v3-deviation`, enforcement via dispatched spec+quality verifiers not live hooks); commits `006a2f9`/`62e4503`/`4acb7c4`
 - [archive/v30.md](archive/v30.md) — long-query UX + Trino optimization input refresh: long-query default, elapsed stopwatch, candidate timeout, inline reject reasons, readable TUI blocks, SQL-shape diagnosis, README references; full suite 792 pass; commits through `c354b34`
 - [archive/v28.md](archive/v28.md) — sqlglot AST 8-rule engine + plan_signature + plan-cost long-query loop + no-data dispatch; 724 pass +77 tests; T1/T7 skipped (live MCP probe → Sam env); MCP no-data dispatch hotfix `bd1a97a`
