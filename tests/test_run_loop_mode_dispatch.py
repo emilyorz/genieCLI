@@ -1,6 +1,8 @@
 """Tests for v28 mode dispatch in _run_optimization_loop + no-data path."""
 from __future__ import annotations
 
+import subprocess
+import sys
 from unittest.mock import MagicMock, patch
 
 import pytest
@@ -11,8 +13,10 @@ from genie.skills.trino_query.research import (
     _no_data_report,
     _run_no_data_path,
     _run_optimization_loop,
+    run_trino_research,
 )
 from genie.skills.trino_query.sql_static import analyze as static_analyze
+from genie.skills.mcp_trino.write_analysis import classify_write_operation
 
 
 # ── detect_no_data_reason ─────────────────────────────────────────────────────
@@ -58,6 +62,224 @@ def test_format_static_findings_renders_bullets():
     assert "select-star" in text
     assert "null-unsafe-equals" in text
     assert "→" in text  # suggestion arrow
+
+
+# ── write-operation analysis-only dispatch ───────────────────────────────────
+
+def _output_mock():
+    output = MagicMock()
+    output.print = MagicMock()
+    output.progress = MagicMock()
+    output.error = MagicMock()
+    return output
+
+
+def test_write_analysis_module_import_does_not_load_mcp_client():
+    code = """
+import sys
+import genie.skills.mcp_trino.write_analysis as wa
+assert wa.classify_write_operation("EXPLAIN INSERT INTO x SELECT * FROM t").keyword == "INSERT"
+for name in (
+    "genie.skills.mcp_trino.client",
+    "genie.skills.mcp_trino.research",
+    "genie.skills.trino_query.connection",
+):
+    assert name not in sys.modules, f"{name} was imported"
+"""
+    subprocess.run([sys.executable, "-c", code], check=True)
+
+
+@pytest.mark.parametrize(
+    ("sql", "kind", "keyword"),
+    [
+        ("CREATE TABLE x AS SELECT * FROM t", "ctas", "CREATE"),
+        ("INSERT INTO x SELECT * FROM t", "insert", "INSERT"),
+        ("UPDATE x SET a = 1", "update", "UPDATE"),
+        ("DELETE FROM x WHERE id = 1", "delete", "DELETE"),
+        ("MERGE INTO x USING y ON x.id = y.id WHEN MATCHED THEN UPDATE SET a = y.a", "merge", "MERGE"),
+        ("DROP TABLE x", "ddl", "DROP"),
+        ("ALTER TABLE x ADD COLUMN y bigint", "ddl", "ALTER"),
+        ("TRUNCATE TABLE x", "ddl", "TRUNCATE"),
+        ("RENAME TABLE old_name TO new_name", "ddl", "RENAME"),
+        ("GRANT SELECT ON TABLE x TO ROLE y", "ddl", "GRANT"),
+        ("REVOKE SELECT ON TABLE x FROM ROLE y", "ddl", "REVOKE"),
+        ("EXPLAIN INSERT INTO x SELECT * FROM t", "insert", "INSERT"),
+        ("EXPLAIN CREATE TABLE x AS SELECT * FROM t", "ctas", "CREATE"),
+        ("CALL some_proc(1)", "call", "CALL"),
+        ("COMMIT", "transaction", "COMMIT"),
+        ("ROLLBACK", "transaction", "ROLLBACK"),
+        ("WITH s AS (SELECT * FROM t) INSERT INTO x SELECT * FROM s", "insert", "INSERT"),
+        ("SELECT 1; RENAME TABLE old_name TO new_name", "unsafe_multi_statement", "RENAME"),
+        ("SELECT 1; REVOKE SELECT ON TABLE x FROM ROLE y", "unsafe_multi_statement", "REVOKE"),
+    ],
+)
+def test_write_operation_classifier_positive_cases(sql, kind, keyword):
+    op = classify_write_operation(sql)
+    assert op is not None
+    assert op.kind == kind
+    assert op.keyword == keyword
+
+
+@pytest.mark.parametrize(
+    "sql",
+    [
+        "SELECT * FROM t",
+        "WITH s AS (SELECT * FROM t) SELECT * FROM s",
+        "SHOW TABLES",
+        "DESCRIBE t",
+        "DESC t",
+        "EXPLAIN SELECT * FROM t",
+        "/* RENAME TABLE old_name TO new_name */ SELECT 1",
+        "-- REVOKE SELECT ON TABLE x FROM ROLE y\nSELECT 1",
+    ],
+)
+def test_write_operation_classifier_negative_cases(sql):
+    assert classify_write_operation(sql) is None
+
+
+def test_direct_write_analysis_skips_measure_explain_and_loop(tmp_path, monkeypatch):
+    monkeypatch.chdir(tmp_path)
+    output = _output_mock()
+    provider = MagicMock()
+    provider.complete_text.return_value = "Advisory: review target table lifecycle."
+
+    with patch("genie.skills.trino_query.research._run_optimization_loop", side_effect=AssertionError("loop called")), \
+         patch("genie.skills.trino_query.research._measure", side_effect=AssertionError("measure called")), \
+         patch("genie.skills.trino_query.research._execute_sql", side_effect=AssertionError("execute called")):
+        run_trino_research(
+            provider, {}, "test-model", "default", output, lambda *a, **kw: "",
+            sql_text="CREATE TABLE x AS SELECT * FROM t",
+            safe_limit=100,
+            diagnose_only=True,
+            metric="cpu_time_ms",
+            iterations=1,
+            runs=1,
+        )
+
+    reports = list((tmp_path / "report").glob("trino-research-write-analysis-*.md"))
+    assert len(reports) == 1
+    md = reports[0].read_text()
+    assert "write-analysis" in md
+    assert "| SQL executed | no |" in md
+    assert "advisory, unverified" in md
+    assert "Safe-limit was not applied" in md
+    provider.complete_text.assert_called_once()
+
+
+@pytest.mark.parametrize(
+    "sql",
+    [
+        "RENAME TABLE old_name TO new_name",
+        "REVOKE SELECT ON TABLE x FROM ROLE y",
+    ],
+)
+def test_direct_rename_revoke_dispatch_to_write_analysis(tmp_path, monkeypatch, sql):
+    monkeypatch.chdir(tmp_path)
+    output = _output_mock()
+    with patch("genie.skills.trino_query.research._run_optimization_loop", side_effect=AssertionError("loop called")), \
+         patch("genie.skills.trino_query.research._measure", side_effect=AssertionError("measure called")), \
+         patch("genie.skills.trino_query.research._execute_sql", side_effect=AssertionError("execute called")):
+        run_trino_research(
+            None, {}, "test-model", "default", output, lambda *a, **kw: "",
+            sql_text=sql,
+            metric="cpu_time_ms",
+            iterations=1,
+            runs=1,
+        )
+    md = next((tmp_path / "report").glob("trino-research-write-analysis-*.md")).read_text()
+    assert "| Kind | ddl |" in md
+    assert ("| Keyword | RENAME |" in md) or ("| Keyword | REVOKE |" in md)
+
+
+def test_direct_read_only_preserves_optimization_loop(tmp_path, monkeypatch):
+    monkeypatch.chdir(tmp_path)
+    output = _output_mock()
+    fake_result = {
+        "status": "completed",
+        "baseline_metric": 10.0,
+        "best_metric": 10.0,
+        "total_improvement": 0.0,
+        "improvement_pct": 0.0,
+        "iterations": 0,
+        "kept": 0,
+        "baseline_rows": 1,
+        "history": [],
+        "best_sql": "SELECT * FROM t",
+        "original_sql": "SELECT * FROM t",
+    }
+    with patch("genie.skills.trino_query.research._run_optimization_loop", return_value=fake_result) as loop:
+        run_trino_research(
+            None, {}, "test-model", "default", output, lambda *a, **kw: "",
+            sql_text="SELECT * FROM t",
+            metric="cpu_time_ms",
+            iterations=1,
+            runs=1,
+        )
+    loop.assert_called_once()
+
+
+def test_chat_file_write_analysis_helper_does_not_touch_mcp(tmp_path, monkeypatch):
+    monkeypatch.chdir(tmp_path)
+    sql_file = tmp_path / "write.sql"
+    sql_file.write_text("REVOKE SELECT ON TABLE x FROM ROLE y")
+    output = _output_mock()
+
+    from genie.chat import _try_run_trino_write_analysis_from_file
+
+    with patch("genie.skills.mcp_trino.client.load_mcp_config", side_effect=AssertionError("load_mcp_config called")), \
+         patch("genie.skills.mcp_trino.client.McpClient", side_effect=AssertionError("McpClient constructed")):
+        handled = _try_run_trino_write_analysis_from_file(
+            None, {}, "test-model", "default", output, lambda *a, **kw: "",
+            {"sql_file": str(sql_file), "safe_limit": 100},
+            route="chat",
+        )
+
+    assert handled is True
+    md = next((tmp_path / "report").glob("trino-research-write-analysis-*.md")).read_text()
+    assert "| Keyword | REVOKE |" in md
+    assert "Safe-limit was not applied" in md
+
+
+def test_chat_loop_file_write_analysis_startup_does_not_touch_mcp(tmp_path, monkeypatch):
+    monkeypatch.chdir(tmp_path)
+    sql_file = tmp_path / "write.sql"
+    sql_file.write_text("RENAME TABLE old_name TO new_name")
+    output = _output_mock()
+    inputs = iter([f"/trino-research --file {sql_file}", "/exit"])
+
+    from genie.chat import _chat_loop
+
+    with patch("genie.input._read_input", side_effect=lambda *a, **kw: next(inputs)), \
+         patch("genie.skills.trino_query.connection.status_line", return_value="not probed"), \
+         patch("genie.skills.mcp_trino.client.load_mcp_config", side_effect=AssertionError("load_mcp_config called")) as load_mcp_config, \
+         patch("genie.skills.mcp_trino.client.McpClient", side_effect=AssertionError("McpClient constructed")) as mcp_client:
+        _chat_loop(
+            None, {}, "test-model", "default", True, output, lambda *a, **kw: ""
+        )
+
+    load_mcp_config.assert_not_called()
+    mcp_client.assert_not_called()
+    md = next((tmp_path / "report").glob("trino-research-write-analysis-*.md")).read_text()
+    assert "| Keyword | RENAME |" in md
+    assert "| MCP/Trino reached | no |" in md
+
+
+def test_chat_file_read_only_helper_preserves_mcp_strictness(tmp_path, monkeypatch):
+    monkeypatch.chdir(tmp_path)
+    sql_file = tmp_path / "read.sql"
+    sql_file.write_text("SELECT * FROM t")
+    output = _output_mock()
+
+    from genie.chat import _try_run_trino_write_analysis_from_file
+
+    handled = _try_run_trino_write_analysis_from_file(
+        None, {}, "test-model", "default", output, lambda *a, **kw: "",
+        {"sql_file": str(sql_file)},
+        route="chat",
+    )
+
+    assert handled is False
+    assert not (tmp_path / "report").exists()
 
 
 # ── _no_data_report ───────────────────────────────────────────────────────────

@@ -1492,6 +1492,17 @@ def run_trino_research(
         output.error("Empty SQL.")
         return
 
+    from genie.skills.mcp_trino.write_analysis import classify_write_operation, run_write_analysis_only
+
+    if classify_write_operation(sql) is not None:
+        run_write_analysis_only(
+            provider, cfg, model, reasoning, sql, output, build_prompt,
+            sql_source=sql_file or ("sql_text" if sql_text else "stdin"),
+            route="direct",
+            safe_limit=safe_limit,
+        )
+        return
+
     output.print(f"  [dim]SQL: {sql[:80]}...[/dim]\n")
 
     # ── Get metric ──

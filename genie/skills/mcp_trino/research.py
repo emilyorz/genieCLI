@@ -17,7 +17,7 @@ import math
 import re
 import statistics
 import time
-from dataclasses import asdict, dataclass, field
+from dataclasses import dataclass, field
 from datetime import datetime
 from pathlib import Path
 from typing import Any, Callable, Optional
@@ -28,6 +28,7 @@ from rich.markup import escape
 from genie.core.sql_extraction import extract_sql_from_reply
 from .client import McpClient, McpConfig, McpError, load_mcp_config
 from .preflight import CandidateTimeoutError, make_candidate_timeout_ms
+from .write_analysis import classify_write_operation, run_write_analysis_only
 
 # sqlglot is already a project dependency — used for table name extraction
 import sqlglot
@@ -2545,6 +2546,31 @@ def run_trino_research_via_mcp(
     Mirrors `trino_query.research.run_trino_research` so chat.py can dispatch
     to either path via a single call signature.
     """
+    sql: str | None = None
+    sql_source = "stdin"
+
+    # File/text callers already provide SQL without live MCP dependencies. Classify
+    # those first so write SQL can stay fully offline even when MCP is down.
+    if sql_file:
+        sql = Path(sql_file).read_text().strip()
+        sql_source = sql_file
+    elif sql_text:
+        sql = sql_text.strip()
+        sql_source = "sql_text"
+
+    if sql is not None:
+        if not sql:
+            output.error("Empty SQL.")
+            return
+        if classify_write_operation(sql) is not None:
+            run_write_analysis_only(
+                provider, cfg, model, reasoning, sql, output, build_prompt,
+                sql_source=sql_source,
+                route="mcp",
+                safe_limit=safe_limit,
+            )
+            return
+
     mcp_cfg = load_mcp_config()
     if not mcp_cfg.enabled:
         output.error("  MCP Trino not enabled. Configure [mcp.trino] in ~/.genie/config.toml.")
@@ -2566,18 +2592,26 @@ def run_trino_research_via_mcp(
     output.progress(f"  Server: {mcp_cfg.url}")
 
     # ── Get SQL ──
-    if sql_file:
-        sql = Path(sql_file).read_text().strip()
+    if sql_file and sql is not None:
         output.progress(f"  SQL from file: {sql_file}")
-    elif sql_text:
-        sql = sql_text.strip()
-    else:
+    elif sql is None:
         from genie.input import _read_paste_mode
         output.print("  [cyan]Paste SQL (Ctrl-D to finish):[/cyan]")
         sql = _read_paste_mode()
 
     if not sql:
         output.error("Empty SQL.")
+        return
+
+    # Interactive paste reaches here after existing MCP reachability, but still
+    # skips preflight/execution if the pasted SQL is side-effecting.
+    if classify_write_operation(sql) is not None:
+        run_write_analysis_only(
+            provider, cfg, model, reasoning, sql, output, build_prompt,
+            sql_source=sql_source,
+            route="mcp",
+            safe_limit=safe_limit,
+        )
         return
 
     # ── Pre-flight: read-only + size estimation ──

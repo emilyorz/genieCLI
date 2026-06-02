@@ -184,6 +184,7 @@ genie --skills
 > /trino test                 # 確認 Trino profile 能連
 > /trino-research             # 互動模式：貼 SQL → 選 metric → 選 iterations → 跑
 > /trino-research --file q.sql --diagnose-only   # 只產診斷報告，不執行查詢
+> /trino-research --file write.sql   # write/DDL：離線 advisory analysis，不執行 SQL
 ```
 
 一行版（非互動）：
@@ -194,6 +195,8 @@ genie --skills
 ```
 
 **MCP 路徑（選配）：** 如果 Step 2 有開 `[mcp.trino] enabled=true`，`/trino-research` 走 MCP 優化路徑（EXPLAIN ANALYZE + table metadata）。MCP 未設定或不可達時會明確報錯，不做 silent fallback；想走直連 driver：`/trino-research --direct`。
+
+**Write-operation analysis：** `--file` 內若是 side-effecting SQL（例如 `INSERT`、`UPDATE`、`DELETE`、`MERGE`、`CREATE`、`DROP`、`ALTER`、`TRUNCATE`、`RENAME`、`GRANT`、`REVOKE`、`CALL`、`COMMIT`、`ROLLBACK`），會在 MCP/direct 執行面之前改走離線 write-analysis：只做 static analysis + optional LLM advisory，明確不執行 SQL、不跑 EXPLAIN、不 benchmark、不套 `--safe-limit`、不碰 MCP/Trino。Read-only SQL 的 MCP strict 行為不變；MCP 不可達仍報錯，不 silent fallback。v35 限制：default MCP 的互動貼上模式仍可能先做 MCP reachability，MCP-offline write-analysis 請使用 `--file`。
 
 ### Step 5 — 拿報告
 
@@ -209,6 +212,7 @@ genie --skills
 | 一般 MCP path                        | `trino-research-mcp-YYYYMMDD-HHMMSS.md`               |
 | `--diagnose-only` 或長查詢 gate-trip | `./report/trino-research-diagnose-YYYYMMDD-HHMMSS.md` |
 | table/schema/catalog no-data         | `./report/trino-research-nodata-YYYYMMDD-HHMMSS.md`   |
+| write / DDL analysis-only            | `./report/trino-research-write-analysis-YYYYMMDD-HHMMSS.md` |
 
 ---
 
@@ -362,6 +366,8 @@ Materialization 是 side-effecting strategy，不是一般 loop 的自動 rewrit
 
 **可選 metric：** `query_time_ms` / `cpu_time_ms` / `wall_time_ms` / `physical_input_bytes` / `processed_rows` / `total_splits` / `peak_memory_bytes`
 
+write/DDL SQL 會忽略 metric / iterations / runs / `--diagnose-only` / `--safe-limit` 的執行語意，直接產 advisory-only write-analysis report。
+
 ---
 
 ## MCP Trino 整合
@@ -387,6 +393,8 @@ timeout = 30
 ### /trino-research 自動路由
 
 當 `[mcp.trino].enabled = true` 時，`/trino-research` 會走 MCP 路徑（baseline 測量、EXPLAIN ANALYZE、metadata 建議都由 MCP server 提供）。MCP 無法連線或未啟用時會明確報錯；不做 silent fallback，避免你以為正在測 MCP、實際卻走 direct driver。
+
+例外：`/trino-research --file write.sql` 若分類為 write/DDL，會在 MCP config / `McpClient` / `list_tools()` 前產生離線 write-analysis report；read-only `--file` 不走這個例外。
 
 強制跑直連模式：
 

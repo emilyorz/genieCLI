@@ -17,6 +17,7 @@ import json
 import subprocess
 import sys
 from copy import deepcopy
+from pathlib import Path
 from typing import Callable
 
 import requests
@@ -280,6 +281,11 @@ def _render_banner(output: "HumanSink", version: str) -> None:
     output.print("")
 
 
+def _render_static_mcp_status(output: "HumanSink") -> None:
+    """Render MCP startup status without touching MCP config or network clients."""
+    output.kv("mcp", "[dim]checked when /trino-research needs it[/dim]")
+
+
 def _print_trino_research_help(output) -> None:
     output.print("")
     output.print("  [bold cyan]/trino-research[/bold cyan]  —  iterative Trino SQL optimizer (via MCP)")
@@ -305,12 +311,19 @@ def _print_trino_research_help(output) -> None:
     output.print("    --max-fallbacks <n>       K-retry cap for final L3 row-equivalence verify (default 3)")
     output.print("    --diagnose-only           zero-cost directed report: static + EXPLAIN plan, no query run")
     output.print("    --direct                  bypass MCP, use trino driver directly")
+    output.print("    write SQL in --file mode  offline advisory write-analysis; no SQL/EXPLAIN/MCP/Trino execution")
     output.print("")
     output.print("  [dim]Examples[/dim]")
     output.print("    /trino-research --file query.sql --metric query_time_ms --iterations 5")
+    output.print("    /trino-research --file write.sql   [dim](write-analysis only)[/dim]")
     output.print("    /trino-research --file q.sql --safe-limit 10000")
     output.print("    /trino-research --file q.sql --diagnose-only   [dim](no query executed)[/dim]")
     output.print("    /trino-research --direct   [dim](skip MCP)[/dim]")
+    output.print("")
+    output.print("  [dim]Write-analysis note[/dim]")
+    output.print("    Side-effecting SQL in --file mode is analyzed offline and not executed, EXPLAINed,")
+    output.print("    benchmarked, or MCP-validated. For v35, use --file for MCP-offline write-analysis;")
+    output.print("    interactive default MCP paste may still check MCP reachability before paste acquisition.")
     output.print("")
     output.print("  [dim]Environment variables[/dim]")
     output.print("    GENIE_TRINO_MEMORY_LIMIT_PER_NODE_BYTES")
@@ -323,6 +336,87 @@ def _print_trino_research_help(output) -> None:
     output.print("      Note: env vars are call-time — set before /trino-research, no restart needed.")
     output.print("      Note: env vars have no effect on the --direct path (--direct is out of scope).")
     output.print("")
+
+
+def _parse_trino_research_args(args: list[str]) -> tuple[dict, bool]:
+    kwargs = {"long_query_opt_in": True}
+    force_direct = False
+    i = 0
+    while i < len(args):
+        if args[i] == "--file" and i + 1 < len(args):
+            kwargs["sql_file"] = args[i + 1]
+            i += 2
+        elif args[i] == "--metric" and i + 1 < len(args):
+            kwargs["metric"] = args[i + 1]
+            i += 2
+        elif args[i] == "--iterations" and i + 1 < len(args):
+            kwargs["iterations"] = int(args[i + 1])
+            i += 2
+        elif args[i] == "--runs" and i + 1 < len(args):
+            kwargs["runs"] = int(args[i + 1])
+            i += 2
+        elif args[i] == "--safe-limit" and i + 1 < len(args):
+            kwargs["safe_limit"] = int(args[i + 1])
+            i += 2
+        elif args[i] == "--query-timeout" and i + 1 < len(args):
+            kwargs["query_timeout"] = int(args[i + 1])
+            i += 2
+        elif args[i] == "--long-query":
+            kwargs["long_query_opt_in"] = True
+            i += 1
+        elif args[i] == "--no-long-query":
+            kwargs["long_query_opt_in"] = False
+            i += 1
+        elif args[i] == "--long-query-threshold" and i + 1 < len(args):
+            kwargs["long_query_threshold_s"] = int(args[i + 1])
+            i += 2
+        elif args[i] == "--max-fallbacks" and i + 1 < len(args):
+            kwargs["max_fallbacks"] = int(args[i + 1])
+            i += 2
+        elif args[i] == "--diagnose-only":
+            kwargs["diagnose_only"] = True
+            i += 1
+        elif args[i] == "--direct":
+            force_direct = True
+            i += 1
+        else:
+            i += 1
+    return kwargs, force_direct
+
+
+def _try_run_trino_write_analysis_from_file(
+    provider,
+    cfg,
+    model: str,
+    reasoning: str,
+    output,
+    build_prompt,
+    kwargs: dict,
+    route: str = "chat",
+) -> bool:
+    sql_file = kwargs.get("sql_file")
+    if not sql_file:
+        return False
+    try:
+        sql = Path(sql_file).read_text().strip()
+    except Exception as exc:
+        output.error(f"Failed to read SQL file {sql_file}: {exc}")
+        return True
+    if not sql:
+        output.error("Empty SQL.")
+        return True
+
+    from genie.skills.mcp_trino.write_analysis import classify_write_operation, run_write_analysis_only
+
+    if classify_write_operation(sql) is None:
+        return False
+    run_write_analysis_only(
+        provider, cfg, model, reasoning, sql, output, build_prompt,
+        sql_source=sql_file,
+        route=route,
+        safe_limit=kwargs.get("safe_limit"),
+    )
+    return True
 
 
 def _chat_loop(
@@ -357,21 +451,7 @@ def _chat_loop(
         output.kv("trino", status_line())
     except Exception:
         pass
-    try:
-        from genie.skills.mcp_trino.client import McpClient, load_mcp_config
-        mcp_cfg = load_mcp_config()
-        if mcp_cfg.enabled and mcp_cfg.url:
-            probe_cfg = type(mcp_cfg)(url=mcp_cfg.url, enabled=True,
-                                      timeout=0.2)
-            try:
-                tools = McpClient(probe_cfg).list_tools()
-                output.kv("mcp", f"[green]ok[/green] {mcp_cfg.url} ({len(tools)} tools)")
-            except Exception:
-                output.kv("mcp", f"[red]offline[/red] {mcp_cfg.url}")
-        else:
-            output.kv("mcp", "[dim]not configured[/dim]")
-    except Exception:
-        pass
+    _render_static_mcp_status(output)
     output.print("")
     output.print("  [dim]/trino-research  optimize a SQL    ·  /help  all commands  ·  /exit[/dim]")
     output.print("")
@@ -829,49 +909,12 @@ def _chat_loop(
             if "--help" in args or "-h" in args:
                 _print_trino_research_help(output)
                 continue
-            # Parse optional flags
-            kwargs = {"long_query_opt_in": True}
-            force_direct = False
-            i = 0
-            while i < len(args):
-                if args[i] == "--file" and i + 1 < len(args):
-                    kwargs["sql_file"] = args[i + 1]
-                    i += 2
-                elif args[i] == "--metric" and i + 1 < len(args):
-                    kwargs["metric"] = args[i + 1]
-                    i += 2
-                elif args[i] == "--iterations" and i + 1 < len(args):
-                    kwargs["iterations"] = int(args[i + 1])
-                    i += 2
-                elif args[i] == "--runs" and i + 1 < len(args):
-                    kwargs["runs"] = int(args[i + 1])
-                    i += 2
-                elif args[i] == "--safe-limit" and i + 1 < len(args):
-                    kwargs["safe_limit"] = int(args[i + 1])
-                    i += 2
-                elif args[i] == "--query-timeout" and i + 1 < len(args):
-                    kwargs["query_timeout"] = int(args[i + 1])
-                    i += 2
-                elif args[i] == "--long-query":
-                    kwargs["long_query_opt_in"] = True
-                    i += 1
-                elif args[i] == "--no-long-query":
-                    kwargs["long_query_opt_in"] = False
-                    i += 1
-                elif args[i] == "--long-query-threshold" and i + 1 < len(args):
-                    kwargs["long_query_threshold_s"] = int(args[i + 1])
-                    i += 2
-                elif args[i] == "--max-fallbacks" and i + 1 < len(args):
-                    kwargs["max_fallbacks"] = int(args[i + 1])
-                    i += 2
-                elif args[i] == "--diagnose-only":
-                    kwargs["diagnose_only"] = True
-                    i += 1
-                elif args[i] == "--direct":
-                    force_direct = True
-                    i += 1
-                else:
-                    i += 1
+            kwargs, force_direct = _parse_trino_research_args(args)
+
+            if _try_run_trino_write_analysis_from_file(
+                provider, cfg, model, current_reasoning, output, build_prompt, kwargs, route="chat"
+            ):
+                continue
 
             if force_direct:
                 from genie.skills.trino_query.research import run_trino_research

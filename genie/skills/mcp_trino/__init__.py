@@ -8,12 +8,20 @@ from __future__ import annotations
 import json
 import os
 from pathlib import Path
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 from genie.core.arg import Arg
 from genie.core.registry import BaseSkill
 
-from .client import McpClient, McpConfig, load_mcp_config
+if TYPE_CHECKING:
+    from .client import McpClient, McpConfig, McpError
+
+
+def __getattr__(name: str) -> Any:
+    if name in {"McpClient", "McpConfig", "McpError", "load_mcp_config"}:
+        from . import client
+        return getattr(client, name)
+    raise AttributeError(f"module {__name__!r} has no attribute {name!r}")
 
 
 class McpTrinoSkill(BaseSkill):
@@ -22,7 +30,7 @@ class McpTrinoSkill(BaseSkill):
     group = "mcp_trino"
     tier = "core"
 
-    def __init__(self, tool_def: dict, client: McpClient) -> None:
+    def __init__(self, tool_def: dict, client: "McpClient") -> None:
         self.name = f"mcp_{tool_def['name']}"
         self.description = tool_def.get("description", "")
         self._mcp_tool_name = tool_def["name"]
@@ -53,7 +61,7 @@ class McpTrinoStatusSkill(BaseSkill):
     tier = "core"
     args = []
 
-    def __init__(self, client: McpClient) -> None:
+    def __init__(self, client: "McpClient") -> None:
         self._client = client
 
     def run(self, **kwargs) -> str:
@@ -101,6 +109,8 @@ def _build_args(schema: dict) -> list[Arg]:
 def register(registry) -> None:
     """Discover MCP Trino server and register its tools."""
     import logging
+    from .client import McpClient, load_mcp_config
+
     log = logging.getLogger(__name__)
 
     config = load_mcp_config()

@@ -29,6 +29,7 @@ from genie.skills.mcp_trino.research import (
     _render_summary_card,
     _results_equivalent,
     generate_report,
+    run_trino_research_via_mcp,
 )
 
 
@@ -41,6 +42,77 @@ class TestRunMetrics:
         s = m.summary()
         assert "query=42ms" in s or "query=43ms" in s
         assert "rows=100" in s
+
+
+def _output_mock():
+    output = MagicMock()
+    output.print = MagicMock()
+    output.progress = MagicMock()
+    output.error = MagicMock()
+    return output
+
+
+def test_mcp_write_analysis_skips_preflight_safe_limit_enhancement(tmp_path, monkeypatch):
+    monkeypatch.chdir(tmp_path)
+    output = _output_mock()
+    provider = MagicMock()
+    provider.complete_text.return_value = "Advisory: check insert target ownership."
+
+    with patch("genie.skills.mcp_trino.research.load_mcp_config", side_effect=AssertionError("load_mcp_config called")), \
+         patch("genie.skills.mcp_trino.research.McpClient", side_effect=AssertionError("McpClient constructed")), \
+         patch("genie.skills.mcp_trino.research.run_mcp_enhancement", side_effect=AssertionError("enhancement called")), \
+         patch("genie.skills.mcp_trino.research._execute_via_mcp", side_effect=AssertionError("execute called")), \
+         patch("genie.skills.mcp_trino.research._measure_mcp", side_effect=AssertionError("measure called")), \
+         patch("genie.skills.mcp_trino.research._build_mcp_explain_runner", side_effect=AssertionError("explain called")), \
+         patch("genie.skills.mcp_trino.preflight.run_preflight", side_effect=AssertionError("preflight called")), \
+         patch("genie.skills.mcp_trino.preflight.apply_safe_limit", side_effect=AssertionError("safe limit called")):
+        run_trino_research_via_mcp(
+            provider, {}, "test-model", "default", output, lambda *a, **kw: "",
+            sql_text="INSERT INTO x SELECT * FROM t",
+            safe_limit=100,
+            diagnose_only=True,
+            metric="query_time_ms",
+            iterations=1,
+            runs=1,
+        )
+
+    md = next((tmp_path / "report").glob("trino-research-write-analysis-*.md")).read_text()
+    assert "| Kind | insert |" in md
+    assert "| SQL executed | no |" in md
+    assert "advisory, unverified" in md
+    provider.complete_text.assert_called_once()
+
+
+@pytest.mark.parametrize(
+    ("sql", "keyword"),
+    [
+        ("RENAME TABLE old_name TO new_name", "RENAME"),
+        ("REVOKE SELECT ON TABLE x FROM ROLE y", "REVOKE"),
+    ],
+)
+def test_mcp_rename_revoke_dispatch_to_write_analysis(tmp_path, monkeypatch, sql, keyword):
+    monkeypatch.chdir(tmp_path)
+    output = _output_mock()
+
+    with patch("genie.skills.mcp_trino.research.load_mcp_config", side_effect=AssertionError("load_mcp_config called")), \
+         patch("genie.skills.mcp_trino.research.McpClient", side_effect=AssertionError("McpClient constructed")), \
+         patch("genie.skills.mcp_trino.research.run_mcp_enhancement", side_effect=AssertionError("enhancement called")), \
+         patch("genie.skills.mcp_trino.research._execute_via_mcp", side_effect=AssertionError("execute called")), \
+         patch("genie.skills.mcp_trino.research._measure_mcp", side_effect=AssertionError("measure called")), \
+         patch("genie.skills.mcp_trino.research._build_mcp_explain_runner", side_effect=AssertionError("explain called")), \
+         patch("genie.skills.mcp_trino.preflight.run_preflight", side_effect=AssertionError("preflight called")), \
+         patch("genie.skills.mcp_trino.preflight.apply_safe_limit", side_effect=AssertionError("safe limit called")):
+        run_trino_research_via_mcp(
+            None, {}, "test-model", "default", output, lambda *a, **kw: "",
+            sql_text=sql,
+            metric="query_time_ms",
+            iterations=1,
+            runs=1,
+        )
+
+    md = next((tmp_path / "report").glob("trino-research-write-analysis-*.md")).read_text()
+    assert "| Kind | ddl |" in md
+    assert f"| Keyword | {keyword} |" in md
 
 
 # ── Result Equivalence ───────────────────────────────────────────────────────
