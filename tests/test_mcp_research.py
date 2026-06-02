@@ -115,6 +115,61 @@ def test_mcp_rename_revoke_dispatch_to_write_analysis(tmp_path, monkeypatch, sql
     assert f"| Keyword | {keyword} |" in md
 
 
+def test_mcp_interactive_prompts_before_preflight(monkeypatch):
+    events = []
+
+    class Sentinel(Exception):
+        pass
+
+    class FakeClient:
+        def __init__(self, config):
+            events.append("client")
+            self.config = config
+
+        def list_tools(self):
+            events.append("list_tools")
+            return [{"name": "query"}]
+
+    def fake_read_paste_mode():
+        events.append("paste")
+        return "SELECT * FROM orders"
+
+    def fake_read_input(prompt):
+        if "Choose" in prompt:
+            events.append("metric_prompt")
+            return "1"
+        if "Max iterations" in prompt:
+            events.append("iterations_prompt")
+            return "1"
+        if "Verify runs" in prompt:
+            events.append("runs_prompt")
+            return "1"
+        raise AssertionError(f"unexpected prompt: {prompt}")
+
+    def fake_run_preflight(sql, explain_runner, budget):
+        events.append("preflight")
+        raise Sentinel
+
+    monkeypatch.setattr(
+        "genie.skills.mcp_trino.research.load_mcp_config",
+        lambda: McpConfig(url="http://mcp.test/mcp", enabled=True, timeout=1),
+    )
+    monkeypatch.setattr("genie.skills.mcp_trino.research.McpClient", FakeClient)
+    monkeypatch.setattr("genie.input._read_paste_mode", fake_read_paste_mode)
+    monkeypatch.setattr("genie.input._read_input", fake_read_input)
+    monkeypatch.setattr("genie.skills.mcp_trino.preflight.run_preflight", fake_run_preflight)
+
+    with pytest.raises(Sentinel):
+        run_trino_research_via_mcp(
+            None, {}, "test-model", "default", _output_mock(), lambda *a, **kw: ""
+        )
+
+    assert events.index("paste") < events.index("metric_prompt")
+    assert events.index("metric_prompt") < events.index("preflight")
+    assert events.index("iterations_prompt") < events.index("preflight")
+    assert events.index("runs_prompt") < events.index("preflight")
+
+
 # ── Result Equivalence ───────────────────────────────────────────────────────
 
 

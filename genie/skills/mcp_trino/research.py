@@ -2614,48 +2614,6 @@ def run_trino_research_via_mcp(
         )
         return
 
-    # ── Pre-flight: read-only + size estimation ──
-    from .preflight import run_preflight, apply_safe_limit, PreflightBudget
-
-    def _explain_runner(s: str) -> Optional[str]:
-        tool_name, _ = _resolve_query_tool(client)
-        # Only run EXPLAIN if the server exposes an explain tool; otherwise skip
-        tools = {t["name"] for t in client.list_tools()}
-        explain_tool = next((n for n in ("explain", "explain_query", "trino_explain") if n in tools), None)
-        if not explain_tool:
-            return None
-        try:
-            return client.call_tool(explain_tool, {"sql": f"EXPLAIN (FORMAT JSON) {s}"})
-        except Exception:
-            return None
-
-    report = run_preflight(sql, _explain_runner, PreflightBudget())
-    if not report.ok:
-        output.error(f"  Pre-flight rejected: {report.reason}")
-        if report.estimated_rows or report.estimated_bytes:
-            est = []
-            if report.estimated_rows:
-                est.append(f"rows~{report.estimated_rows:,}")
-            if report.estimated_bytes:
-                est.append(f"bytes~{report.estimated_bytes:,}")
-            output.print(f"  [dim]Estimate: {', '.join(est)}[/dim]")
-        return
-    if report.estimated_rows or report.estimated_bytes:
-        est = []
-        if report.estimated_rows is not None:
-            est.append(f"~{report.estimated_rows:,} rows")
-        if report.estimated_bytes is not None:
-            est.append(f"~{report.estimated_bytes:,} bytes")
-        output.progress(f"  Pre-flight OK: {', '.join(est)}")
-    else:
-        output.progress(f"  Pre-flight OK: read-only verified (size estimate unavailable)")
-
-    # ── Opt-in safe-limit wrap ──
-    if safe_limit and safe_limit > 0:
-        wrapped = apply_safe_limit(sql, safe_limit)
-        output.progress(f"  --safe-limit {safe_limit}: wrapped SQL with LIMIT {safe_limit}")
-        sql = wrapped
-
     output.print(f"  [dim]SQL: {sql[:80]}...[/dim]\n")
 
     # ── Get metric ──
@@ -2692,6 +2650,49 @@ def run_trino_research_via_mcp(
             runs = max(1, int(runs_str))
         except (ValueError, EOFError, KeyboardInterrupt):
             runs = 3
+
+    # ── Pre-flight: read-only + size estimation ──
+    from .preflight import run_preflight, apply_safe_limit, PreflightBudget
+
+    def _explain_runner(s: str) -> Optional[str]:
+        tool_name, _ = _resolve_query_tool(client)
+        # Only run EXPLAIN if the server exposes an explain tool; otherwise skip
+        tools = {t["name"] for t in client.list_tools()}
+        explain_tool = next((n for n in ("explain", "explain_query", "trino_explain") if n in tools), None)
+        if not explain_tool:
+            return None
+        try:
+            return client.call_tool(explain_tool, {"sql": f"EXPLAIN (FORMAT JSON) {s}"})
+        except Exception:
+            return None
+
+    output.progress("  Pre-flight: checking read-only SQL and size estimate...")
+    report = run_preflight(sql, _explain_runner, PreflightBudget())
+    if not report.ok:
+        output.error(f"  Pre-flight rejected: {report.reason}")
+        if report.estimated_rows or report.estimated_bytes:
+            est = []
+            if report.estimated_rows:
+                est.append(f"rows~{report.estimated_rows:,}")
+            if report.estimated_bytes:
+                est.append(f"bytes~{report.estimated_bytes:,}")
+            output.print(f"  [dim]Estimate: {', '.join(est)}[/dim]")
+        return
+    if report.estimated_rows or report.estimated_bytes:
+        est = []
+        if report.estimated_rows is not None:
+            est.append(f"~{report.estimated_rows:,} rows")
+        if report.estimated_bytes is not None:
+            est.append(f"~{report.estimated_bytes:,} bytes")
+        output.progress(f"  Pre-flight OK: {', '.join(est)}")
+    else:
+        output.progress(f"  Pre-flight OK: read-only verified (size estimate unavailable)")
+
+    # ── Opt-in safe-limit wrap ──
+    if safe_limit and safe_limit > 0:
+        wrapped = apply_safe_limit(sql, safe_limit)
+        output.progress(f"  --safe-limit {safe_limit}: wrapped SQL with LIMIT {safe_limit}")
+        sql = wrapped
 
     # ── Pre-launch plan card ──
     _render_plan_card(

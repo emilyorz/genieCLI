@@ -198,7 +198,7 @@ def _read_paste_mode() -> str:
 
     @kb.add("c-d", eager=True)
     def _submit(event):
-        event.current_buffer.validate_and_handle()
+        event.app.exit(result=event.current_buffer.text)
 
     _con.print("  [dim](paste mode — Ctrl-D to send, Ctrl-C to cancel)[/dim]")
     try:
