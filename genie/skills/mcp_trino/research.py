@@ -1757,10 +1757,19 @@ def run_mcp_enhancement(
         elif _mem_limit.source == "bad_env_fallthrough":
             import os as _os_local
             _bad_val = _os_local.environ.get("GENIE_TRINO_MEMORY_LIMIT_PER_NODE_BYTES", "?")
-            output.progress(
-                f"  [yellow][warn] GENIE_TRINO_MEMORY_LIMIT_PER_NODE_BYTES={_bad_val!r} "
-                f"is not a valid positive integer — falling through to SHOW SESSION[/yellow]"
-            )
+            if memory_limit_bytes is not None:
+                _limit_display = f"{memory_limit_bytes / 1024**3:.1f} GiB"
+                output.progress(
+                    f"  [yellow][warn] GENIE_TRINO_MEMORY_LIMIT_PER_NODE_BYTES={_bad_val!r} "
+                    f"is not a valid positive integer — SHOW SESSION supplied "
+                    f"query_max_memory_per_node={_limit_display}[/yellow]"
+                )
+            else:
+                output.progress(
+                    f"  [yellow][warn] GENIE_TRINO_MEMORY_LIMIT_PER_NODE_BYTES={_bad_val!r} "
+                    f"is not a valid positive integer — SHOW SESSION did not provide a usable "
+                    f"query_max_memory_per_node; using 1.0 GiB fallback[/yellow]"
+                )
         elif _mem_limit.source == "show_session":
             _limit_display = f"{memory_limit_bytes / 1024**3:.1f} GiB" if memory_limit_bytes else "?"
             output.progress(f"  memory limit  {_limit_display} (SHOW SESSION query_max_memory_per_node)")

@@ -353,8 +353,9 @@ def check_long_query_gate(
 def make_query_max_run_time_sql(baseline_wall_ms: float) -> str:
     """Build a `SET SESSION query_max_run_time = '<N>ms'` statement.
 
-    N = ceil(1.0 × baseline_wall_ms), clamped to at least 1000ms so that tiny
-    baselines don't produce absurdly short timeouts during smoke runs.
+    N comes from make_candidate_timeout_ms(): ceil(baseline_wall_ms ×
+    CANDIDATE_TIMEOUT_HEADROOM), currently 2x, clamped to at least 2000ms so
+    tiny baselines don't produce absurdly short timeouts during smoke runs.
     """
     n_ms = make_candidate_timeout_ms(baseline_wall_ms)
     return f"SET SESSION query_max_run_time = '{n_ms}ms'"

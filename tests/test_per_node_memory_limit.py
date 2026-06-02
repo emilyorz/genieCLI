@@ -453,6 +453,12 @@ def _fake_mcp_baseline(peak_memory_bytes: int = 0) -> MeasureResult:
     )
 
 
+def _fake_mcp_long_baseline(peak_memory_bytes: int = 0) -> MeasureResult:
+    result = _fake_mcp_baseline(peak_memory_bytes)
+    result.metrics.wall_time_ms = 61_000.0
+    return result
+
+
 class TestMcpPathThreading:
     def setup_method(self):
         _clear_resolved_tool()
@@ -538,6 +544,21 @@ class TestMcpPathThreading:
                     "error": None,
                     "raw": "",
                 }
+            if sql.strip().upper().startswith("EXPLAIN (FORMAT JSON)"):
+                plan = json.dumps({
+                    "estimates": [{
+                        "outputRowCount": 10,
+                        "outputSizeInBytes": 1024,
+                    }],
+                })
+                return {
+                    "rows": [{"Query Plan": plan}],
+                    "columns": ["Query Plan"],
+                    "row_count": 1,
+                    "metrics": RunMetrics(),
+                    "error": None,
+                    "raw": plan,
+                }
             # All other calls (EXPLAIN, session set, etc.) return empty
             return {
                 "rows": [],
@@ -559,7 +580,7 @@ class TestMcpPathThreading:
         client.config.url = "mock://trino"
 
         with patch.object(mcp_research, "_execute_via_mcp", side_effect=_counting_execute_via_mcp), \
-             patch.object(mcp_research, "_measure_mcp", return_value=_fake_mcp_baseline()), \
+             patch.object(mcp_research, "_measure_mcp", return_value=_fake_mcp_long_baseline()), \
              patch.object(
                  mcp_research, "_fetch_explain_analyze",
                  return_value=ExplainAnalyzeResult(raw_text="", available=False),
@@ -584,9 +605,50 @@ class TestMcpPathThreading:
         # SHOW SESSION called exactly once
         assert show_session_call_count == 1
 
-        # If _run_mcp_plan_cost_loop was called, verify peak_memory_limit_bytes passed
-        if plan_cost_loop_kwargs:
-            assert plan_cost_loop_kwargs.get("peak_memory_limit_bytes") == _5gib
+        assert plan_cost_loop_kwargs
+        assert plan_cost_loop_kwargs.get("peak_memory_limit_bytes") == _5gib
+
+    def test_bad_env_show_session_failure_breadcrumb_uses_fallback(self, monkeypatch):
+        """Bad env + failed SHOW SESSION must tell the user the 1.0 GiB fallback is active."""
+        from genie.skills.mcp_trino import research as mcp_research
+
+        monkeypatch.delenv(_ENV_LIMIT, raising=False)
+        monkeypatch.delenv(_ENV_FRAC, raising=False)
+        monkeypatch.setenv(_ENV_LIMIT, "not-a-number")
+
+        output = MagicMock()
+        client = MagicMock()
+        client.config.url = "mock://trino"
+        client.list_tools.return_value = [
+            {"name": "query", "inputSchema": {"properties": {"sql": {"type": "string"}}}},
+        ]
+        client.call_tool.return_value = json.dumps({"error": "session not available"})
+
+        with patch.object(mcp_research, "_measure_mcp", return_value=_fake_mcp_baseline()), \
+             patch.object(
+                 mcp_research, "_fetch_explain_analyze",
+                 return_value=ExplainAnalyzeResult(raw_text="", available=False),
+             ), \
+             patch("genie.session.manager.new_session", side_effect=_capturing_new_session):
+            with pytest.raises(_PromptCaptured):
+                mcp_research.run_mcp_enhancement(
+                    client=client,
+                    sql="SELECT 1",
+                    metric_key="wall_time_ms",
+                    max_iterations=3,
+                    verify_runs=1,
+                    provider=MagicMock(),
+                    model="test-model",
+                    reasoning="disable",
+                    output=output,
+                    build_prompt=lambda *a, **k: "SKILL",
+                )
+
+        progress_messages = " ".join(
+            str(args[0]) for args, _kwargs in output.progress.call_args_list if args
+        )
+        assert "SHOW SESSION did not provide a usable query_max_memory_per_node" in progress_messages
+        assert "using 1.0 GiB fallback" in progress_messages
 
     def test_introspection_failure_no_regression(self, monkeypatch):
         """T-F-25: SHOW SESSION returns error → run proceeds, no exception, 1 GiB fallback used."""

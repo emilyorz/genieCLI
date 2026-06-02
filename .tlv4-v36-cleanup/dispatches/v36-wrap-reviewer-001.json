@@ -1,0 +1,7 @@
+{
+  "role": "reviewer",
+  "step": "wrap_retro",
+  "model": "codex-default-inherited",
+  "reasoning-tier": "unavailable",
+  "notes": "Independent Codex subagent review of artifacts/wrap_retro.producer.md; reviewer dispatch differs from producer dispatch."
+}

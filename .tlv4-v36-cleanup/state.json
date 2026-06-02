@@ -1,0 +1,110 @@
+{
+  "schema_version": "task-ledger-v4-1",
+  "project": "genieCLI",
+  "project_root": "/Users/leeabc/work/emilyorz/genieCLI",
+  "entry_profile": "bugfix",
+  "active_steps": [
+    "ticket",
+    "develop",
+    "review",
+    "wrap_retro"
+  ],
+  "backward_edges": [
+    [
+      "review",
+      "develop"
+    ]
+  ],
+  "routing": {
+    "ticket": {
+      "producer": "sonnet",
+      "reviewer": "sonnet"
+    },
+    "develop": {
+      "producer": "sonnet",
+      "reviewer": "sonnet"
+    },
+    "review": {
+      "producer": "sonnet",
+      "reviewer": "opus"
+    },
+    "wrap_retro": {
+      "producer": "sonnet",
+      "reviewer": "sonnet"
+    }
+  },
+  "current_step": "DONE",
+  "step_status": "passed",
+  "max_attempts": 3,
+  "steps": {
+    "ticket": {
+      "status": "passed",
+      "score": 9.4,
+      "producer_artifact": "artifacts/ticket.producer.md",
+      "producer_hash": "3b78fa8e10ea7f44a848800dbb2427e554c607f4cca78b2d1a0908975b98e629",
+      "producer_dispatch_id": "v36-ticket-producer-001",
+      "review_artifact": "artifacts/ticket.review.json",
+      "review_hash": "08c3bcf8e6a1e44a5ef25de8c9c6f7072ce61dbbffd2f448ab1e8e95359050fb",
+      "reviewer_dispatch_id": "v36-ticket-reviewer-001",
+      "model": "inherited-codex",
+      "attempts": 0,
+      "base_sha": "d03dc1abc86828340b29f8af2ed515f82bf4f5c3",
+      "dirty_status_hash": "39654a883314e734bc4b00e883a40c9a1e52a193dabf034a89157b72e02d7f69",
+      "commit_sha": null,
+      "issue_ledger": []
+    },
+    "develop": {
+      "status": "passed",
+      "score": 9.3,
+      "producer_artifact": "artifacts/develop.producer.md",
+      "producer_hash": "7344a2e3697a467d263e491a2776b9854578e2f62511b92d9b96e8ec3e8296a1",
+      "producer_dispatch_id": "v36-develop-producer-001",
+      "review_artifact": "artifacts/develop.review.json",
+      "review_hash": "237df92d21b417215788ce0108dccc6f685fc997a7cc469628f7730720e113a1",
+      "reviewer_dispatch_id": "v36-develop-reviewer-001",
+      "model": "inherited-codex",
+      "attempts": 0,
+      "base_sha": "d03dc1abc86828340b29f8af2ed515f82bf4f5c3",
+      "dirty_status_hash": "39654a883314e734bc4b00e883a40c9a1e52a193dabf034a89157b72e02d7f69",
+      "commit_sha": null,
+      "issue_ledger": []
+    },
+    "review": {
+      "status": "passed",
+      "score": 9.3,
+      "producer_artifact": "artifacts/review.producer.md",
+      "producer_hash": "ed7704c3af6a48be5552c81350444d7c66cf23b8c085d684c2f6e75e7a48e263",
+      "producer_dispatch_id": "v36-review-producer-001",
+      "review_artifact": "artifacts/review.review.json",
+      "review_hash": "4ad332499f115cb6086d4b92468f74e63220a6ced996800705e01bc8a715c322",
+      "reviewer_dispatch_id": "v36-review-reviewer-001",
+      "model": "inherited-codex",
+      "attempts": 0,
+      "base_sha": "d03dc1abc86828340b29f8af2ed515f82bf4f5c3",
+      "dirty_status_hash": "3d57e0feac47fd9f9205eda97ea80cd06f5d080f9bd655de4d4097eb24cbdabb",
+      "commit_sha": null,
+      "issue_ledger": []
+    },
+    "wrap_retro": {
+      "status": "passed",
+      "score": 9.5,
+      "producer_artifact": "artifacts/wrap_retro.producer.md",
+      "producer_hash": "2a3b428d5b4333d54e366b995903ee423b90342cbe03ff6276f9392333c4d279",
+      "producer_dispatch_id": "v36-wrap-producer-001",
+      "review_artifact": "artifacts/wrap_retro.review.json",
+      "review_hash": "1328cc254bf73ebc90039d300d4771bed338395915f715f125d879c28207cddb",
+      "reviewer_dispatch_id": "v36-wrap-reviewer-001",
+      "model": "inherited-codex",
+      "attempts": 0,
+      "base_sha": "d03dc1abc86828340b29f8af2ed515f82bf4f5c3",
+      "dirty_status_hash": "3d57e0feac47fd9f9205eda97ea80cd06f5d080f9bd655de4d4097eb24cbdabb",
+      "commit_sha": null,
+      "issue_ledger": []
+    }
+  },
+  "routing_overrides": {},
+  "github_issue": null,
+  "pending_decision": null,
+  "history": [],
+  "updated_at": "2026-06-02T20:40:57+08:00"
+}
