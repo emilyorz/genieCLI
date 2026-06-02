@@ -5,23 +5,28 @@
 
 ## Active Iteration
 
-- **Ledger:** [CURRENT.md](CURRENT.md) holds **v31** (last _formal_ strict-V3 iteration, DONE). v32 + v33 shipped as out-of-process iterations — see [archive/v32.md](archive/v32.md), [archive/v33.md](archive/v33.md).
-- **Status:** v31 (formal) + v32 + v33 (deviation iterations) all complete and on `main`. **No iteration currently active — ready to start v34.**
-- **v33 (out-of-process, orchestrated):** MCP long-query plan-cost parity (T1, quality-verified 9.3) + dual-path real-rule*id equivalence test (T2) + memory-pressure threshold calibration **mechanism** (T3 — \_not yet wired to a live limit*, see residual #1). **819 pass.** Hooks-off deviation but with **full dispatched review** (Claude orchestrator + local Codex executor + sonnet spec-verifier + opus quality-verifier). Full retro: archive/v33.md.
+- **Ledger:** [CURRENT.md](CURRENT.md) holds **v31** (last _formal_ strict-V3 iteration, DONE). v32 + v33 + v34 shipped as out-of-process iterations — see archives.
+- **Status:** v31 (formal) + v32 + v33 + v34 (deviation iterations) all complete and on `main`. **No iteration currently active — ready to start v35.**
+- **v34 (Task-Ledger-V4 pilot, `8ecced9`):** Memory-pressure threshold live wiring — per-node limit resolved from env / SHOW SESSION / 1 GiB fallback; `GENIE_TRINO_MEMORY_LIMIT_PER_NODE_BYTES` + `GENIE_TRINO_MEMORY_PRESSURE_FRACTION` env knobs; five call sites threaded; 53 new tests; **880 pass, 10 skipped, 0 failures**. Two back-edges (explore→attempt-2 caught total-vs-per-node inversion; review→develop caught nan ValueError). Full retro: [archive/v34.md](archive/v34.md). **4 residuals surfaced — see below.**
+- **v33 (out-of-process, orchestrated):** MCP long-query plan-cost parity (T1, quality-verified 9.3) + dual-path real-rule_id equivalence test (T2) + memory-pressure threshold calibration **mechanism** (T3 — wired to a live limit in v34). **819 pass.** Full retro: archive/v33.md.
 - **v32 (on `main` `12e954a`):** rule_id contract repair (revived v31's never-firing `REWRITE` class) + per-iteration re-diagnosis + observational direction efficacy. archive/v32.md.
 - **Touched features:** [trino-research](features/trino-research.md)
-- **Last commit:** v33 (T1+T2+T3) → on `main`.
-- **Resume action:** Start the next product change as **v34**; consume the v33 residual below. `CURRENT.md` still reads v31 (v32/v33 were out-of-process). If v34 runs via the **codex-runner under live hooks** it authors the next formal CURRENT.md; if **Claude-orchestrated**, run hooks-off + dispatched review + an archive record (the v33 model) — do NOT switch activation `runtime` mid-iteration.
+- **Last commit:** v34 (`8ecced9`) → on `main`.
+- **Resume action:** Start the next product change as **v35**; consume the v34 residuals below. `CURRENT.md` still reads v31 (v32/v33/v34 were out-of-process). If v35 runs via the **codex-runner under live hooks** it authors the next formal CURRENT.md; if **Claude-orchestrated**, run hooks-off + dispatched review + archive record.
 
-## Next Iteration Focus (v34 — carryover from v33 retro)
+## Next Iteration Focus (v35 — carryover from v34 retro)
 
-From v33 retro (see [archive/v33.md](archive/v33.md)):
+From v34 retro (see [archive/v34.md](archive/v34.md)):
 
-1. ⭐ P1 — **T3 live wiring (#1):** read `query.max-memory-per-node` (MCP `SHOW SESSION`) and pass it into `pre_execution_diagnosis`; validate against a real cluster. Until wired, memory-pressure uses the 1 GiB fallback (v33's mechanism is calibratable but not calibrated).
-2. ⭐ P1 — **Strengthen + clean:** pin expected kinds for all 8 rules in the dual-path equivalence test (T2 gap); remove the dead `mcp_explain_runner is not None` sub-condition; track/​fix the partial-EXPLAIN cost distortion `(rows or 0)*(bytes or 1)` (both paths) + extract the shared plan-cost iteration core before a 3rd copy.
-3. ⭐ P1 — Upgrade `validate_ledger.py` to recognize the v3 ledger schema (carried v29→v33, still open → v3 ledgers still need blanket `--no-verify`).
+1. ⭐ P1 — **Live-cluster numeric validation (#1):** verify whether Sam's office mcp-trino (`SHOW SESSION` on port 8811) exposes `query_max_memory_per_node`, its real string format/casing, and whether `0.5 × limit` is the right production fraction. Env override is the production path until validated.
+2. ⭐ P1 — **Strengthen + clean (carried from v33):** pin expected kinds for all 8 rules in the dual-path equivalence test (T2 gap); remove the dead `mcp_explain_runner is not None` sub-condition; track/​fix the partial-EXPLAIN cost distortion `(rows or 0)*(bytes or 1)` (both paths) + extract the shared plan-cost iteration core before a 3rd copy.
+3. ⭐ P1 — Upgrade `validate_ledger.py` to recognize the v3 ledger schema (carried v29→v34, still open).
+4. P2 — **Stale docstring on `make_query_max_run_time_sql`** (`preflight.py:332–336`): still reads "1.0×/1000ms" but actual behavior uses `CANDIDATE_TIMEOUT_HEADROOM = 2.0` / 2000ms floor.
+5. P2 — **T-F-24 conditional assertion never fires** (`tests/test_per_node_memory_limit.py:588`): `if plan_cost_loop_kwargs:` silently skips because `_run_mcp_plan_cost_loop` is never entered in the current test setup; `peak_memory_limit_bytes` threading to call site 5 is correct in code but has no executable coverage.
+6. P2 — **`bad_env_fallthrough` breadcrumb omits SHOW SESSION outcome**: when env var is bad AND SHOW SESSION also fails, the breadcrumb still says "falling through to SHOW SESSION" without noting 1 GiB fallback is in effect.
 
-(3 promotes — at cap.) **Process (carried):** strict-V3 telemetry bottlenecks ad-hoc iterations on BOTH runtimes (dead-locked 3 Claude sessions + stalled 1 Codex, all on ceremony) — reserve full strict V3 for codex-runner iterations; ad-hoc work = hooks-off + dispatched review + archive record. Backlog: EXPLAIN depth (join distribution/build-side); `--direct` permanent `table_metadata=None` asymmetry; LH-PRISM predictive cost engine.
+(3 promotes at cap; items 4–6 are v34 new minors, below cap — surface at v35 PLAN.)
+**Process (carried):** strict-V3 telemetry bottlenecks ad-hoc iterations on BOTH runtimes — reserve full strict V3 for codex-runner iterations; ad-hoc work = hooks-off + dispatched review + archive record. TLV4 flat SDD pilot (v34) ran to DONE without ceremony blockage — see archive/v34.md for pilot evidence. Backlog: EXPLAIN depth (join distribution/build-side); `--direct` permanent `table_metadata=None` asymmetry; LH-PRISM predictive cost engine.
 
 ## Active Parks
 
@@ -55,6 +60,7 @@ From v33 retro (see [archive/v33.md](archive/v33.md)):
 
 ## Archive
 
+- [archive/v34.md](archive/v34.md) — memory-pressure threshold live wiring (Task-Ledger-V4 pilot, flat 9-step SDD): per-node limit from env / SHOW SESSION / 1 GiB fallback; `GENIE_TRINO_MEMORY_LIMIT_PER_NODE_BYTES` + `GENIE_TRINO_MEMORY_PRESSURE_FRACTION` env knobs; 5 call sites threaded; 53 new tests; **880 pass**, 0 regression; commit `8ecced9`; two back-edges caught real defects (explore: total-vs-per-node inversion; review: nan ValueError)
 - [archive/v33.md](archive/v33.md) — directed-loop continuation (out-of-process, hooks-off + full dispatched review): MCP long-query plan-cost parity (T1, quality 9.3) + dual-path real-rule_id equivalence test (T2) + memory-threshold calibration mechanism (T3, not yet wired to a live limit); 819 pass; orchestrator=Claude, executor=local Codex CLI, verifiers=Claude sonnet/opus
 - [archive/v32.md](archive/v32.md) — directed-loop repair (out-of-process hotfix, V3 deviation): rule_id contract fix (revived v31's never-firing rule-gate `REWRITE` class) + per-iteration re-diagnosis + observational direction efficacy, both paths; 809 pass; commit `12e954a` on main
 - [archive/v31.md](archive/v31.md) — rule-first pre-AI gate (BLOCK/REWRITE/ADVISE/PASS) with compact TUI + shared MCP/direct/plan-cost behavior; 799 pass; commits `bc82bdf`/`21ca729`/`f274f10`
