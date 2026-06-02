@@ -31,6 +31,14 @@ _CORPUS = [
     "WITH c AS (SELECT a, b FROM raw.events) SELECT a FROM c WHERE a > 1",
     "SELECT a FROM t WHERE a = NULL",
     "SELECT CAST(CAST(a AS varchar) AS varchar) AS c FROM t",
+    (
+        "WITH joined AS ("
+        " SELECT o.order_id, c.region"
+        " FROM orders o"
+        " JOIN customers c ON c.customer_id = o.customer_id"
+        ")"
+        " SELECT order_id FROM joined WHERE region = 'TW'"
+    ),
 ]
 
 
@@ -71,3 +79,28 @@ def test_real_analyze_to_gate_fires_rewrite():
     assert summary.counts[ACTION_REWRITE] >= 1, (
         f"REWRITE never fired through the real pipeline: {summary.counts}"
     )
+
+
+def test_join_first_filter_late_stays_on_the_real_contract_path():
+    sql = (
+        "WITH joined AS ("
+        " SELECT o.order_id, c.region"
+        " FROM orders o"
+        " JOIN customers c ON c.customer_id = o.customer_id"
+        ")"
+        " SELECT order_id FROM joined WHERE region = 'TW'"
+    )
+
+    report = analyze(sql)
+    findings = [f for f in report.findings if f.rule_id == "join-first-filter-late"]
+    assert len(findings) == 1
+
+    directions = pre_execution_diagnosis(sql, static_report=report)
+    static_directions = [d for d in directions if d.evidence.startswith("static:join-first-filter-late@L")]
+    assert len(static_directions) == 1
+    assert static_directions[0].kind == "fix-join-first-filter-late"
+
+    summary = build_rule_gate_summary(static_report=report, directions=directions)
+    rewrite_items = [item for item in summary.items if item.rule_id == "join-first-filter-late"]
+    assert len(rewrite_items) == 1
+    assert rewrite_items[0].action == ACTION_REWRITE

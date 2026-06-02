@@ -134,3 +134,32 @@ def test_render_rule_gate_summary_uses_compact_human_block():
     assert "rewrite[/dim]=1" in rendered
     assert "cartesian-join" in rendered
     assert "predicate-not-pushed" in rendered
+
+
+def test_rule_gate_classifies_join_first_filter_late_as_medium_rewrite_once():
+    finding = Finding(
+        "medium",
+        "join-first-filter-late",
+        "Filter on c.region is applied after a joined CTE/derived table.",
+        "Pre-filter the c input before the join when semantics permit; verify equivalence manually.",
+        8,
+    )
+    directions = [
+        OptimizationDirection(
+            kind="fix-join-first-filter-late",
+            severity="medium",
+            rationale="static duplicate should be ignored",
+            evidence="static:join-first-filter-late@L8",
+            target_metric="wall_time_ms",
+        )
+    ]
+
+    summary = build_rule_gate_summary(_report(finding), directions)
+
+    items = [item for item in summary.items if item.rule_id == "join-first-filter-late"]
+    assert len(items) == 1
+    item = items[0]
+    assert item.action == ACTION_REWRITE
+    assert item.confidence == "medium"
+    assert item.evidence == "static:join-first-filter-late@L8"
+    assert "Candidate rewrite: pre-filter the relevant input before the large join when semantics permit; verify equivalence." in item.suggestion

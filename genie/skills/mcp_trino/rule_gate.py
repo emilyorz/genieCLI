@@ -14,6 +14,7 @@ from rich.markup import escape
 
 from genie.skills.trino_query.sql_static.rule_ids import (
     RULE_CARTESIAN_JOIN,
+    RULE_JOIN_FIRST_FILTER_LATE,
     RULE_NULL_UNSAFE_EQUALS,
     RULE_PREDICATE_NOT_PUSHED_TO_CTE,
     RULE_REDUNDANT_CAST_CHAIN,
@@ -112,6 +113,11 @@ _STATIC_ACTIONS: dict[str, tuple[str, str, str]] = {
         ACTION_REWRITE,
         "high",
         "Candidate rewrite: remove redundant cast chain and verify.",
+    ),
+    RULE_JOIN_FIRST_FILTER_LATE: (
+        ACTION_REWRITE,
+        "medium",
+        "Candidate rewrite: pre-filter the relevant input before the large join when semantics permit; verify equivalence.",
     ),
     RULE_SELECT_STAR: (
         ACTION_ADVISE,

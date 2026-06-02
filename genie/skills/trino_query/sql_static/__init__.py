@@ -69,6 +69,7 @@ def _load_rules() -> list:
         r6_predicate_pushdown,
         r7_null_unsafe_equals,
         r8_redundant_cast,
+        r9_join_first_filter_late,
     )
     return [
         r1_cartesian_join.apply,
@@ -79,6 +80,7 @@ def _load_rules() -> list:
         r6_predicate_pushdown.apply,
         r7_null_unsafe_equals.apply,
         r8_redundant_cast.apply,
+        r9_join_first_filter_late.apply,
     ]
 
 

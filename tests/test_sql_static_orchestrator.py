@@ -1,6 +1,8 @@
 """Tests for the sql_static orchestrator: parse handling, multi-rule, summary."""
 from __future__ import annotations
 
+import textwrap
+
 import pytest
 
 from genie.skills.trino_query.sql_static import (
@@ -105,3 +107,36 @@ def test_rule_failure_does_not_crash_orchestrator(monkeypatch):
     # null-unsafe-equals (R7) must still fire even though R2 blew up
     rule_ids = {f.rule_id for f in r.findings}
     assert "null-unsafe-equals" in rule_ids
+
+
+def test_r9_finding_keeps_consumer_where_anchor_in_report_dict():
+    sql = textwrap.dedent(
+        """
+        WITH joined AS (
+          SELECT o.order_id, c.region
+          FROM orders o
+          JOIN customers c ON c.customer_id = o.customer_id
+        )
+        SELECT order_id
+        FROM joined
+        WHERE
+          region = 'TW'
+        """
+    ).strip()
+
+    report = analyze(sql)
+    findings = [f for f in report.findings if f.rule_id == "join-first-filter-late"]
+
+    assert len(findings) == 1
+    assert findings[0].line == 8
+    payload = report.to_dict()
+    serialized = [f for f in payload["findings"] if f["rule_id"] == "join-first-filter-late"]
+    assert serialized == [
+        {
+            "severity": "medium",
+            "rule_id": "join-first-filter-late",
+            "message": "Filter on c.region is applied after a joined CTE/derived table.",
+            "suggestion": "Pre-filter the relevant input before the join when semantics permit; verify equivalence manually.",
+            "line": 8,
+        }
+    ]

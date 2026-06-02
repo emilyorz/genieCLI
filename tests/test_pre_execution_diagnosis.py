@@ -120,6 +120,7 @@ def test_should_map_known_rule_id_to_canonical_kind():
         ("predicate-not-pushed-to-cte", "fix-predicate-pushdown"),
         ("null-unsafe-equals", "fix-null-unsafe-equals"),
         ("redundant-cast-chain", "fix-redundant-cast"),
+        ("join-first-filter-late", "fix-join-first-filter-late"),
     ]
     for rule_id, expected_kind in known_rules:
         finding = _make_finding(rule_id=rule_id)
@@ -135,6 +136,28 @@ def test_should_use_static_prefix_fallback_for_unknown_rule_id():
     result = pre_execution_diagnosis("SELECT 1", static_report=report)
 
     assert result[0].kind == "static-some-new-rule"
+
+
+def test_should_keep_join_first_filter_late_static_evidence_exact():
+    from genie.skills.trino_query.sql_static import analyze
+
+    sql = (
+        "WITH joined AS ("
+        " SELECT o.order_id, c.region"
+        " FROM orders o"
+        " JOIN customers c ON c.customer_id = o.customer_id"
+        ")"
+        " SELECT order_id FROM joined WHERE region = 'TW'"
+    )
+
+    report = analyze(sql)
+    result = pre_execution_diagnosis(sql, static_report=report)
+
+    static_dirs = [d for d in result if d.kind == "fix-join-first-filter-late"]
+    assert len(static_dirs) == 1
+    assert static_dirs[0].severity == "medium"
+    assert static_dirs[0].evidence == "static:join-first-filter-late@L1"
+    assert "Pre-filter the relevant input before the join" in static_dirs[0].rationale
 
 
 # ---------------------------------------------------------------------------

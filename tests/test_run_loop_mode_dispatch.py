@@ -74,6 +74,10 @@ def _output_mock():
     return output
 
 
+def _read_write_analysis_report(tmp_path):
+    return next((tmp_path / "report").glob("trino-research-write-analysis-*.md")).read_text()
+
+
 def test_write_analysis_module_import_does_not_load_mcp_client():
     code = """
 import sys
@@ -166,6 +170,36 @@ def test_direct_write_analysis_skips_measure_explain_and_loop(tmp_path, monkeypa
     provider.complete_text.assert_called_once()
 
 
+def test_direct_write_analysis_renders_suggested_sql_with_one_semicolon(tmp_path, monkeypatch):
+    monkeypatch.chdir(tmp_path)
+    output = _output_mock()
+    provider = MagicMock()
+    provider.complete_text.return_value = (
+        "Safer draft:\n"
+        "```sql\n"
+        "CREATE TABLE scratch.result AS\n"
+        "SELECT order_id FROM source;;\n"
+        "```\n"
+        "Validate manually."
+    )
+
+    with patch("genie.skills.trino_query.research._run_optimization_loop", side_effect=AssertionError("loop called")), \
+         patch("genie.skills.trino_query.research._measure", side_effect=AssertionError("measure called")), \
+         patch("genie.skills.trino_query.research._execute_sql", side_effect=AssertionError("execute called")):
+        run_trino_research(
+            provider, {}, "test-model", "default", output, lambda *a, **kw: "",
+            sql_text="CREATE TABLE x AS SELECT * FROM t",
+            metric="cpu_time_ms",
+            iterations=1,
+            runs=1,
+        )
+
+    md = _read_write_analysis_report(tmp_path)
+    assert md.index("## Suggested SQL Command (advisory, not executed)") < md.index("## Advisory Suggestions")
+    assert "```sql\nCREATE TABLE scratch.result AS\nSELECT order_id FROM source;\n```" in md
+    assert "SELECT order_id FROM source;;" not in md.split("## Advisory Suggestions", 1)[0]
+
+
 @pytest.mark.parametrize(
     "sql",
     [
@@ -186,7 +220,7 @@ def test_direct_rename_revoke_dispatch_to_write_analysis(tmp_path, monkeypatch, 
             iterations=1,
             runs=1,
         )
-    md = next((tmp_path / "report").glob("trino-research-write-analysis-*.md")).read_text()
+    md = _read_write_analysis_report(tmp_path)
     assert "| Kind | ddl |" in md
     assert ("| Keyword | RENAME |" in md) or ("| Keyword | REVOKE |" in md)
 
@@ -235,9 +269,32 @@ def test_chat_file_write_analysis_helper_does_not_touch_mcp(tmp_path, monkeypatc
         )
 
     assert handled is True
-    md = next((tmp_path / "report").glob("trino-research-write-analysis-*.md")).read_text()
+    md = _read_write_analysis_report(tmp_path)
     assert "| Keyword | REVOKE |" in md
     assert "Safe-limit was not applied" in md
+
+
+def test_chat_file_write_analysis_prose_only_has_no_suggested_sql_section(tmp_path, monkeypatch):
+    monkeypatch.chdir(tmp_path)
+    sql_file = tmp_path / "write.sql"
+    sql_file.write_text("INSERT INTO x SELECT * FROM y")
+    output = _output_mock()
+
+    from genie.chat import _try_run_trino_write_analysis_from_file
+
+    provider = MagicMock()
+    provider.complete_text.return_value = "Use a scratch destination and verify row counts manually."
+
+    handled = _try_run_trino_write_analysis_from_file(
+        provider, {}, "test-model", "default", output, lambda *a, **kw: "",
+        {"sql_file": str(sql_file)},
+        route="chat",
+    )
+
+    assert handled is True
+    md = _read_write_analysis_report(tmp_path)
+    assert "## Suggested SQL Command (advisory, not executed)" not in md
+    assert "No complete SQL command was extracted from advisory text." in md
 
 
 def test_chat_loop_file_write_analysis_startup_does_not_touch_mcp(tmp_path, monkeypatch):
@@ -259,7 +316,7 @@ def test_chat_loop_file_write_analysis_startup_does_not_touch_mcp(tmp_path, monk
 
     load_mcp_config.assert_not_called()
     mcp_client.assert_not_called()
-    md = next((tmp_path / "report").glob("trino-research-write-analysis-*.md")).read_text()
+    md = _read_write_analysis_report(tmp_path)
     assert "| Keyword | RENAME |" in md
     assert "| MCP/Trino reached | no |" in md
 

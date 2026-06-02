@@ -4,6 +4,8 @@ Each rule has at least one positive (rule fires) and one negative (rule silent) 
 """
 from __future__ import annotations
 
+import textwrap
+
 import pytest
 
 from genie.skills.trino_query.sql_static import analyze
@@ -11,6 +13,10 @@ from genie.skills.trino_query.sql_static import analyze
 
 def _rule_ids(sql: str) -> list[str]:
     return [f.rule_id for f in analyze(sql).findings]
+
+
+def _rule_findings(sql: str, rule_id: str):
+    return [f for f in analyze(sql).findings if f.rule_id == rule_id]
 
 
 # ── R1 cartesian-join ─────────────────────────────────────────────────────────
@@ -167,3 +173,185 @@ def test_r8_single_cast_silent():
     assert "redundant-cast-chain" not in _rule_ids(
         "SELECT CAST(x AS VARCHAR) FROM t"
     )
+
+
+# ── R9 join-first-filter-late ────────────────────────────────────────────────
+
+def test_r9_pattern_a_emits_one_finding_at_consumer_where_line():
+    sql = textwrap.dedent(
+        """
+        WITH joined AS (
+          SELECT o.order_id, c.region, o.status
+          FROM orders o
+          JOIN customers c ON c.customer_id = o.customer_id
+        )
+        SELECT order_id
+        FROM joined
+        WHERE
+          region = 'TW'
+        """
+    ).strip()
+
+    findings = _rule_findings(sql, "join-first-filter-late")
+
+    assert len(findings) == 1
+    assert findings[0].severity == "medium"
+    assert findings[0].line == 8
+    assert findings[0].message == "Filter on c.region is applied after a joined CTE/derived table."
+
+
+def test_r9_pattern_b_emits_one_finding_for_one_hop_pipeline():
+    sql = textwrap.dedent(
+        """
+        WITH joined AS (
+          SELECT o.order_id, c.region
+          FROM orders o
+          JOIN customers c ON c.customer_id = o.customer_id
+        ),
+        stage1 AS (
+          SELECT region, order_id
+          FROM joined
+        )
+        SELECT order_id
+        FROM stage1
+        WHERE
+          region = 'TW'
+        """
+    ).strip()
+
+    findings = _rule_findings(sql, "join-first-filter-late")
+
+    assert len(findings) == 1
+    assert findings[0].line == 12
+
+
+@pytest.mark.parametrize(
+    "sql",
+    [
+        textwrap.dedent(
+            """
+            WITH joined AS (
+              SELECT o.order_id, c.region
+              FROM orders o
+              LEFT JOIN customers c ON c.customer_id = o.customer_id
+            )
+            SELECT order_id
+            FROM joined
+            WHERE region = 'TW'
+            """
+        ).strip(),
+        textwrap.dedent(
+            """
+            WITH joined AS (
+              SELECT o.order_id, c.region, o.status
+              FROM orders o
+              JOIN customers c ON c.customer_id = o.customer_id
+            )
+            SELECT order_id
+            FROM joined
+            WHERE region = 'TW' OR status = 'open'
+            """
+        ).strip(),
+        textwrap.dedent(
+            """
+            WITH joined AS (
+              SELECT o.order_id, c.region
+              FROM orders o
+              JOIN customers c ON c.customer_id = o.customer_id
+              WHERE c.region = 'TW'
+            )
+            SELECT order_id
+            FROM joined
+            WHERE region = 'TW'
+            """
+        ).strip(),
+        textwrap.dedent(
+            """
+            WITH joined AS (
+              SELECT o.order_id, c.region
+              FROM orders o
+              JOIN customers c ON c.customer_id = o.customer_id
+            ),
+            stage1 AS (
+              SELECT order_id, region
+              FROM joined
+            ),
+            stage2 AS (
+              SELECT order_id, region
+              FROM stage1
+            )
+            SELECT order_id
+            FROM stage2
+            WHERE region = 'TW'
+            """
+        ).strip(),
+        textwrap.dedent(
+            """
+            WITH joined AS (
+              SELECT o.order_id, c.region, o.order_date
+              FROM orders o
+              JOIN customers c ON c.customer_id = o.customer_id
+            )
+            SELECT order_id
+            FROM joined
+            WHERE region = 'TW' AND order_date >= DATE '2026-01-01'
+            """
+        ).strip(),
+        textwrap.dedent(
+            """
+            WITH joined AS (
+              SELECT o.order_id, COALESCE(c.region, 'UNK') AS region
+              FROM orders o
+              JOIN customers c ON c.customer_id = o.customer_id
+            )
+            SELECT order_id
+            FROM joined
+            WHERE region = 'TW'
+            """
+        ).strip(),
+        textwrap.dedent(
+            """
+            WITH joined AS (
+              SELECT o.order_id, c.region, COUNT(*) AS cnt
+              FROM orders o
+              JOIN customers c ON c.customer_id = o.customer_id
+              GROUP BY o.order_id, c.region
+            )
+            SELECT order_id
+            FROM joined
+            WHERE region = 'TW'
+            """
+        ).strip(),
+        textwrap.dedent(
+            """
+            SELECT o.order_id
+            FROM orders o
+            JOIN customers c ON c.customer_id = o.customer_id
+            WHERE c.region = 'TW'
+            """
+        ).strip(),
+    ],
+)
+def test_r9_rejects_unsafe_or_ambiguous_shapes(sql):
+    assert _rule_findings(sql, "join-first-filter-late") == []
+
+
+def test_r9_missing_where_anchor_stays_silent(monkeypatch):
+    from genie.skills.trino_query.sql_static.rules import r9_join_first_filter_late
+
+    sql = textwrap.dedent(
+        """
+        WITH joined AS (
+          SELECT o.order_id, c.region
+          FROM orders o
+          JOIN customers c ON c.customer_id = o.customer_id
+        )
+        SELECT order_id
+        FROM joined
+        WHERE region = 'TW'
+        """
+    ).strip()
+
+    monkeypatch.setattr(r9_join_first_filter_late, "_find_where_line", lambda *_args: None)
+
+    assert _rule_findings(sql, "join-first-filter-late") == []

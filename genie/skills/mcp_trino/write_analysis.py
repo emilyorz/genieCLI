@@ -11,6 +11,8 @@ from datetime import datetime
 from pathlib import Path
 from typing import Optional
 
+from genie.core.sql_extraction import extract_sql_from_reply
+
 
 @dataclass(frozen=True)
 class WriteOperation:
@@ -221,6 +223,10 @@ def _write_analysis_prompt(sql: str, operation: WriteOperation, static_report) -
     )
 
 
+def _normalize_display_sql(sql: str) -> str:
+    return sql.rstrip().rstrip(";") + ";"
+
+
 def render_write_analysis_report(result: dict) -> str:
     operation = result["operation"]
     static = result["static_analysis"]
@@ -277,11 +283,27 @@ def render_write_analysis_report(result: dict) -> str:
         "",
         "Write-operation rule gate: normal optimizer gates were not run. Static findings above are advisory inputs only.",
         "",
+    ]
+    suggested_sql = result.get("suggested_sql")
+    if suggested_sql:
+        lines += [
+            "## Suggested SQL Command (advisory, not executed)",
+            "",
+            "This SQL was extracted from advisory LLM output. It was not executed, EXPLAINed, benchmarked, MCP-validated, or row-equivalence verified.",
+            "",
+            "```sql",
+            _normalize_display_sql(str(suggested_sql)),
+            "```",
+            "",
+        ]
+    lines += [
         "## Advisory Suggestions",
         "",
     ]
     if result.get("llm_advice"):
         lines += [str(result["llm_advice"]).rstrip(), ""]
+        if not suggested_sql:
+            lines += ["No complete SQL command was extracted from advisory text.", ""]
     else:
         llm_error = result.get("llm_error")
         if llm_error:
@@ -355,6 +377,7 @@ def run_write_analysis_only(
 
     llm_advice = None
     llm_error = None
+    suggested_sql = None
     if provider is not None:
         try:
             req = CompletionRequest(
@@ -366,6 +389,8 @@ def run_write_analysis_only(
                 reasoning=reasoning,
             )
             llm_advice = provider.complete_text(req)
+            if llm_advice:
+                suggested_sql = extract_sql_from_reply(str(llm_advice)) or None
         except Exception as exc:
             llm_error = str(exc)
 
@@ -382,6 +407,7 @@ def run_write_analysis_only(
         "static_analysis": _static_findings_dict(static_report),
         "llm_advice": llm_advice,
         "llm_error": llm_error,
+        "suggested_sql": suggested_sql,
         "report_path": None,
         "original_sql": sql,
         "safe_limit": safe_limit,

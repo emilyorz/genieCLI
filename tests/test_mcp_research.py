@@ -52,6 +52,10 @@ def _output_mock():
     return output
 
 
+def _read_write_analysis_report(tmp_path):
+    return next((tmp_path / "report").glob("trino-research-write-analysis-*.md")).read_text()
+
+
 def test_mcp_write_analysis_skips_preflight_safe_limit_enhancement(tmp_path, monkeypatch):
     monkeypatch.chdir(tmp_path)
     output = _output_mock()
@@ -76,11 +80,163 @@ def test_mcp_write_analysis_skips_preflight_safe_limit_enhancement(tmp_path, mon
             runs=1,
         )
 
-    md = next((tmp_path / "report").glob("trino-research-write-analysis-*.md")).read_text()
+    md = _read_write_analysis_report(tmp_path)
     assert "| Kind | insert |" in md
     assert "| SQL executed | no |" in md
     assert "advisory, unverified" in md
     provider.complete_text.assert_called_once()
+
+
+def test_mcp_write_analysis_renders_suggested_sql_before_advisory_prose(tmp_path, monkeypatch):
+    monkeypatch.chdir(tmp_path)
+    output = _output_mock()
+    provider = MagicMock()
+    provider.complete_text.return_value = (
+        "Use a pre-filtered source.\n"
+        "```sql\n"
+        "INSERT INTO target\n"
+        "SELECT order_id\n"
+        "FROM source\n"
+        "```\n"
+        "Then validate manually."
+    )
+
+    with patch("genie.skills.mcp_trino.research.load_mcp_config", side_effect=AssertionError("load_mcp_config called")), \
+         patch("genie.skills.mcp_trino.research.McpClient", side_effect=AssertionError("McpClient constructed")), \
+         patch("genie.skills.mcp_trino.research.run_mcp_enhancement", side_effect=AssertionError("enhancement called")), \
+         patch("genie.skills.mcp_trino.research._execute_via_mcp", side_effect=AssertionError("execute called")), \
+         patch("genie.skills.mcp_trino.research._measure_mcp", side_effect=AssertionError("measure called")), \
+         patch("genie.skills.mcp_trino.research._build_mcp_explain_runner", side_effect=AssertionError("explain called")), \
+         patch("genie.skills.mcp_trino.preflight.run_preflight", side_effect=AssertionError("preflight called")), \
+         patch("genie.skills.mcp_trino.preflight.apply_safe_limit", side_effect=AssertionError("safe limit called")):
+        run_trino_research_via_mcp(
+            provider, {}, "test-model", "default", output, lambda *a, **kw: "",
+            sql_text="INSERT INTO x SELECT * FROM t",
+            metric="query_time_ms",
+            iterations=1,
+            runs=1,
+        )
+
+    md = _read_write_analysis_report(tmp_path)
+    assert "## Suggested SQL Command (advisory, not executed)" in md
+    assert md.index("## Suggested SQL Command (advisory, not executed)") < md.index("## Advisory Suggestions")
+    assert "It was not executed, EXPLAINed, benchmarked, MCP-validated, or row-equivalence verified." in md
+    assert "```sql\nINSERT INTO target\nSELECT order_id\nFROM source;\n```" in md
+    assert "| SQL executed | no |" in md
+    assert "| EXPLAIN run | no |" in md
+    assert "| MCP/Trino reached | no |" in md
+    assert "| Verified optimization | no |" in md
+
+
+def test_mcp_write_analysis_uses_last_sql_fence_only(tmp_path, monkeypatch):
+    monkeypatch.chdir(tmp_path)
+    provider = MagicMock()
+    provider.complete_text.return_value = (
+        "Option A:\n```sql\nINSERT INTO a SELECT * FROM old_source\n```\n"
+        "Option B:\n```sql\nINSERT INTO a SELECT * FROM new_source\n```\n"
+        "Choose carefully."
+    )
+
+    with patch("genie.skills.mcp_trino.research.load_mcp_config", side_effect=AssertionError("load_mcp_config called")), \
+         patch("genie.skills.mcp_trino.research.McpClient", side_effect=AssertionError("McpClient constructed")), \
+         patch("genie.skills.mcp_trino.research.run_mcp_enhancement", side_effect=AssertionError("enhancement called")), \
+         patch("genie.skills.mcp_trino.research._execute_via_mcp", side_effect=AssertionError("execute called")), \
+         patch("genie.skills.mcp_trino.research._measure_mcp", side_effect=AssertionError("measure called")), \
+         patch("genie.skills.mcp_trino.research._build_mcp_explain_runner", side_effect=AssertionError("explain called")), \
+         patch("genie.skills.mcp_trino.preflight.run_preflight", side_effect=AssertionError("preflight called")), \
+         patch("genie.skills.mcp_trino.preflight.apply_safe_limit", side_effect=AssertionError("safe limit called")):
+        run_trino_research_via_mcp(
+            provider, {}, "test-model", "default", _output_mock(), lambda *a, **kw: "",
+            sql_text="INSERT INTO x SELECT * FROM t",
+            metric="query_time_ms",
+            iterations=1,
+            runs=1,
+        )
+
+    md = _read_write_analysis_report(tmp_path)
+    suggested_block = md.split("## Advisory Suggestions", 1)[0]
+    assert "INSERT INTO a SELECT * FROM new_source;" in suggested_block
+    assert "INSERT INTO a SELECT * FROM old_source;" not in suggested_block
+    assert "Option A:" in md
+    assert "Option B:" in md
+
+
+def test_mcp_write_analysis_prose_only_is_complete_advisory_result(tmp_path, monkeypatch):
+    monkeypatch.chdir(tmp_path)
+    provider = MagicMock()
+    provider.complete_text.return_value = "Keep the write offline and validate in a scratch target."
+
+    with patch("genie.skills.mcp_trino.research.load_mcp_config", side_effect=AssertionError("load_mcp_config called")), \
+         patch("genie.skills.mcp_trino.research.McpClient", side_effect=AssertionError("McpClient constructed")), \
+         patch("genie.skills.mcp_trino.research.run_mcp_enhancement", side_effect=AssertionError("enhancement called")), \
+         patch("genie.skills.mcp_trino.research._execute_via_mcp", side_effect=AssertionError("execute called")), \
+         patch("genie.skills.mcp_trino.research._measure_mcp", side_effect=AssertionError("measure called")), \
+         patch("genie.skills.mcp_trino.research._build_mcp_explain_runner", side_effect=AssertionError("explain called")), \
+         patch("genie.skills.mcp_trino.preflight.run_preflight", side_effect=AssertionError("preflight called")), \
+         patch("genie.skills.mcp_trino.preflight.apply_safe_limit", side_effect=AssertionError("safe limit called")):
+        run_trino_research_via_mcp(
+            provider, {}, "test-model", "default", _output_mock(), lambda *a, **kw: "",
+            sql_text="INSERT INTO x SELECT * FROM t",
+            metric="query_time_ms",
+            iterations=1,
+            runs=1,
+        )
+
+    md = _read_write_analysis_report(tmp_path)
+    assert "## Suggested SQL Command (advisory, not executed)" not in md
+    assert "Keep the write offline and validate in a scratch target." in md
+    assert "No complete SQL command was extracted from advisory text." in md
+
+
+def test_mcp_write_analysis_provider_error_is_complete_advisory_result(tmp_path, monkeypatch):
+    monkeypatch.chdir(tmp_path)
+    provider = MagicMock()
+    provider.complete_text.side_effect = RuntimeError("provider down")
+
+    with patch("genie.skills.mcp_trino.research.load_mcp_config", side_effect=AssertionError("load_mcp_config called")), \
+         patch("genie.skills.mcp_trino.research.McpClient", side_effect=AssertionError("McpClient constructed")), \
+         patch("genie.skills.mcp_trino.research.run_mcp_enhancement", side_effect=AssertionError("enhancement called")), \
+         patch("genie.skills.mcp_trino.research._execute_via_mcp", side_effect=AssertionError("execute called")), \
+         patch("genie.skills.mcp_trino.research._measure_mcp", side_effect=AssertionError("measure called")), \
+         patch("genie.skills.mcp_trino.research._build_mcp_explain_runner", side_effect=AssertionError("explain called")), \
+         patch("genie.skills.mcp_trino.preflight.run_preflight", side_effect=AssertionError("preflight called")), \
+         patch("genie.skills.mcp_trino.preflight.apply_safe_limit", side_effect=AssertionError("safe limit called")):
+        run_trino_research_via_mcp(
+            provider, {}, "test-model", "default", _output_mock(), lambda *a, **kw: "",
+            sql_text="INSERT INTO x SELECT * FROM t",
+            metric="query_time_ms",
+            iterations=1,
+            runs=1,
+        )
+
+    md = _read_write_analysis_report(tmp_path)
+    assert "## Suggested SQL Command (advisory, not executed)" not in md
+    assert "LLM advice unavailable: provider down" in md
+
+
+def test_mcp_sql_file_write_analysis_skips_live_surfaces(tmp_path, monkeypatch):
+    monkeypatch.chdir(tmp_path)
+    sql_file = tmp_path / "write.sql"
+    sql_file.write_text("INSERT INTO x SELECT * FROM t")
+
+    with patch("genie.skills.mcp_trino.research.load_mcp_config", side_effect=AssertionError("load_mcp_config called")), \
+         patch("genie.skills.mcp_trino.research.McpClient", side_effect=AssertionError("McpClient constructed")), \
+         patch("genie.skills.mcp_trino.research.run_mcp_enhancement", side_effect=AssertionError("enhancement called")), \
+         patch("genie.skills.mcp_trino.research._execute_via_mcp", side_effect=AssertionError("execute called")), \
+         patch("genie.skills.mcp_trino.research._measure_mcp", side_effect=AssertionError("measure called")), \
+         patch("genie.skills.mcp_trino.research._build_mcp_explain_runner", side_effect=AssertionError("explain called")), \
+         patch("genie.skills.mcp_trino.preflight.run_preflight", side_effect=AssertionError("preflight called")), \
+         patch("genie.skills.mcp_trino.preflight.apply_safe_limit", side_effect=AssertionError("safe limit called")):
+        run_trino_research_via_mcp(
+            None, {}, "test-model", "default", _output_mock(), lambda *a, **kw: "",
+            sql_file=str(sql_file),
+            metric="query_time_ms",
+            iterations=1,
+            runs=1,
+        )
+
+    md = _read_write_analysis_report(tmp_path)
+    assert f"| Source | {sql_file} |" in md
 
 
 @pytest.mark.parametrize(
@@ -110,7 +266,7 @@ def test_mcp_rename_revoke_dispatch_to_write_analysis(tmp_path, monkeypatch, sql
             runs=1,
         )
 
-    md = next((tmp_path / "report").glob("trino-research-write-analysis-*.md")).read_text()
+    md = _read_write_analysis_report(tmp_path)
     assert "| Kind | ddl |" in md
     assert f"| Keyword | {keyword} |" in md
 
@@ -168,6 +324,58 @@ def test_mcp_interactive_prompts_before_preflight(monkeypatch):
     assert events.index("metric_prompt") < events.index("preflight")
     assert events.index("iterations_prompt") < events.index("preflight")
     assert events.index("runs_prompt") < events.index("preflight")
+
+
+def test_mcp_interactive_write_sql_diverts_offline_after_reachability(tmp_path, monkeypatch):
+    monkeypatch.chdir(tmp_path)
+    events = []
+
+    class FakeClient:
+        def __init__(self, config):
+            events.append("client")
+            self.config = config
+
+        def list_tools(self):
+            events.append("list_tools")
+            return [{"name": "query"}]
+
+    def fake_read_paste_mode():
+        events.append("paste")
+        return "INSERT INTO x SELECT * FROM t"
+
+    def fake_read_input(prompt):
+        if "Choose" in prompt:
+            events.append("metric_prompt")
+            return "1"
+        if "Max iterations" in prompt:
+            events.append("iterations_prompt")
+            return "1"
+        if "Verify runs" in prompt:
+            events.append("runs_prompt")
+            return "1"
+        raise AssertionError(f"unexpected prompt: {prompt}")
+
+    monkeypatch.setattr(
+        "genie.skills.mcp_trino.research.load_mcp_config",
+        lambda: McpConfig(url="http://mcp.test/mcp", enabled=True, timeout=1),
+    )
+    monkeypatch.setattr("genie.skills.mcp_trino.research.McpClient", FakeClient)
+    monkeypatch.setattr("genie.input._read_paste_mode", fake_read_paste_mode)
+    monkeypatch.setattr("genie.input._read_input", fake_read_input)
+
+    with patch("genie.skills.mcp_trino.preflight.run_preflight", side_effect=AssertionError("preflight called")), \
+         patch("genie.skills.mcp_trino.preflight.apply_safe_limit", side_effect=AssertionError("safe limit called")), \
+         patch("genie.skills.mcp_trino.research.run_mcp_enhancement", side_effect=AssertionError("enhancement called")), \
+         patch("genie.skills.mcp_trino.research._execute_via_mcp", side_effect=AssertionError("execute called")), \
+         patch("genie.skills.mcp_trino.research._measure_mcp", side_effect=AssertionError("measure called")), \
+         patch("genie.skills.mcp_trino.research._build_mcp_explain_runner", side_effect=AssertionError("explain called")):
+        run_trino_research_via_mcp(
+            None, {}, "test-model", "default", _output_mock(), lambda *a, **kw: ""
+        )
+
+    md = _read_write_analysis_report(tmp_path)
+    assert events == ["client", "list_tools", "paste"]
+    assert "write-analysis" in md
 
 
 # ── Result Equivalence ───────────────────────────────────────────────────────

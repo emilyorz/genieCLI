@@ -6,6 +6,7 @@ from unittest.mock import MagicMock
 
 from genie.skills.trino_query.sql_static import analyze
 from genie.skills.trino_query.sql_static.rule_ids import (
+    RULE_JOIN_FIRST_FILTER_LATE,
     RULE_REDUNDANT_DISTINCT_AFTER_GROUP_BY,
 )
 
@@ -79,3 +80,37 @@ def test_real_rule_id_maps_to_same_direction_kind_on_mcp_and_direct(monkeypatch)
         "medium",
         "wall_time_ms",
     ) in mcp_non_explain
+
+
+def test_join_first_filter_late_has_same_non_explain_tuple_on_both_paths(monkeypatch):
+    from genie.skills.mcp_trino import research as mcp_research
+    from genie.skills.trino_query import research as direct_research
+
+    sql = (
+        "WITH joined AS ("
+        " SELECT o.order_id, c.region"
+        " FROM orders o"
+        " JOIN customers c ON c.customer_id = o.customer_id"
+        ")"
+        " SELECT order_id FROM joined WHERE region = 'TW'"
+    )
+    static_report = analyze(sql)
+    emitted_rule_ids = {f.rule_id for f in static_report.findings}
+    assert RULE_JOIN_FIRST_FILTER_LATE in emitted_rule_ids
+
+    client = _mcp_client_returning_plan(_PLAN_JSON)
+    monkeypatch.setattr(mcp_research, "_resolved_tool", None)
+
+    mcp_directions, _ = mcp_research._assemble_mcp_directions(client, sql, static_report)
+    direct_directions = direct_research._assemble_direct_directions(
+        sql,
+        static_report,
+        lambda _sql: _PLAN_JSON,
+    )
+
+    assert _non_explain_tuples(mcp_directions) == _non_explain_tuples(direct_directions)
+    assert (
+        "fix-join-first-filter-late",
+        "medium",
+        "wall_time_ms",
+    ) in _non_explain_tuples(mcp_directions)

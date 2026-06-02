@@ -19,6 +19,7 @@ RULE_SUBQUERY_IN_SELECT_PUSHABLE_TO_JOIN = "subquery-in-select-pushable-to-join"
 RULE_PREDICATE_NOT_PUSHED_TO_CTE = "predicate-not-pushed-to-cte"
 RULE_NULL_UNSAFE_EQUALS = "null-unsafe-equals"
 RULE_REDUNDANT_CAST_CHAIN = "redundant-cast-chain"
+RULE_JOIN_FIRST_FILTER_LATE = "join-first-filter-late"
 
 ALL_RULE_IDS = frozenset(
     {
@@ -30,6 +31,7 @@ ALL_RULE_IDS = frozenset(
         RULE_PREDICATE_NOT_PUSHED_TO_CTE,
         RULE_NULL_UNSAFE_EQUALS,
         RULE_REDUNDANT_CAST_CHAIN,
+        RULE_JOIN_FIRST_FILTER_LATE,
     }
 )
 
@@ -42,5 +44,6 @@ __all__ = [
     "RULE_PREDICATE_NOT_PUSHED_TO_CTE",
     "RULE_NULL_UNSAFE_EQUALS",
     "RULE_REDUNDANT_CAST_CHAIN",
+    "RULE_JOIN_FIRST_FILTER_LATE",
     "ALL_RULE_IDS",
 ]
