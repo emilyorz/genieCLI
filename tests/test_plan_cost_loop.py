@@ -48,6 +48,36 @@ def _make_explain(rows_est=1000, bytes_est=8000, table="hive.default.t"):
     })
 
 
+def _make_explain_bytes_only(bytes_est, table="hive.default.t"):
+    """EXPLAIN JSON with outputSizeInBytes but NO outputRowCount (partial Trino stats)."""
+    return json.dumps({
+        "name": f"TableScan[{table}]",
+        "descriptor": {"table": table},
+        "estimates": [{"outputSizeInBytes": bytes_est}],
+        "children": [],
+    })
+
+
+def _make_explain_rows_only(rows_est, table="hive.default.t"):
+    """EXPLAIN JSON with outputRowCount but NO outputSizeInBytes."""
+    return json.dumps({
+        "name": f"TableScan[{table}]",
+        "descriptor": {"table": table},
+        "estimates": [{"outputRowCount": rows_est}],
+        "children": [],
+    })
+
+
+def _make_explain_no_estimates(table="hive.default.t"):
+    """EXPLAIN JSON with empty estimates list (no usable cost data)."""
+    return json.dumps({
+        "name": f"TableScan[{table}]",
+        "descriptor": {"table": table},
+        "estimates": [],
+        "children": [],
+    })
+
+
 def _explain_runner_factory(plans_by_sql):
     """Return a runner that maps SQL strings to canned EXPLAIN JSON blobs.
 
@@ -444,3 +474,182 @@ def test_loop_uses_legacy_path_when_long_query_opt_in_false():
         )
     mock_loop.assert_not_called()
     assert result["status"] == "completed"
+
+
+# ── Bugfix: bytes-only / rows-only / None-baseline cost ranking ───────────────
+
+def test_plan_cost_loop_bytes_only_candidate_with_fewer_bytes_still_wins():
+    """Bytes-only candidate (rows=None) with bytes < baseline_cost must NOT be
+    falsely ranked first due to the old zero-collapse bug.
+
+    With the bug: cand_cost = 0 (always wins regardless of bytes).
+    After fix:   cand_cost = bytes = 5_000_000 < 8_000_000_000_000 (correct win).
+    """
+    output = MagicMock()
+    baseline = _make_baseline(rows=100, wall_ms=80_000)
+    cand = "SELECT a FROM t WHERE a > 0"
+    plans = {
+        "SELECT * FROM t": _make_explain(rows_est=1_000_000, bytes_est=8_000_000),
+        cand: _make_explain_bytes_only(bytes_est=5_000_000),  # rows=None, bytes=5M
+    }
+    runner = _explain_runner_factory(plans)
+    provider = _llm_provider_with_replies([_wrap_sql(cand)])
+
+    measured = _make_baseline(rows=100, wall_ms=20_000)
+    with patch("genie.skills.trino_query.research._measure", return_value=measured):
+        result = _run_plan_cost_loop(
+            provider=provider,
+            model="m", reasoning="default",
+            original_sql="SELECT * FROM t",
+            metric_key="cpu_time_ms",
+            max_iterations=1, verify_runs=1,
+            output=output,
+            build_prompt=lambda *a, **kw: "",
+            baseline=baseline,
+            baseline_data=baseline["rows"],
+            static_report=None,
+            explain_runner=runner,
+            max_fallbacks=3,
+        )
+    # Candidate should rank as plan_cost_better (5M < 8T) and get verified
+    assert result["status"] == "completed"
+    assert result["best_sql"] == cand
+
+
+def test_plan_cost_loop_bytes_only_candidate_with_more_bytes_does_not_win():
+    """Bytes-only candidate with bytes > baseline_cost must NOT win.
+
+    The old bug produced cand_cost=0 which always beat any positive baseline,
+    so this sub-case was always a false positive.
+    After fix: cand_cost = 90_000 > 80_000 → correctly rejected.
+    """
+    output = MagicMock()
+    baseline = _make_baseline(rows=100, wall_ms=80_000)
+    cand = "SELECT a FROM t WHERE a > 0"
+    plans = {
+        "SELECT * FROM t": _make_explain(rows_est=100, bytes_est=800),   # cost = 80_000
+        cand: _make_explain_bytes_only(bytes_est=90_000),                 # cand_cost = 90_000 > 80_000
+    }
+    runner = _explain_runner_factory(plans)
+    provider = _llm_provider_with_replies([_wrap_sql(cand)])
+
+    with patch("genie.skills.trino_query.research._measure") as m:
+        result = _run_plan_cost_loop(
+            provider=provider,
+            model="m", reasoning="default",
+            original_sql="SELECT * FROM t",
+            metric_key="cpu_time_ms",
+            max_iterations=1, verify_runs=1,
+            output=output,
+            build_prompt=lambda *a, **kw: "",
+            baseline=baseline,
+            baseline_data=baseline["rows"],
+            static_report=None,
+            explain_runner=runner,
+            max_fallbacks=3,
+        )
+        m.assert_not_called()  # candidate never entered verification
+    assert result["status"] == "no_verifiable_improvement"
+    assert result["best_sql"] == "SELECT * FROM t"
+
+
+def test_plan_cost_loop_rows_only_candidate_handled():
+    """Rows-only candidate (bytes=None) ranks correctly without sentinel distortion."""
+    output = MagicMock()
+    baseline = _make_baseline(rows=100, wall_ms=80_000)
+    cand = "SELECT a FROM t WHERE a > 0"
+    plans = {
+        "SELECT * FROM t": _make_explain(rows_est=1_000, bytes_est=8_000),  # cost = 8_000_000
+        cand: _make_explain_rows_only(rows_est=900),                         # cand_cost = 900 (< 8M)
+    }
+    runner = _explain_runner_factory(plans)
+    provider = _llm_provider_with_replies([_wrap_sql(cand)])
+
+    measured = _make_baseline(rows=100, wall_ms=20_000)
+    with patch("genie.skills.trino_query.research._measure", return_value=measured):
+        result = _run_plan_cost_loop(
+            provider=provider,
+            model="m", reasoning="default",
+            original_sql="SELECT * FROM t",
+            metric_key="cpu_time_ms",
+            max_iterations=1, verify_runs=1,
+            output=output,
+            build_prompt=lambda *a, **kw: "",
+            baseline=baseline,
+            baseline_data=baseline["rows"],
+            static_report=None,
+            explain_runner=runner,
+            max_fallbacks=3,
+        )
+    assert result["status"] == "completed"
+    assert result["best_sql"] == cand
+
+
+def test_plan_cost_loop_both_missing_candidate_skipped_no_crash():
+    """Candidate with no estimates at all is skipped — existing guard covers it."""
+    output = MagicMock()
+    baseline = _make_baseline(rows=100, wall_ms=80_000)
+    cand = "SELECT a FROM t"
+    plans = {
+        "SELECT * FROM t": _make_explain(rows_est=100, bytes_est=10),
+        cand: _make_explain_no_estimates(),  # empty estimates list → (None, None)
+    }
+    runner = _explain_runner_factory(plans)
+    provider = _llm_provider_with_replies([_wrap_sql(cand)])
+
+    with patch("genie.skills.trino_query.research._measure") as m:
+        result = _run_plan_cost_loop(
+            provider=provider,
+            model="m", reasoning="default",
+            original_sql="SELECT * FROM t",
+            metric_key="cpu_time_ms",
+            max_iterations=1, verify_runs=1,
+            output=output,
+            build_prompt=lambda *a, **kw: "",
+            baseline=baseline,
+            baseline_data=baseline["rows"],
+            static_report=None,
+            explain_runner=runner,
+            max_fallbacks=3,
+        )
+        m.assert_not_called()
+    assert result["status"] == "no_verifiable_improvement"
+
+
+def test_plan_cost_loop_baseline_none_cost_does_not_crash():
+    """Baseline EXPLAIN with both rows_est=None and bytes_est=None must not crash.
+
+    OI-01 fix: baseline_cost is now guarded — when None, each candidate is
+    skipped (status=explain_failed) rather than raising TypeError on comparison.
+    """
+    output = MagicMock()
+    baseline = _make_baseline(rows=100, wall_ms=80_000)
+    cand = "SELECT a FROM t WHERE a > 0"
+    plans = {
+        "SELECT * FROM t": _make_explain_no_estimates(),   # baseline → (None, None)
+        cand: _make_explain(rows_est=50, bytes_est=5),     # candidate has cost
+    }
+    runner = _explain_runner_factory(plans)
+    provider = _llm_provider_with_replies([_wrap_sql(cand)])
+
+    with patch("genie.skills.trino_query.research._measure") as m:
+        # Must not raise TypeError
+        result = _run_plan_cost_loop(
+            provider=provider,
+            model="m", reasoning="default",
+            original_sql="SELECT * FROM t",
+            metric_key="cpu_time_ms",
+            max_iterations=1, verify_runs=1,
+            output=output,
+            build_prompt=lambda *a, **kw: "",
+            baseline=baseline,
+            baseline_data=baseline["rows"],
+            static_report=None,
+            explain_runner=runner,
+            max_fallbacks=3,
+        )
+        m.assert_not_called()
+    assert result["status"] == "no_verifiable_improvement"
+    # Candidate was not falsely promoted (skipped, not ranked as better)
+    statuses = [h["status"] for h in result["history"]]
+    assert "plan_cost_better" not in statuses

@@ -10,6 +10,7 @@ from genie.skills.mcp_trino.preflight import (
     PER_CANDIDATE_TIMEOUT_FACTOR,
     PreflightBudget,
     PreflightReport,
+    _combine_cost,
     apply_safe_limit,
     check_long_query_gate,
     check_read_only,
@@ -276,3 +277,34 @@ class TestApplySafeLimit:
 
     def test_zero_limit_returns_original(self):
         assert apply_safe_limit("SELECT 1", 0) == "SELECT 1"
+
+
+class TestCombineCost:
+    """Unit table for _combine_cost — partial EXPLAIN estimate handling.
+
+    Replaces (rows or 0) * (bytes or 1) which collapses bytes-only to 0.
+    """
+
+    def test_both_present_returns_product(self):
+        # Original formula unchanged: rows * bytes when both are available.
+        assert _combine_cost(1000, 8000) == 8_000_000
+
+    def test_bytes_only_returns_bytes_not_zero(self):
+        # The core bug: old formula gave 0 * 5_000_000 = 0 (false cheapest).
+        # Fixed: returns bytes directly so ranking is based on actual size.
+        assert _combine_cost(None, 5_000_000) == 5_000_000
+
+    def test_rows_only_returns_rows_not_sentinel_product(self):
+        # Old formula gave rows * 1 = rows (numerically same), but the intent
+        # was the 1-byte sentinel. _combine_cost returns rows directly.
+        assert _combine_cost(900_000, None) == 900_000
+
+    def test_neither_returns_none(self):
+        # Callers must guard against None (the None-None guard in the loop
+        # already skips candidates; now also needed for baseline).
+        assert _combine_cost(None, None) is None
+
+    def test_zero_rows_is_valid_not_treated_as_none(self):
+        # rows=0 is a real zero (e.g. empty table), not a missing value.
+        # The product 0 * 8000 = 0 is correct here.
+        assert _combine_cost(0, 8000) == 0

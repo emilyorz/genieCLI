@@ -158,6 +158,28 @@ def plan_cost(
     return rows, bytes_, plan_json
 
 
+def _combine_cost(rows: Optional[int], bytes_: Optional[int]) -> Optional[int]:
+    """Return a cost scalar usable for ranking EXPLAIN-based plan costs.
+
+    Rules:
+    - Both present: rows * bytes  (original intent, unchanged)
+    - bytes only:   bytes         (use available dimension; no fake-zero from missing rows)
+    - rows only:    rows          (use available dimension; no 1-byte sentinel distortion)
+    - Neither:      None          (caller must guard this; do not rank against None)
+
+    This replaces the collapsed ``(rows or 0) * (bytes or 1)`` expression, which
+    incorrectly returns 0 for bytes-only partial EXPLAIN results (bytes-only
+    candidate always sorts first, regardless of actual bytes value).
+    """
+    if rows is not None and bytes_ is not None:
+        return rows * bytes_
+    if bytes_ is not None:
+        return bytes_
+    if rows is not None:
+        return rows
+    return None
+
+
 def run_preflight(
     sql: str,
     explain_runner,

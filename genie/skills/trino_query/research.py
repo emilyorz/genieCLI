@@ -478,7 +478,7 @@ def _run_plan_cost_loop(
     from genie.core.provider import CompletionRequest
     from genie.session.manager import new_msg, new_session
     from genie.skills.mcp_trino.pre_execution_diagnosis import pre_execution_diagnosis
-    from genie.skills.mcp_trino.preflight import plan_cost
+    from genie.skills.mcp_trino.preflight import plan_cost, _combine_cost
     from genie.skills.mcp_trino.rule_gate import (
         build_rule_gate_summary,
         format_rule_gate_for_prompt,
@@ -500,7 +500,7 @@ def _run_plan_cost_loop(
         original_sql, explain_runner
     )
     baseline_sig = plan_signature(baseline_plan) if baseline_plan is not None else None
-    baseline_cost = (baseline_rows_est or 0) * (baseline_bytes_est or 1)
+    baseline_cost = _combine_cost(baseline_rows_est, baseline_bytes_est)
     directions = pre_execution_diagnosis(
         original_sql,
         static_report=static_report,
@@ -618,7 +618,7 @@ def _run_plan_cost_loop(
             })
             continue
 
-        cand_cost = (cand_rows_est or 0) * (cand_bytes_est or 1)
+        cand_cost = _combine_cost(cand_rows_est, cand_bytes_est)
         cand_sig = plan_signature(cand_plan) if cand_plan is not None else None
 
         # L1 structural guard
@@ -637,6 +637,17 @@ def _run_plan_cost_loop(
                     "filter / aggregation. Try a different change that preserves the plan structure."
                 ))
                 continue
+
+        # If baseline EXPLAIN yielded no estimates at all, plan-cost comparison is
+        # impossible (would raise TypeError on None < int).  Skip ranking and treat
+        # every candidate as unranked — do not falsely promote them.
+        if baseline_cost is None:
+            output.progress("  [SKIP] Baseline has no plan-cost estimates; skipping cost comparison")
+            history.append({
+                "iteration": iteration, "status": "explain_failed",
+                "candidate_sql": candidate_sql, "plan_cost": cand_cost,
+            })
+            continue
 
         verdict = "plan_cost_better" if cand_cost < baseline_cost else "plan_cost_worse"
         output.progress(

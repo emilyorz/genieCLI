@@ -52,6 +52,36 @@ def _make_explain(rows_est=1000, bytes_est=8000, table="hive.default.t"):
     })
 
 
+def _make_explain_bytes_only(bytes_est, table="hive.default.t"):
+    """EXPLAIN JSON with outputSizeInBytes but NO outputRowCount (partial Trino stats)."""
+    return json.dumps({
+        "name": f"TableScan[{table}]",
+        "descriptor": {"table": table},
+        "estimates": [{"outputSizeInBytes": bytes_est}],
+        "children": [],
+    })
+
+
+def _make_explain_rows_only(rows_est, table="hive.default.t"):
+    """EXPLAIN JSON with outputRowCount but NO outputSizeInBytes."""
+    return json.dumps({
+        "name": f"TableScan[{table}]",
+        "descriptor": {"table": table},
+        "estimates": [{"outputRowCount": rows_est}],
+        "children": [],
+    })
+
+
+def _make_explain_no_estimates(table="hive.default.t"):
+    """EXPLAIN JSON with empty estimates list (no usable cost data)."""
+    return json.dumps({
+        "name": f"TableScan[{table}]",
+        "descriptor": {"table": table},
+        "estimates": [],
+        "children": [],
+    })
+
+
 def _explain_runner_factory(plans_by_sql):
     def _runner(sql):
         return plans_by_sql.get(
@@ -356,3 +386,190 @@ def test_mcp_falls_back_to_standard_loop_when_explain_has_no_estimates():
         str(c.args[0]) for c in output.progress.call_args_list if c.args
     )
     assert "Plan-cost mode unavailable" in printed
+
+
+# ── Bugfix: bytes-only / rows-only / None-baseline cost ranking (MCP parity) ─
+
+def test_mcp_bytes_only_candidate_with_fewer_bytes_wins():
+    """MCP path: bytes-only candidate (rows=None) with bytes < baseline_cost wins correctly.
+
+    With the bug: cand_cost = 0 → always falsely ranked first.
+    After fix:   cand_cost = 5_000_000 < 8_000_000_000_000 → correct win.
+    """
+    output = MagicMock()
+    client = _make_client()
+    baseline = _make_result(rows=100, wall_ms=80_000)
+    cand = "SELECT a FROM t WHERE a > 0"
+    runner = _explain_runner_factory({
+        "SELECT * FROM t": _make_explain(rows_est=1_000_000, bytes_est=8_000_000),
+        cand: _make_explain_bytes_only(bytes_est=5_000_000),  # rows=None, bytes=5M
+    })
+    provider = _llm_provider_with_replies([_wrap_sql(cand)])
+    verified = _make_result(rows=100, wall_ms=20_000)
+
+    with patch.object(mcp_research, "_measure_mcp", return_value=verified):
+        report = _run_mcp_plan_cost_loop(
+            client=client,
+            provider=provider,
+            model="m",
+            reasoning="disable",
+            original_sql="SELECT * FROM t",
+            metric_key="wall_time_ms",
+            max_iterations=1,
+            verify_runs=1,
+            output=output,
+            build_prompt=lambda *a, **k: "SKILL",
+            baseline=baseline,
+            static_report=None,
+            explain_runner=runner,
+            max_fallbacks=3,
+        )
+
+    assert report.enhanced_sql == cand
+    assert report.best_value == 20_000.0
+
+
+def test_mcp_bytes_only_candidate_with_more_bytes_does_not_win():
+    """MCP path: bytes-only candidate with bytes > baseline_cost must not win.
+
+    The old bug produced cand_cost=0 → always beat any positive baseline.
+    After fix: cand_cost = 90_000 > 80_000 → correctly rejected, no verification.
+    """
+    output = MagicMock()
+    client = _make_client()
+    baseline = _make_result(rows=100, wall_ms=80_000)
+    cand = "SELECT a FROM t WHERE a > 0"
+    runner = _explain_runner_factory({
+        "SELECT * FROM t": _make_explain(rows_est=100, bytes_est=800),  # cost = 80_000
+        cand: _make_explain_bytes_only(bytes_est=90_000),                # cand_cost = 90_000 > 80_000
+    })
+    provider = _llm_provider_with_replies([_wrap_sql(cand)])
+
+    with patch.object(mcp_research, "_measure_mcp") as m:
+        report = _run_mcp_plan_cost_loop(
+            client=client,
+            provider=provider,
+            model="m",
+            reasoning="disable",
+            original_sql="SELECT * FROM t",
+            metric_key="wall_time_ms",
+            max_iterations=1,
+            verify_runs=1,
+            output=output,
+            build_prompt=lambda *a, **k: "SKILL",
+            baseline=baseline,
+            static_report=None,
+            explain_runner=runner,
+            max_fallbacks=3,
+        )
+        m.assert_not_called()
+
+    assert report.enhanced_sql == "SELECT * FROM t"
+
+
+def test_mcp_rows_only_candidate_handled():
+    """MCP path: rows-only candidate (bytes=None) ranks without sentinel distortion."""
+    output = MagicMock()
+    client = _make_client()
+    baseline = _make_result(rows=100, wall_ms=80_000)
+    cand = "SELECT a FROM t WHERE a > 0"
+    runner = _explain_runner_factory({
+        "SELECT * FROM t": _make_explain(rows_est=1_000, bytes_est=8_000),  # cost = 8_000_000
+        cand: _make_explain_rows_only(rows_est=900),                         # cand_cost = 900
+    })
+    provider = _llm_provider_with_replies([_wrap_sql(cand)])
+    verified = _make_result(rows=100, wall_ms=20_000)
+
+    with patch.object(mcp_research, "_measure_mcp", return_value=verified):
+        report = _run_mcp_plan_cost_loop(
+            client=client,
+            provider=provider,
+            model="m",
+            reasoning="disable",
+            original_sql="SELECT * FROM t",
+            metric_key="wall_time_ms",
+            max_iterations=1,
+            verify_runs=1,
+            output=output,
+            build_prompt=lambda *a, **k: "SKILL",
+            baseline=baseline,
+            static_report=None,
+            explain_runner=runner,
+            max_fallbacks=3,
+        )
+
+    assert report.enhanced_sql == cand
+
+
+def test_mcp_both_missing_candidate_skipped_no_crash():
+    """MCP path: candidate with no estimates is skipped without crash."""
+    output = MagicMock()
+    client = _make_client()
+    baseline = _make_result(rows=100, wall_ms=80_000)
+    cand = "SELECT a FROM t"
+    runner = _explain_runner_factory({
+        "SELECT * FROM t": _make_explain(rows_est=100, bytes_est=10),
+        cand: _make_explain_no_estimates(),
+    })
+    provider = _llm_provider_with_replies([_wrap_sql(cand)])
+
+    with patch.object(mcp_research, "_measure_mcp") as m:
+        report = _run_mcp_plan_cost_loop(
+            client=client,
+            provider=provider,
+            model="m",
+            reasoning="disable",
+            original_sql="SELECT * FROM t",
+            metric_key="wall_time_ms",
+            max_iterations=1,
+            verify_runs=1,
+            output=output,
+            build_prompt=lambda *a, **k: "SKILL",
+            baseline=baseline,
+            static_report=None,
+            explain_runner=runner,
+            max_fallbacks=3,
+        )
+        m.assert_not_called()
+
+    assert report.enhanced_sql == "SELECT * FROM t"
+
+
+def test_mcp_baseline_none_cost_does_not_crash():
+    """MCP path: baseline with both estimates=None must not raise TypeError.
+
+    OI-01 fix: baseline_cost=None → each candidate skipped (not falsely promoted).
+    """
+    output = MagicMock()
+    client = _make_client()
+    baseline = _make_result(rows=100, wall_ms=80_000)
+    cand = "SELECT a FROM t WHERE a > 0"
+    runner = _explain_runner_factory({
+        "SELECT * FROM t": _make_explain_no_estimates(),  # baseline → (None, None)
+        cand: _make_explain(rows_est=50, bytes_est=5),    # candidate has cost
+    })
+    provider = _llm_provider_with_replies([_wrap_sql(cand)])
+
+    with patch.object(mcp_research, "_measure_mcp") as m:
+        # Must not raise TypeError
+        report = _run_mcp_plan_cost_loop(
+            client=client,
+            provider=provider,
+            model="m",
+            reasoning="disable",
+            original_sql="SELECT * FROM t",
+            metric_key="wall_time_ms",
+            max_iterations=1,
+            verify_runs=1,
+            output=output,
+            build_prompt=lambda *a, **k: "SKILL",
+            baseline=baseline,
+            static_report=None,
+            explain_runner=runner,
+            max_fallbacks=3,
+        )
+        m.assert_not_called()
+
+    assert report.enhanced_sql == "SELECT * FROM t"
+    statuses = [r.status for r in report.iterations]
+    assert "plan_cost_better" not in statuses
