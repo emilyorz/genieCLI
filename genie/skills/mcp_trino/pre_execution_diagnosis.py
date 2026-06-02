@@ -16,6 +16,8 @@ that contributor.
 """
 from __future__ import annotations
 
+import math
+import os
 import re
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any
@@ -44,6 +46,23 @@ HEAVY_CTE_COUNT: int = 2                   # JOIN/GROUP/window/set-heavy CTE ste
 REPEATED_RAW_SCAN_COUNT: int = 2            # same likely-raw table seen at least this many times
 
 
+def _resolve_memory_pressure_fraction() -> float:
+    """Effective warning fraction. GENIE_TRINO_MEMORY_PRESSURE_FRACTION overrides
+    the MEMORY_PRESSURE_FRACTION default (0.5) at CALL TIME (monkeypatch-testable;
+    lets Sam tune without code change — sam-decisions.md:6). Clamped to (0, 1].
+    Bad / out-of-range env → default."""
+    raw = os.environ.get("GENIE_TRINO_MEMORY_PRESSURE_FRACTION")
+    if raw is None:
+        return MEMORY_PRESSURE_FRACTION
+    try:
+        frac = float(raw)
+    except (ValueError, TypeError):
+        return MEMORY_PRESSURE_FRACTION
+    if not math.isfinite(frac) or frac <= 0 or frac > 1:
+        return MEMORY_PRESSURE_FRACTION  # clamp-to-default on out-of-range / non-finite
+    return frac
+
+
 def _memory_pressure_threshold(peak_memory_limit_bytes: Any = None) -> int:
     """Return the memory-pressure threshold.
 
@@ -57,7 +76,7 @@ def _memory_pressure_threshold(peak_memory_limit_bytes: Any = None) -> int:
     if isinstance(peak_memory_limit_bytes, bool):
         return HIGH_PEAK_MEMORY_BYTES
     if isinstance(peak_memory_limit_bytes, (int, float)) and peak_memory_limit_bytes > 0:
-        return max(1, int(peak_memory_limit_bytes * MEMORY_PRESSURE_FRACTION))
+        return max(1, int(peak_memory_limit_bytes * _resolve_memory_pressure_fraction()))
     return HIGH_PEAK_MEMORY_BYTES
 
 # ---------------------------------------------------------------------------

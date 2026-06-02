@@ -13,6 +13,7 @@ Architecture:
 from __future__ import annotations
 
 import json
+import math
 import re
 import statistics
 import time
@@ -158,6 +159,50 @@ def _extract_table_names(sql: str) -> list[tuple[str, str, str]]:
     return sorted(tables)
 
 
+# Trino DataSize units — binary base (1 kB = 1024 B), Sam-locked (sam-decisions.md:5).
+# Distinct from the inline EXPLAIN-ANALYZE map at research.py:495 (do NOT touch that one —
+# it is case-sensitive uppercase and has no callers to update; surgical-diff discipline).
+_TRINO_DATASIZE_UNITS: dict[str, int] = {
+    "B": 1,
+    "KB": 1024, "KIB": 1024,
+    "MB": 1024 ** 2, "MIB": 1024 ** 2,
+    "GB": 1024 ** 3, "GIB": 1024 ** 3,
+    "TB": 1024 ** 4, "TIB": 1024 ** 4,
+    "PB": 1024 ** 5, "PIB": 1024 ** 5,
+}
+
+
+def _parse_trino_datasize(s: Any) -> Optional[int]:
+    """Parse a Trino DataSize string ('5GB', '1.5kB', '512MB') to bytes.
+
+    Binary base (1 kB = 1024 B). Case-insensitive units, whitespace-tolerant,
+    fractional values (int(val * mult)). Returns None for empty/None/non-string/
+    bare-number/unknown-unit/zero/negative/garbage. Never raises.
+    """
+    if not s or not isinstance(s, str):
+        return None
+    s = s.strip()
+    if not s:
+        return None
+    m = re.match(r"^([\d.]+)\s*([A-Za-z]+)$", s)
+    if not m:
+        return None
+    try:
+        val = float(m.group(1))
+    except ValueError:
+        return None
+    if not math.isfinite(val):
+        return None
+    mult = _TRINO_DATASIZE_UNITS.get(m.group(2).upper())
+    if mult is None:
+        return None
+    product = val * mult
+    if not math.isfinite(product):
+        return None
+    result = int(product)
+    return result if result > 0 else None
+
+
 def _fetch_table_metadata(
     client: McpClient,
     tables: list[tuple[str, str, str]],
@@ -222,6 +267,93 @@ def _fetch_table_metadata(
             results.append(meta)
 
     return results
+
+
+from typing import NamedTuple
+
+
+class MemoryLimitResult(NamedTuple):
+    """Source-tagged result from _fetch_per_node_memory_limit.
+
+    bytes: resolved per-node limit in bytes, or None when no usable value.
+    source: one of "env" | "show_session" | "bad_env_fallthrough" | "default-fallback".
+      "env"                — GENIE_TRINO_MEMORY_LIMIT_PER_NODE_BYTES was set and valid.
+      "show_session"       — SHOW SESSION query_max_memory_per_node parsed successfully.
+      "bad_env_fallthrough"— env var was set but invalid (non-int or ≤ 0); bytes is from
+                             SHOW SESSION (if available) or None.
+      "default-fallback"   — no usable value from any source; bytes is None → 1 GiB used.
+    """
+    bytes: Optional[int]
+    source: str
+
+
+def _fetch_per_node_memory_limit(client: McpClient) -> MemoryLimitResult:
+    """Resolve the effective per-node memory limit (bytes), source-tagged.
+
+    Source priority (highest first):
+      1. GENIE_TRINO_MEMORY_LIMIT_PER_NODE_BYTES env var — direct int bytes,
+         > 0. Sam sets this to his cluster's query.max-memory-per-node. No
+         round-trip when set+valid.
+      2. SHOW SESSION best-effort — row Name == 'query_max_memory_per_node'
+         (the genuine per-node session property, present on older Trino).
+         Value column, falling back to Default column when Value is empty.
+      3. MemoryLimitResult(None, "default-fallback") → _memory_pressure_threshold
+         falls back to HIGH_PEAK_MEMORY_BYTES (1 GiB). Behaviorally identical
+         to today — no regression.
+
+    INVARIANT: query_max_memory (total cross-cluster budget) is NEVER read,
+    NEVER used as a proxy. Using the total would make the threshold N× too
+    large → memory-pressure fires N× less often → signal silently weakened.
+    Match is on the EXACT name only — no prefix or partial match (D02).
+
+    Read at CALL TIME (not module load) so Sam can export the env before a
+    run and tests can monkeypatch os.environ. Never raises; failure-safe.
+    """
+    import os  # local import — research.py does NOT import os at module level
+
+    _bad_env = False
+
+    # Source 1: env override (no round-trip)
+    env_val = os.environ.get("GENIE_TRINO_MEMORY_LIMIT_PER_NODE_BYTES")
+    if env_val:
+        try:
+            parsed = int(env_val)
+            if parsed > 0:
+                return MemoryLimitResult(bytes=parsed, source="env")
+            else:
+                _bad_env = True  # ≤ 0 → fall through
+        except (ValueError, TypeError):
+            _bad_env = True  # non-int → fall through to SHOW SESSION (C03)
+
+    # Source 2: best-effort SHOW SESSION — per-node property only
+    show_session_result: Optional[int] = None
+    try:
+        result = _execute_via_mcp(client, "SHOW SESSION")
+        if result.get("error"):
+            if _bad_env:
+                return MemoryLimitResult(bytes=None, source="bad_env_fallthrough")
+            return MemoryLimitResult(bytes=None, source="default-fallback")
+        for row in result.get("rows") or []:
+            if not isinstance(row, dict):
+                continue
+            row_lower = {k.lower(): v for k, v in row.items()}
+            if str(row_lower.get("name", "")).strip().lower() == "query_max_memory_per_node":
+                val = str(row_lower.get("value", "")).strip()
+                if not val:
+                    val = str(row_lower.get("default", "")).strip()  # D08 value→default fallback
+                show_session_result = _parse_trino_datasize(val)
+                break
+    except Exception:
+        pass  # transport error / CandidateTimeoutError / any non-row shape → fallback
+
+    if _bad_env:
+        return MemoryLimitResult(bytes=show_session_result, source="bad_env_fallthrough")
+
+    if show_session_result is not None:
+        return MemoryLimitResult(bytes=show_session_result, source="show_session")
+
+    # Source 3: no usable value
+    return MemoryLimitResult(bytes=None, source="default-fallback")
 
 
 def _generate_table_suggestions(metadata: list[TableMetadata]) -> list[TableSuggestion]:
@@ -640,12 +772,16 @@ def _build_mcp_explain_runner(client: McpClient):
     return _runner
 
 
-def _assemble_mcp_directions(client, sql, static_report, *, peak_memory_bytes=None, table_metadata=None):
+def _assemble_mcp_directions(
+    client, sql, static_report, *,
+    peak_memory_bytes=None,
+    table_metadata=None,
+    peak_memory_limit_bytes=None,   # NEW — per-node limit in bytes (None → 1 GiB fallback)
+):
     """Gather diagnostics → ranked directions at zero query-execution cost.
 
-    Single source of truth for the three MCP call sites that need a diagnosis:
-    the optimizer-prompt injection (has-data success path), the long-query
-    gate-trip directed report, and the ``--diagnose-only`` short-circuit.
+    Single source of truth for the four ``_assemble_mcp_directions`` call sites
+    (success path, long-query gate-trip, ``--diagnose-only``, per-iteration re-diagnosis).
     EXPLAIN (FORMAT JSON) plans the query without running it; metadata is a
     cheap catalog round-trip. Returns ``(directions, table_metadata)`` so the
     success path can reuse the fetched metadata for its post-loop block.
@@ -678,6 +814,7 @@ def _assemble_mcp_directions(client, sql, static_report, *, peak_memory_bytes=No
         explain_cost=explain_cost,
         table_metadata=pre_table_metadata or None,
         peak_memory_bytes=peak_memory_bytes,
+        peak_memory_limit_bytes=peak_memory_limit_bytes,   # NEW
     )
     return directions, pre_table_metadata
 
@@ -827,6 +964,7 @@ def _run_mcp_plan_cost_loop(
     explain_runner: Callable[[str], Optional[str]],
     max_fallbacks: int,
     candidate_timeout_ms: Optional[float] = None,
+    peak_memory_limit_bytes: Optional[int] = None,   # NEW
 ) -> EnhancementReport:
     """Plan-cost ranking + L1 structural guard + K-retry for the MCP path.
 
@@ -877,6 +1015,7 @@ def _run_mcp_plan_cost_loop(
         explain_cost=(baseline_rows_est, baseline_bytes_est, baseline_plan),
         table_metadata=None,
         peak_memory_bytes=getattr(baseline.metrics, "peak_memory_bytes", 0) or None,
+        peak_memory_limit_bytes=peak_memory_limit_bytes,   # NEW
     )
     rule_gate = build_rule_gate_summary(static_report, directions)
     rule_gate_block = format_rule_gate_for_prompt(rule_gate)
@@ -1594,6 +1733,31 @@ def run_mcp_enhancement(
         plan_cost,
     )
 
+    # ── Per-node memory limit (v34 residual #1): fetch once, thread to every
+    #    pre_execution_diagnosis call. None → 1 GiB fallback. Never raises. ──
+    _mem_limit = _fetch_per_node_memory_limit(client)
+    memory_limit_bytes: Optional[int] = _mem_limit.bytes
+    if output:
+        if _mem_limit.source == "env":
+            _limit_display = f"{memory_limit_bytes / 1024**3:.1f} GiB" if memory_limit_bytes else "?"
+            output.progress(f"  memory limit  {_limit_display} (GENIE_TRINO_MEMORY_LIMIT_PER_NODE_BYTES)")
+        elif _mem_limit.source == "bad_env_fallthrough":
+            import os as _os_local
+            _bad_val = _os_local.environ.get("GENIE_TRINO_MEMORY_LIMIT_PER_NODE_BYTES", "?")
+            output.progress(
+                f"  [yellow][warn] GENIE_TRINO_MEMORY_LIMIT_PER_NODE_BYTES={_bad_val!r} "
+                f"is not a valid positive integer — falling through to SHOW SESSION[/yellow]"
+            )
+        elif _mem_limit.source == "show_session":
+            _limit_display = f"{memory_limit_bytes / 1024**3:.1f} GiB" if memory_limit_bytes else "?"
+            output.progress(f"  memory limit  {_limit_display} (SHOW SESSION query_max_memory_per_node)")
+        else:  # default-fallback
+            output.progress(
+                "  memory limit  1.0 GiB (fallback — set "
+                "GENIE_TRINO_MEMORY_LIMIT_PER_NODE_BYTES to your cluster's "
+                "query.max-memory-per-node)"
+            )
+
     # ── --diagnose-only short-circuit (v29 T3): zero query cost ──
     # No baseline, no iteration loop, no EXPLAIN ANALYZE. EXPLAIN (FORMAT JSON)
     # plans the query without running it; static + metadata are cheap. Emit a
@@ -1603,7 +1767,9 @@ def run_mcp_enhancement(
         if output:
             output.progress("  Diagnose only: EXPLAIN-cost + static + metadata, no query execution")
         directions, _ = _assemble_mcp_directions(
-            client, sql, static_report, peak_memory_bytes=None
+            client, sql, static_report,
+            peak_memory_bytes=None,
+            peak_memory_limit_bytes=memory_limit_bytes,   # NEW
         )
         report_md = format_directions_report(
             directions, sql=sql,
@@ -1687,6 +1853,7 @@ def run_mcp_enhancement(
         directions, _ = _assemble_mcp_directions(
             client, sql, static_report,
             peak_memory_bytes=getattr(baseline.metrics, "peak_memory_bytes", 0) or None,
+            peak_memory_limit_bytes=memory_limit_bytes,   # NEW
         )
         report_md = format_directions_report(
             directions, sql=sql,
@@ -1760,6 +1927,7 @@ def run_mcp_enhancement(
             explain_runner=mcp_explain_runner,
             max_fallbacks=fallbacks,
             candidate_timeout_ms=candidate_timeout_ms,
+            peak_memory_limit_bytes=memory_limit_bytes,   # NEW
         )
 
     # ── EXPLAIN ANALYZE baseline ──
@@ -1796,6 +1964,7 @@ def run_mcp_enhancement(
     directions, pre_table_metadata = _assemble_mcp_directions(
         client, sql, static_report,
         peak_memory_bytes=getattr(baseline.metrics, "peak_memory_bytes", 0) or None,
+        peak_memory_limit_bytes=memory_limit_bytes,   # NEW
     )
     rule_gate = build_rule_gate_summary(static_report, directions)
     rule_gate_block = format_rule_gate_for_prompt(rule_gate)
@@ -1860,6 +2029,7 @@ def run_mcp_enhancement(
                     client, best_sql, static_analyze(best_sql),
                     peak_memory_bytes=getattr(best_measure.metrics, "peak_memory_bytes", 0) or None,
                     table_metadata=pre_table_metadata or None,
+                    peak_memory_limit_bytes=memory_limit_bytes,   # NEW
                 )
                 fresh_block = format_directions_for_prompt(_rd)
             except Exception:

@@ -312,6 +312,17 @@ def _print_trino_research_help(output) -> None:
     output.print("    /trino-research --file q.sql --diagnose-only   [dim](no query executed)[/dim]")
     output.print("    /trino-research --direct   [dim](skip MCP)[/dim]")
     output.print("")
+    output.print("  [dim]Environment variables[/dim]")
+    output.print("    GENIE_TRINO_MEMORY_LIMIT_PER_NODE_BYTES")
+    output.print("      int bytes, must be > 0. Overrides SHOW SESSION for per-node memory limit.")
+    output.print("      Default: attempt SHOW SESSION query_max_memory_per_node, else 1 GiB fallback.")
+    output.print("      Example: GENIE_TRINO_MEMORY_LIMIT_PER_NODE_BYTES=5368709120  # 5 GiB")
+    output.print("    GENIE_TRINO_MEMORY_PRESSURE_FRACTION")
+    output.print("      float, range (0, 1]. Memory-pressure warning threshold as fraction of per-node limit.")
+    output.print("      Default: 0.5. Example: GENIE_TRINO_MEMORY_PRESSURE_FRACTION=0.7")
+    output.print("      Note: env vars are call-time — set before /trino-research, no restart needed.")
+    output.print("      Note: env vars have no effect on the --direct path (--direct is out of scope).")
+    output.print("")
 
 
 def _chat_loop(
