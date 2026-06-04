@@ -151,6 +151,72 @@ Reuse genieCLI's existing L3 row-equivalence + plan_signature primitives for the
 First real run (T8) uses the manager's 4h→1min query as the **golden case**: before is known, after
 is known → validates the pipeline reaches an equivalent, faster result on its own.
 
+## Consolidated design (2026-06-04, Sam + Emily — SUPERSEDES the tGenie tier table above)
+
+The form-2 Run A escalated at `discussion` (4/4 panel fails) because the tGenie P1–P8 tier table
+above is **ungrounded against the real genieCLI rule system** — verified in code. This section is the
+corrected design and is the authority the next discussion run must follow.
+
+### Two disjoint vocabularies (the root mistake)
+
+- **The manager's P1–P8** (function pushup, EXISTS→LEFT JOIN, LIKE→contains, LISTAGG→slice, Lambda,
+  skinny join, broadcast hint) = an **optimization-rewrite mental model**. There is no P1–P8 anywhere
+  in the code, and P5 was never defined.
+- **genieCLI's real system** = 9 static lint rules (`genie/skills/trino_query/sql_static/rule_ids.py`)
+  → a 4-action safety gate (`genie/skills/mcp_trino/rule_gate.py`): **BLOCK** (semantics at risk, do
+  not auto-rewrite: cartesian-join, null-unsafe-equals), **REWRITE** (safe candidate, verify
+  equivalence: redundant-distinct, order-by-in-subquery, predicate-pushdown, cast-chain,
+  join-first-filter-late), **ADVISE** (hint only: select-star, subquery-pushable + 6 directions).
+
+**Decision = Option C.** The tier classifier is built on the **real 4-action gate** (already coded,
+already tested — it IS the deterministic Safe/Trap/Dangerous notion). The manager's P1–P8 become
+**Run B rewrite strategies**, each tagged with the action-tier its rewrite lands in. P5 is defined
+in Run B, not now — it does not block Run A.
+
+### Detection = 9 rules + cost (NOT 9 alone); 8 principles = the fix menu (NOT a 2nd scan)
+
+- Monster detection has two inputs: the **9-rule static scan** (anti-patterns) AND **cost/EXPLAIN**
+  (a fragment can pass all 9 rules yet be a cost monster). Both feed the monster ranking.
+- The 8 principles are *how to fix* a named monster (the rewrite menu, applied in Run B's optimize
+  step) — they are not a second detection pass.
+
+### Detection runs at THREE stages (Sam's state-machine insight)
+
+A monster can be born at any stage — **especially recompose** (locally-optimal fragments can combine
+into a global monster: e.g. two independently broadcast-optimized fragments feeding one join → double
+broadcast → memory blowup; each fragment is "Safe" alone). So the detection function is invoked at:
+
+1. **before decompose** — whole query → monster map (guides the split)
+2. **after decompose** — each fragment → per-fragment safety tier (gates optimize)
+3. **after recompose** — reassembled whole query → cross-fragment monster check **+ row-equivalence
+   vs the original (P0 gate)**
+
+One shared detection function, three call sites, stage-specific interpretation of its output. This is
+the state machine: states share the tool, differ in transitions.
+
+### Pure vs impure (the FP design constraint)
+
+- **Pure — run freely at every stage:** the 9-rule sqlglot scan + tier classification. Functions of an
+  SQL string; no side effects; cheap. The same function must accept **a whole query OR a single
+  fragment** (this is a hard Run A interface requirement).
+- **Impure / expensive — gate only at real decision points (esp. after recompose):** cost/EXPLAIN read
+  and row-equivalence — both hit the live Trino cluster. Do NOT re-hit the cluster at every
+  intermediate state.
+
+### Build order = FP-first, then wire (this is exactly the Run A / Run B split)
+
+Build the functions first (Run A), then connect them with the state machine (Run B). Run A's revised
+function list:
+
+| # | Run A function | Pure? | Notes |
+|---|----------------|-------|-------|
+| 1 | **detection scan** — sqlglot 9-rule + per-finding action-tier via `rule_gate.py`; accepts whole query OR a fragment | pure | the shared 3-stage tool; this REPLACES the old "tier classifier" framing |
+| 2 | **cost reader** — baseline plan cost + EXPLAIN via Trino-MCP; graceful no-cluster | impure | env-configurable; the other half of monster detection |
+| 3 | **row-equivalence comparator** — full-set compare + non-deterministic-column exclusion | impure | **extend the existing `genie/skills/mcp_trino/research.py:_results_equivalent()`**, do not rebuild |
+
+Run B (later) = the decompose / optimize / recompose / verify state machine that calls these three,
+plus the manager's P1–P8 rewrite strategy menu.
+
 ## Open gaps (recorded 2026-06-04 — do not lose)
 
 These are knowledge gaps surfaced when Sam asked "is the optimization info all recorded?". Captured
