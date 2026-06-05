@@ -272,6 +272,7 @@ def _no_data_report(
     static_report,
     llm_finishing: Optional[str],
     model: str,
+    optimized_sql: Optional[str] = None,
 ) -> str:
     """Render the no-data path report (sticky warning + L1 findings + L3 finishing)."""
     from datetime import datetime
@@ -300,6 +301,26 @@ def _no_data_report(
         sql.rstrip(),
         "```",
         "",
+    ]
+
+    # Dedicated, copy-paste-ready optimized SQL (advisory — extracted from the LLM
+    # finishing pass). Surfaced as its own block so the user does not have to dig the
+    # rewrite out of the prose below.
+    if optimized_sql:
+        lines += [
+            "## Optimized SQL (advisory — UNVERIFIED, no data to validate)",
+            "",
+            "Static-analysis-driven rewrite. It was **not** executed, EXPLAINed, "
+            "benchmarked, or row-equivalence verified (the table is missing/empty). "
+            "Review it, then re-run `/trino-research` once real data is available.",
+            "",
+            "```sql",
+            optimized_sql.rstrip(),
+            "```",
+            "",
+        ]
+
+    lines += [
         "## Static analysis findings",
         "",
     ]
@@ -404,11 +425,21 @@ def _run_no_data_path(
                 model=model,
                 reasoning=reasoning,
             )
-            output.progress("  Calling LLM for finishing pass...")
-            llm_finishing = provider.complete_text(req)
+            with output.status("Analyzing and drafting an optimized rewrite (LLM, this can take a while)..."):
+                llm_finishing = provider.complete_text(req)
         except Exception as exc:
             output.progress(f"  [warn] LLM finishing pass failed: {exc}")
             llm_finishing = None
+
+    # Pull the rewrite out of the LLM finishing prose into a clean, copy-paste-ready
+    # block (the LLM bundles diagnosis + SQL + checks together).
+    optimized_sql: Optional[str] = None
+    if llm_finishing:
+        from genie.core.sql_extraction import extract_sql_from_reply
+        extracted = extract_sql_from_reply(str(llm_finishing))
+        if extracted and extracted.strip() and extracted.strip() != original_sql.strip():
+            optimized_sql = extracted
+            output.progress("  Advisory optimized SQL extracted (unverified — no data)")
 
     report_md = _no_data_report(
         sql=original_sql,
@@ -416,6 +447,7 @@ def _run_no_data_path(
         static_report=static_report,
         llm_finishing=llm_finishing,
         model=model,
+        optimized_sql=optimized_sql,
     )
 
     return {
@@ -423,7 +455,8 @@ def _run_no_data_path(
         "reason": no_data_reason,
         "baseline_error": str(baseline_exc) if baseline_exc else None,
         "original_sql": original_sql,
-        "best_sql": original_sql,
+        "best_sql": optimized_sql or original_sql,
+        "advisory_optimized_sql": optimized_sql,
         "static_findings": (
             [
                 {

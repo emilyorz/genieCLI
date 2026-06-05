@@ -356,6 +356,33 @@ def test_no_data_report_marks_table_not_found():
     assert "Original SQL" in md
 
 
+def test_no_data_report_renders_optimized_sql_section():
+    """The optimized SQL must appear as its own copy-paste-ready block (advisory)."""
+    report = static_analyze("SELECT DISTINCT a, count(*) FROM t GROUP BY a")
+    opt = "SELECT a, count(*) FROM t GROUP BY a"
+    md = _no_data_report(
+        sql="SELECT DISTINCT a, count(*) FROM t GROUP BY a",
+        reason="table_not_found",
+        static_report=report,
+        llm_finishing="Diagnosis...\n```sql\n" + opt + "\n```\nchecks...",
+        model="test-model",
+        optimized_sql=opt,
+    )
+    assert "## Optimized SQL" in md
+    assert "UNVERIFIED" in md
+    assert opt in md.split("## Optimized SQL", 1)[1].split("```sql", 1)[1]
+
+
+def test_no_data_report_no_optimized_section_when_absent():
+    """No optimized SQL extracted → no Optimized SQL section (backward-compatible)."""
+    report = static_analyze("SELECT * FROM t")
+    md = _no_data_report(
+        sql="SELECT * FROM t", reason="table_not_found", static_report=report,
+        llm_finishing=None, model="test-model",
+    )
+    assert "## Optimized SQL" not in md
+
+
 def test_no_data_report_marks_empty_result():
     report = static_analyze("SELECT a FROM t")
     md = _no_data_report(
