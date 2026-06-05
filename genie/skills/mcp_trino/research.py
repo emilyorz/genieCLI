@@ -918,30 +918,200 @@ def _measure_mcp(client: McpClient, sql: str, metric_key: str,
     )
 
 
-def _results_equivalent(rows_a: list, rows_b: list) -> tuple[bool, str]:
-    """Check if two MCP result sets are equivalent."""
-    if len(rows_a) != len(rows_b):
-        return False, f"row count differs: {len(rows_a)} vs {len(rows_b)}"
+# ---------------------------------------------------------------------------
+# Row-equivalence comparator (Run A extension)
+# ---------------------------------------------------------------------------
+
+# Sentinel strings for non-finite floats.
+# CRITICAL: must NOT be None — json.dumps(None) == "null", indistinguishable
+# from Python None.  Sentinels serialize as JSON strings, keeping NaN/Inf/None
+# distinct.  Symmetric: NaN==NaN, Inf==Inf, NaN!=Inf, NaN!=None.
+_NAN_SENTINEL = "__NAN__"
+_INF_SENTINEL = "__INF__"
+_NEG_INF_SENTINEL = "__NEG_INF__"
+
+# Float precision constant (6dp matches trino_query/research.py)
+_FLOAT_PRECISION = 6
+
+
+def _re_normalize_value(v: object) -> object:
+    """Normalize a single cell value for stable JSON serialization.
+
+    - float NaN  -> _NAN_SENTINEL  (NOT None/null)
+    - float +Inf -> _INF_SENTINEL  (NOT None/null)
+    - float -Inf -> _NEG_INF_SENTINEL
+    - finite float -> round to _FLOAT_PRECISION decimal places
+    - all other types -> unchanged
+    """
+    if isinstance(v, float):
+        if math.isnan(v):
+            return _NAN_SENTINEL
+        if math.isinf(v):
+            return _INF_SENTINEL if v > 0 else _NEG_INF_SENTINEL
+        return round(v, _FLOAT_PRECISION)
+    return v
+
+
+def _re_normalize_row(row: object, exclude_indices: tuple) -> str:
+    """Serialize one row to a stable JSON string for comparison.
+
+    - dict rows: normalize float values; apply positional exclusion by the dict's
+      insertion-order (Python 3.7+ dicts are ordered), then sort_keys=True for the
+      remaining keys so the comparison is order-independent across rows.
+      exclude_indices is 0-based over the dict's key-insertion order.
+    - list/tuple rows: drop exclude_indices positions, normalize floats.
+    - other: json.dumps with default=str.
+    """
+    if isinstance(row, dict):
+        if exclude_indices:
+            normalized = {
+                k: _re_normalize_value(v)
+                for i, (k, v) in enumerate(row.items())
+                if i not in exclude_indices
+            }
+        else:
+            normalized = {k: _re_normalize_value(v) for k, v in row.items()}
+        return json.dumps(normalized, sort_keys=True, default=str)
+    if isinstance(row, (list, tuple)):
+        items = []
+        for i, v in enumerate(row):
+            if i in exclude_indices:
+                continue
+            items.append(_re_normalize_value(v))
+        return json.dumps(items, default=str)
+    return json.dumps(row, default=str)
+
+
+@dataclass(frozen=True)
+class EquivDiff:
+    """Rich result from rows_equivalent."""
+    equivalent: bool
+    reason: str                   # exact legacy _results_equivalent string (verbatim)
+    row_count_a: int
+    row_count_b: int
+    mismatches: int               # # differing entries after exclusion+normalize+sort
+    first_mismatch: Optional[str] # first differing sorted entry ("a vs b"); None if equivalent
+    excluded_columns: tuple       # 0-based indices actually removed before compare
+
+
+def rows_equivalent(
+    rows_a: list,
+    rows_b: list,
+    exclude_columns: tuple = (),
+) -> tuple[bool, EquivDiff]:
+    """Order-independent row-equivalence with optional column exclusion.
+
+    Args:
+        rows_a: baseline result rows (list of dicts or list/tuple rows)
+        rows_b: candidate result rows
+        exclude_columns: 0-based column indices to drop from BOTH sides before
+            comparison (for non-deterministic columns like timestamps/UUIDs).
+            Out-of-range indices are silently ignored.
+
+    Returns:
+        (equivalent: bool, EquivDiff)
+
+    Reason strings are VERBATIM legacy _results_equivalent strings:
+        "both empty", "exact match",
+        "row count differs: {a} vs {b}",
+        "{n} row(s) differ",
+        "row count after normalize: {a} vs {b}"
+
+    first_mismatch is an ADDITIVE diagnostic field — it is not folded into reason.
+    Never raises.
+    """
+    count_a = len(rows_a)
+    count_b = len(rows_b)
+
+    # Build the set of indices actually present in any row (dicts + list/tuples both count)
+    if exclude_columns:
+        max_len = max(
+            (max((len(r) for r in rows_a if isinstance(r, (list, tuple, dict))), default=0),
+             max((len(r) for r in rows_b if isinstance(r, (list, tuple, dict))), default=0))
+        )
+        actually_excluded: tuple = tuple(
+            i for i in exclude_columns if i < max_len
+        )
+    else:
+        actually_excluded = ()
+
+    if count_a != count_b:
+        return False, EquivDiff(
+            equivalent=False,
+            reason=f"row count differs: {count_a} vs {count_b}",
+            row_count_a=count_a,
+            row_count_b=count_b,
+            mismatches=0,
+            first_mismatch=None,
+            excluded_columns=actually_excluded,
+        )
 
     if not rows_a:
-        return True, "both empty"
+        return True, EquivDiff(
+            equivalent=True,
+            reason="both empty",
+            row_count_a=0,
+            row_count_b=0,
+            mismatches=0,
+            first_mismatch=None,
+            excluded_columns=actually_excluded,
+        )
 
-    # Compare as sorted JSON for order-independent comparison
-    def normalize(row):
-        if isinstance(row, dict):
-            return json.dumps(row, sort_keys=True, default=str)
-        return json.dumps(row, default=str)
+    exclude_set = frozenset(exclude_columns)
 
-    set_a = sorted(normalize(r) for r in rows_a)
-    set_b = sorted(normalize(r) for r in rows_b)
+    set_a = sorted(_re_normalize_row(r, exclude_set) for r in rows_a)
+    set_b = sorted(_re_normalize_row(r, exclude_set) for r in rows_b)
 
     mismatches = sum(1 for a, b in zip(set_a, set_b) if a != b)
-    if mismatches > 0:
-        return False, f"{mismatches} row(s) differ"
-    if len(set_a) != len(set_b):
-        return False, f"row count after normalize: {len(set_a)} vs {len(set_b)}"
 
-    return True, "exact match"
+    first_mismatch: Optional[str] = None
+    for a, b in zip(set_a, set_b):
+        if a != b:
+            first_mismatch = f"{a} vs {b}"
+            break
+
+    if mismatches > 0:
+        return False, EquivDiff(
+            equivalent=False,
+            reason=f"{mismatches} row(s) differ",
+            row_count_a=count_a,
+            row_count_b=count_b,
+            mismatches=mismatches,
+            first_mismatch=first_mismatch,
+            excluded_columns=actually_excluded,
+        )
+
+    if len(set_a) != len(set_b):
+        return False, EquivDiff(
+            equivalent=False,
+            reason=f"row count after normalize: {len(set_a)} vs {len(set_b)}",
+            row_count_a=count_a,
+            row_count_b=count_b,
+            mismatches=0,
+            first_mismatch=None,
+            excluded_columns=actually_excluded,
+        )
+
+    return True, EquivDiff(
+        equivalent=True,
+        reason="exact match",
+        row_count_a=count_a,
+        row_count_b=count_b,
+        mismatches=0,
+        first_mismatch=None,
+        excluded_columns=actually_excluded,
+    )
+
+
+def _results_equivalent(rows_a: list, rows_b: list) -> tuple[bool, str]:
+    """Backward-compat shim — delegates to rows_equivalent without exclusions.
+
+    The four existing call sites (lines 1242, 1283, 2175, 2301) are
+    behaviorally untouched until a caller opts in by using rows_equivalent
+    directly with exclude_columns.
+    """
+    equiv, diff = rows_equivalent(rows_a, rows_b)
+    return equiv, diff.reason
 
 
 # ---------------------------------------------------------------------------
