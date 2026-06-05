@@ -402,7 +402,13 @@ class TestRecompose:
         assert result.status in {RecomposeStatus.OK, RecomposeStatus.SCAN_UNCERTAIN}
 
     def test_t4_4_scan_fn_returns_single_pass(self):
-        """T4.4: injected scan_fn returns synthetic pass → SCAN_UNCERTAIN."""
+        """T4.4: synthetic-pass re-scan (UNCERTAIN, no actionable finding) → PROCEED, not revert.
+
+        A clean re-scan means no NEW cross-fragment monster, so a successful optimization
+        must NOT be reverted (the prior SCAN_UNCERTAIN-revert undid successful rewrites).
+        verify()'s live row-equivalence is the real P0 gate; the static scan is a cheap
+        pre-check. Only ERROR (scan crashed) fail-closes. Ship reassembled, mark unconfident.
+        """
         original = self._CTE_SQL
         candidates = [
             self._make_candidate("mydata", original_sql="SELECT id FROM t",
@@ -410,8 +416,46 @@ class TestRecompose:
         ]
         scan_fn = lambda sql: [PASS_FINDING]
         result = recompose(original, candidates, scan_fn=scan_fn)
+        assert result.status == RecomposeStatus.OK
+        assert result.sql != original          # the rewrite was applied, not reverted
+        assert result.scan_ok_confident is False  # transparent: static pre-check unconfident
+
+    def test_t4_5_scan_fn_raises_still_reverts(self):
+        """T4.5: ERROR (re-scan crashes) STILL fail-closes → SCAN_UNCERTAIN + revert.
+
+        The relaxation in T4.4 applies ONLY to UNCERTAIN (clean re-scan). A scan that
+        genuinely raises cannot be trusted, so the safety revert is preserved.
+        """
+        original = self._CTE_SQL
+        candidates = [
+            self._make_candidate("mydata", original_sql="SELECT id FROM t",
+                                 rewritten_sql=self._CTE_REWRITE)
+        ]
+        def scan_fn(sql):
+            raise RuntimeError("scan boom")
+        result = recompose(original, candidates, scan_fn=scan_fn)
         assert result.status == RecomposeStatus.SCAN_UNCERTAIN
         assert result.sql == original
+        assert result.scan_ok_confident is False
+
+    def test_t4_7_root_fragment_rewrite_applied(self):
+        """T4.7: a __root__ (whole-query) rewrite is stitched in, not silently dropped.
+
+        Regression for the live golden-case bug: _apply_rewrites previously only
+        substituted named-CTE bodies, so a single-root-fragment query (the whole query
+        is the monster, no CTEs/subqueries) had its rewrite dropped — recompose returned
+        the original. Now the __root__ rewrite is applied.
+        """
+        original = "SELECT DISTINCT a, count(*) AS c FROM t GROUP BY a"
+        rewritten = "SELECT a, count(*) AS c FROM t GROUP BY a"
+        candidates = [
+            self._make_candidate("__root__", original_sql=original, rewritten_sql=rewritten)
+        ]
+        scan_fn = lambda sql: [PASS_FINDING]  # rewritten is clean → UNCERTAIN → proceeds
+        result = recompose(original, candidates, scan_fn=scan_fn)
+        assert result.status == RecomposeStatus.OK
+        assert "DISTINCT" not in result.sql.upper()   # the root rewrite WAS applied
+        assert result.sql != original
 
     def test_t4_6_advise_only_whole_query(self):
         """T4.6: advise-only scan → CROSS_FRAGMENT_ADVISE with findings."""

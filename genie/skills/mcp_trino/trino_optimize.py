@@ -189,7 +189,14 @@ def _apply_rewrites(original_sql: str, active_rewrites: dict[str, str]) -> str:
         return original_sql
     try:
         import sqlglot
-        tree = sqlglot.parse_one(original_sql, read="trino")
+        # A "__root__" fragment IS the whole query: its rewrite is the whole
+        # optimized SQL, so it becomes the base that any CTE/subquery rewrites
+        # then apply on top of. (Without this, a single-root-fragment query —
+        # the whole query is the monster — would never get its rewrite stitched
+        # back: the CTE walk below finds no matching alias and the root rewrite
+        # is silently dropped.)
+        base_sql = active_rewrites.get("__root__", original_sql)
+        tree = sqlglot.parse_one(base_sql, read="trino")
         if tree is None:
             return original_sql
 
@@ -789,11 +796,30 @@ def recompose(
         # Step 3: cross-fragment gate on serialized reassembled string
         scan_outcome = scan_with_confidence(reassembled, scan_fn)
 
-        # Step 4: UNCERTAIN/ERROR → fail-closed
-        if scan_outcome.confidence in {ScanConfidence.UNCERTAIN, ScanConfidence.ERROR}:
+        # Step 4a: ERROR (the static re-scan itself crashed) → fail-closed revert.
+        # A crashed scan cannot be trusted; do not ship.
+        if scan_outcome.confidence == ScanConfidence.ERROR:
             return RecomposeResult(
                 sql=original_sql,
                 status=RecomposeStatus.SCAN_UNCERTAIN,
+                cross_fragment_findings=scan_outcome.findings,
+                reverted_fragments=(),
+                scan_ok_confident=False,
+            )
+
+        # Step 4b: UNCERTAIN (synthetic-pass / empty findings = NO actionable finding) →
+        # PROCEED, do NOT revert. The recompose cross-fragment gate exists to catch a
+        # NEWLY-introduced cross-fragment monster (a block/rewrite/advise finding on the
+        # reassembled query); a clean re-scan means no such monster. Reverting here would
+        # undo a SUCCESSFUL optimization (one that removed the anti-pattern, leaving the
+        # reassembled query legitimately clean — the common case). verify()'s LIVE
+        # row-equivalence is the real P0 safety gate; this static scan is only a cheap
+        # pre-check. We ship the reassembled SQL but mark scan_ok_confident=False so the
+        # unconfident static pre-check stays transparent and verify makes the final call.
+        if scan_outcome.confidence == ScanConfidence.UNCERTAIN:
+            return RecomposeResult(
+                sql=reassembled,
+                status=RecomposeStatus.OK,
                 cross_fragment_findings=scan_outcome.findings,
                 reverted_fragments=(),
                 scan_ok_confident=False,
