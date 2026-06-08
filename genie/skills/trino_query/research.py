@@ -397,29 +397,54 @@ def _run_no_data_path(
         for f in static_report.findings:
             output.print(f"    [{f.severity[0].upper()}] {f.rule_id}: {f.message}")
 
-    # Optional finishing pass: ask the model to synthesise findings into a
-    # rewrite recommendation. Single call — no iteration, no measurement.
+    # Finishing pass: ask the model to synthesise an optimized rewrite. Single
+    # call — no iteration, no measurement. In the no-data path genieCLI acts as a
+    # pure static optimizer, so this runs whenever a provider exists — NOT only
+    # when the static analyzer happened to flag findings. A clean query still
+    # deserves an advisory rewrite (or an explicit "already well-shaped" verdict)
+    # and the live spinner that comes with it.
     llm_finishing: Optional[str] = None
     has_findings = bool(static_report and static_report.findings)
-    if provider is not None and has_findings:
+    if provider is not None:
         try:
             from genie.core.provider import CompletionRequest
             from genie.session.manager import new_msg
 
-            findings_text = _format_static_findings(static_report)
-            sys_prompt = (
-                "You are a Trino SQL reviewer. The user's query could not be benchmarked "
-                "(table missing or empty), but a static analyzer found structural issues. "
-                "Combine the findings below with the SQL and write a concise rewrite "
-                "recommendation. Return: (1) a one-paragraph diagnosis, (2) a single "
-                "rewritten SQL block, (3) a short list of any further checks the user "
-                "should perform before re-running."
-            )
-            user_prompt = (
-                f"Original SQL:\n```sql\n{original_sql.rstrip()}\n```\n\n"
-                f"Static findings:\n{findings_text}\n\n"
-                f"Reason for no-data path: {reason_human}."
-            )
+            if has_findings:
+                findings_text = _format_static_findings(static_report)
+                sys_prompt = (
+                    "You are a Trino SQL reviewer. The user's query could not be benchmarked "
+                    "(table missing or empty), but a static analyzer found structural issues. "
+                    "Combine the findings below with the SQL and write a concise rewrite "
+                    "recommendation. Return: (1) a one-paragraph diagnosis, (2) a single "
+                    "rewritten SQL block, (3) a short list of any further checks the user "
+                    "should perform before re-running."
+                )
+                user_prompt = (
+                    f"Original SQL:\n```sql\n{original_sql.rstrip()}\n```\n\n"
+                    f"Static findings:\n{findings_text}\n\n"
+                    f"Reason for no-data path: {reason_human}."
+                )
+            else:
+                # No static findings — the optimizer still reviews the SQL shape
+                # directly (join order, predicate pushdown, CTE materialization,
+                # projection pruning) so the user always gets a copy-paste rewrite.
+                sys_prompt = (
+                    "You are a Trino SQL reviewer. The user's query could not be benchmarked "
+                    "(table missing or empty) and a static analyzer found no structural issues. "
+                    "Review the SQL directly for Trino-specific optimization opportunities "
+                    "(join order, predicate/filter pushdown, CTE materialization vs re-scan, "
+                    "projection pruning, partition-filter hints). Return: (1) a one-paragraph "
+                    "diagnosis, (2) a single rewritten SQL block — if the query is already "
+                    "well-shaped, return it unchanged and say so explicitly, (3) a short list of "
+                    "any further checks the user should perform before re-running."
+                )
+                user_prompt = (
+                    f"Original SQL:\n```sql\n{original_sql.rstrip()}\n```\n\n"
+                    f"Reason for no-data path: {reason_human}.\n"
+                    "No static findings were reported."
+                )
+
             req = CompletionRequest(
                 messages=[new_msg("system", sys_prompt), new_msg("user", user_prompt)],
                 model=model,

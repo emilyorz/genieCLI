@@ -442,11 +442,24 @@ def test_run_no_data_path_returns_no_data_status():
     assert "report_markdown" in result and result["report_markdown"]
 
 
-def test_run_no_data_path_skips_llm_when_no_findings():
+def test_run_no_data_path_still_optimizes_when_no_findings():
+    """No static findings must NOT skip the optimizer.
+
+    In the no-data path genieCLI is a pure static optimizer: a clean query the
+    analyzer found nothing wrong with still gets one LLM finishing pass (and its
+    live spinner), so the user always receives a copy-paste rewrite. Regression
+    guard for the 2026-06-08 fix — previously the LLM pass was gated on
+    `has_findings`, leaving clean queries silent with an Original-only report.
+    """
     output = MagicMock()
     provider = MagicMock()
-    provider.complete_text.return_value = "SHOULD NOT BE CALLED"
+    provider.complete_text.return_value = (
+        "Diagnosis: query is already well-shaped.\n"
+        "```sql\nSELECT a FROM t WHERE a IS NOT NULL AND a > 0\n```\n"
+        "Checks: confirm the table exists."
+    )
     report = static_analyze("SELECT a FROM t WHERE a IS NOT NULL")
+    assert not report.findings  # precondition: clean query, zero findings
     result = _run_no_data_path(
         provider=provider,
         model="test-model",
@@ -457,8 +470,31 @@ def test_run_no_data_path_skips_llm_when_no_findings():
         baseline_exc=None,
         output=output,
     )
+    provider.complete_text.assert_called_once()
+    assert result["llm_finishing"] is not None
+    # Optimized SQL is extracted and surfaced for copy-paste, even with no findings.
+    assert result["advisory_optimized_sql"] is not None
+    assert "a > 0" in result["advisory_optimized_sql"]
+    assert result["best_sql"] == result["advisory_optimized_sql"]
+    assert "## Optimized SQL (advisory" in result["report_markdown"]
+
+
+def test_run_no_data_path_skips_llm_when_provider_none():
+    """provider=None is the only path that skips the LLM finishing pass."""
+    output = MagicMock()
+    report = static_analyze("SELECT a FROM t WHERE a IS NOT NULL")
+    result = _run_no_data_path(
+        provider=None,
+        model="test-model",
+        reasoning="default",
+        original_sql="SELECT a FROM t WHERE a IS NOT NULL",
+        no_data_reason="empty_result",
+        static_report=report,
+        baseline_exc=None,
+        output=output,
+    )
     assert result["llm_finishing"] is None
-    provider.complete_text.assert_not_called()
+    assert result["advisory_optimized_sql"] is None
 
 
 def test_run_no_data_path_calls_llm_when_findings_present():
