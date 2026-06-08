@@ -210,6 +210,182 @@ def _static_findings_dict(static_report) -> dict:
     }
 
 
+# --- v40: decompose → optimize → recompose, advisory (non-executing) ----------
+
+def _empty_decompose_result(reason: str, error: Optional[str] = None) -> dict:
+    """The decompose_advisory dict when the pipeline did not run."""
+    return {
+        "ran": False,
+        "reason": reason,
+        "error": error,
+        "fragments": [],
+        "candidates": [],
+        "recompose_status": None,
+        "recomposed_inner_sql": None,
+        "recomposed_advisory_sql": None,
+        "reverted_fragments": [],
+        "scan_ok_confident": False,
+        "changed": False,
+    }
+
+
+def _make_advisory_llm_fn(provider, model: str, reasoning: str):
+    """Adapt provider.complete_text(CompletionRequest) to LlmFn (prompt:str -> str).
+
+    On a provider exception the closure RAISES — decompose/optimize catch LLM
+    exceptions internally and fall back (heuristic monsters / passthrough), so the
+    exception never escapes to the caller. None/""/whitespace coerce to "".
+    """
+    from genie.core.provider import CompletionRequest
+    from genie.session.manager import new_msg
+
+    def _llm(prompt: str) -> str:
+        req = CompletionRequest(
+            messages=[
+                new_msg("system", "You provide advisory-only Trino SQL fragment rewrites."),
+                new_msg("user", prompt),
+            ],
+            model=model,
+            reasoning=reasoning,
+        )
+        text = provider.complete_text(req)
+        return str(text or "")
+
+    return _llm
+
+
+def _advisory_cost_reader(sql: str):
+    """Cost reader for advisory mode: no explain_runner → unavailable cost. Never raises."""
+    from genie.skills.mcp_trino.cost_reader import read_cost
+    return read_cost(sql, None)
+
+
+def _column_safe_candidates(candidates):
+    """Revert any rewrite that changed the fragment's output column set.
+
+    optimize() rewrites each monster fragment via an UNCONSTRAINED LLM with no
+    column-shape check, and recompose() substitutes CTE/subquery bodies — so an LLM
+    that adds/drops/renames a fragment's output columns (e.g. expanding ``SELECT *``)
+    would yield a semantically-wrong recomposed query. This gate compares the output
+    column set before/after each admitted+changed candidate; if it differs, or either
+    side is indeterminable (``SELECT *`` / unparseable), the candidate is reverted
+    (admitted=False) so recompose drops it. Returns (safe_candidates, reverted_ids).
+    """
+    from dataclasses import replace as _dc_replace
+    from genie.core.sql_extraction import query_output_columns
+
+    safe = []
+    reverted_ids = []
+    for cand in candidates:
+        if not (getattr(cand, "admitted", False) and getattr(cand, "changed", False)):
+            safe.append(cand)
+            continue
+        before = query_output_columns(cand.original_sql)
+        after = query_output_columns(cand.rewritten_sql)
+        if before is None or after is None or before != after:
+            # Cannot prove the column set is preserved → revert this fragment.
+            reverted_ids.append(cand.fragment_id)
+            safe.append(_dc_replace(
+                cand,
+                rewritten_sql=cand.original_sql,
+                changed=False,
+                admitted=False,
+                rationale=(cand.rationale + " | reverted: output column set changed/indeterminable"),
+            ))
+        else:
+            safe.append(cand)
+    return safe, reverted_ids
+
+
+def _fragment_summary(fr) -> dict:
+    return {
+        "fragment_id": fr.fragment_id,
+        "role": fr.role,
+        "is_monster": fr.is_monster,
+        "monster_rank": fr.monster_rank,
+        "findings": [{"rule_id": x.rule_id, "action": x.action} for x in fr.findings],
+    }
+
+
+def _candidate_summary(cd) -> dict:
+    return {
+        "fragment_id": cd.fragment_id,
+        "action": cd.action,
+        "admitted": cd.admitted,
+        "changed": cd.changed,
+        "rationale": cd.rationale,
+    }
+
+
+def _canonical_sql(sql: Optional[str]) -> Optional[str]:
+    """Canonical form for change-detection; whitespace/`;`/formatting collapse. Never raises."""
+    if sql is None:
+        return None
+    try:
+        import sqlglot
+        return sqlglot.parse_one(sql, read="trino").sql(dialect="trino")
+    except Exception:
+        return sql.strip().rstrip(";").strip()
+
+
+def _run_decompose_advisory(provider, model, reasoning, inner_sql, original_sql, analysis_is_ctas_inner):
+    """v40 advisory pipeline: decompose → optimize → column-gate → recompose.
+
+    Non-executing: no baseline(), no verify(), no explain_runner, no query_runner.
+    Only provider.complete_text (LLM text) is called. Returns the decompose_advisory dict.
+    """
+    if provider is None:
+        return _empty_decompose_result(reason="no_provider")
+
+    # Phase A — setup (adapters/imports). Distinct failure class: degraded_setup.
+    try:
+        from genie.skills.mcp_trino.trino_optimize import decompose, optimize, recompose
+        from genie.skills.trino_query.detection_scan import scan_sql
+        from genie.core.sql_extraction import rewrap_ctas_inner_select
+        advisory_llm = _make_advisory_llm_fn(provider, model, reasoning)
+    except Exception as exc:
+        return _empty_decompose_result(reason="degraded_setup", error=str(exc))
+
+    # Phase B — pipeline. decompose/optimize/recompose never raise; any raise here is
+    # genuinely unexpected → degraded_pipeline.
+    try:
+        fragments = decompose(inner_sql, advisory_llm, _advisory_cost_reader)
+        candidates = [optimize(fr, advisory_llm) for fr in fragments]
+        # v40 column-safety gate (Sam decision): revert any fragment whose output
+        # column set changed — the LLM rewrite is unconstrained and recompose
+        # substitutes CTE bodies, so this is the real arity guard.
+        candidates, col_reverted = _column_safe_candidates(candidates)
+        rr = recompose(inner_sql, candidates, scan_fn=scan_sql)
+
+        recomposed_inner = rr.sql
+        if analysis_is_ctas_inner and recomposed_inner is not None:
+            recomposed_advisory_sql = rewrap_ctas_inner_select(original_sql, recomposed_inner)
+        else:
+            recomposed_advisory_sql = recomposed_inner
+
+        changed = (
+            any(c.admitted and c.changed for c in candidates)
+            and recomposed_advisory_sql is not None
+            and _canonical_sql(recomposed_advisory_sql) != _canonical_sql(original_sql)
+        )
+        reverted = list(rr.reverted_fragments) + [i for i in col_reverted if i not in rr.reverted_fragments]
+        return {
+            "ran": True,
+            "reason": None,
+            "error": None,
+            "fragments": [_fragment_summary(fr) for fr in fragments],
+            "candidates": [_candidate_summary(cd) for cd in candidates],
+            "recompose_status": rr.status.value,
+            "recomposed_inner_sql": recomposed_inner,
+            "recomposed_advisory_sql": recomposed_advisory_sql,
+            "reverted_fragments": reverted,
+            "scan_ok_confident": rr.scan_ok_confident,
+            "changed": changed,
+        }
+    except Exception as exc:
+        return _empty_decompose_result(reason="degraded_pipeline", error=str(exc))
+
+
 def _write_analysis_prompt(
     sql: str,
     operation: WriteOperation,
@@ -260,6 +436,105 @@ def _write_analysis_prompt(
 
 def _normalize_display_sql(sql: str) -> str:
     return sql.rstrip().rstrip(";") + ";"
+
+
+_ADVISORY_VERDICTS = {
+    "ok": "recomposed cleanly (UNVERIFIED — cross-fragment static scan found no new blocking issue).",
+    "advise": "recomposed with advisory cross-fragment findings (UNVERIFIED — review before applying).",
+    "block": "cross-fragment gate blocked the rewrite; reverted to original (no rewrite suggested).",
+    "scan_uncertain": "cross-fragment static scan was inconclusive; rewrite withheld (UNVERIFIED).",
+    "parse_error": "recompose could not reassemble the fragments; no rewrite suggested.",
+}
+
+
+def _render_decompose_advisory(result: dict) -> list:
+    """Render the v40 '## Decomposed Optimization' report section. Returns markdown lines."""
+    da = result.get("decompose_advisory") or _empty_decompose_result(reason="no_provider")
+    lines = ["## Decomposed Optimization (advisory, per-fragment)", ""]
+
+    if not da.get("ran"):
+        reason = da.get("reason")
+        msg = {
+            "no_provider": "Decomposed optimization was skipped: no LLM provider available (deterministic findings only).",
+            "degraded_setup": "Decomposed optimization could not start (adapter/import setup failed); the single-shot advisory above still applies.",
+            "degraded_pipeline": "Decomposed optimization degraded mid-pipeline and produced no per-fragment result; the single-shot advisory above still applies.",
+        }.get(reason, "Decomposed optimization did not run.")
+        lines += [msg, ""]
+        if da.get("error"):
+            lines += [f"Detail: {da['error']}", ""]
+        lines += ["Per-fragment suggestions are advisory and UNVERIFIED — verify on a live cluster before applying.", ""]
+        return lines
+
+    # Ran.
+    intro = ("_The query was decomposed into fragments, each optimized independently, then "
+             "recomposed. Nothing was executed, EXPLAINed, benchmarked, MCP-validated, or "
+             "row-equivalence verified._")
+    if result.get("analysis_target") == "ctas_inner_select":
+        intro += " Fragments were taken from the CTAS inner SELECT."
+    lines += [intro, ""]
+
+    candidates = da.get("candidates") or []
+    fragments = da.get("fragments") or []
+    frag_by_id = {f["fragment_id"]: f for f in fragments}
+    if candidates:
+        lines += [
+            "| # | Fragment | Role | Monster | Action | Changed | Rationale |",
+            "|---|---|---|---|---|---|---|",
+        ]
+        for idx, cand in enumerate(candidates, 1):
+            frag = frag_by_id.get(cand["fragment_id"])
+            role = frag["role"] if frag else "?"
+            if frag is None:
+                monster = "?"
+            elif frag.get("is_monster"):
+                monster = f"rank {frag.get('monster_rank')}"
+            else:
+                monster = "-"
+            fid = str(cand["fragment_id"]).replace("|", "\\|")
+            rat = str(cand.get("rationale", "")).replace("|", "\\|")
+            changed = "yes" if cand.get("changed") else "no"
+            lines.append(
+                f"| {idx} | {fid} | {role} | {monster} | {cand.get('action', '')} | {changed} | {rat} |"
+            )
+        lines.append("")
+    else:
+        lines += ["No fragments were produced.", ""]
+
+    verdict = _ADVISORY_VERDICTS.get(da.get("recompose_status"), "decomposition did not run.")
+    lines += [f"Recompose verdict: {verdict}", ""]
+
+    advisory_sql = da.get("recomposed_advisory_sql")
+    if advisory_sql is not None and da.get("changed"):
+        if result.get("suggested_sql"):
+            lines += [
+                "This per-fragment rewrite is an alternative to the single-shot suggestion above; "
+                "prefer it when you want to see which fragments changed. Both are UNVERIFIED.",
+                "",
+            ]
+        lines += [
+            "### Recomposed advisory SQL (UNVERIFIED)",
+            "",
+            "This SQL was assembled from per-fragment advisory rewrites. It was not executed, "
+            "EXPLAINed, benchmarked, MCP-validated, or row-equivalence verified.",
+            "",
+            "```sql",
+            _normalize_display_sql(str(advisory_sql)),
+            "```",
+            "",
+        ]
+    else:
+        lines += [
+            "No recomposed rewrite to suggest — fragments were left unchanged or the "
+            "cross-fragment gate reverted them.",
+            "",
+        ]
+
+    reverted = da.get("reverted_fragments") or []
+    if reverted:
+        lines += [f"Cross-fragment / column gate reverted: {', '.join(str(r) for r in reverted)}.", ""]
+
+    lines += ["Per-fragment suggestions are advisory and UNVERIFIED — verify on a live cluster before applying.", ""]
+    return lines
 
 
 def render_write_analysis_report(result: dict) -> str:
@@ -384,6 +659,10 @@ def render_write_analysis_report(result: dict) -> str:
             "```",
             "",
         ]
+
+    # v40: per-fragment decompose → optimize → recompose (advisory, non-executing).
+    lines += _render_decompose_advisory(result)
+
     lines += [
         "## Advisory Suggestions",
         "",
@@ -544,6 +823,13 @@ def run_write_analysis_only(
         except Exception as exc:
             llm_error = str(exc)
 
+    # v40: per-fragment decompose → optimize → (column gate) → recompose, advisory.
+    # Non-executing; only provider.complete_text is called. Runs on the same
+    # inner_sql the diagnosis above used (CTAS inner SELECT, else whole statement).
+    decompose_advisory = _run_decompose_advisory(
+        provider, model, reasoning, inner_sql, sql, analysis_is_ctas_inner,
+    )
+
     result = {
         "status": "write_analysis",
         "mode": "write-analysis",
@@ -562,6 +848,7 @@ def run_write_analysis_only(
         "llm_advice": llm_advice,
         "llm_error": llm_error,
         "suggested_sql": suggested_sql,
+        "decompose_advisory": decompose_advisory,
         "report_path": None,
         "original_sql": sql,
         "safe_limit": safe_limit,

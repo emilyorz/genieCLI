@@ -167,7 +167,9 @@ def test_direct_write_analysis_skips_measure_explain_and_loop(tmp_path, monkeypa
     assert "| SQL executed | no |" in md
     assert "advisory, unverified" in md
     assert "Safe-limit was not applied" in md
-    provider.complete_text.assert_called_once()
+    # LLM is used for advisory (single-shot rewrite + v40 per-fragment decompose);
+    # the point is it is invoked for text generation, not how many times.
+    provider.complete_text.assert_called()
 
 
 def test_direct_write_analysis_renders_suggested_sql_with_one_semicolon(tmp_path, monkeypatch):
@@ -240,7 +242,10 @@ def test_write_analysis_shows_spinner_during_llm_call(tmp_path, monkeypatch):
     )
 
     kinds = [e[0] for e in events]
-    assert kinds == ["status_enter", "llm_call", "status_exit"], kinds
+    # The advisory single-shot LLM call must be wrapped by the spinner: the first
+    # three events are enter → call → exit. (v40 then makes further decompose LLM
+    # calls AFTER the spinner closes; those are not asserted here.)
+    assert kinds[:3] == ["status_enter", "llm_call", "status_exit"], kinds
     md = _read_write_analysis_report(tmp_path)
     assert "## Suggested SQL Command (advisory, not executed)" in md
     assert "CREATE TABLE scratch.r AS SELECT a FROM s" in md

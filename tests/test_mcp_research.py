@@ -84,7 +84,8 @@ def test_mcp_write_analysis_skips_preflight_safe_limit_enhancement(tmp_path, mon
     assert "| Kind | insert |" in md
     assert "| SQL executed | no |" in md
     assert "advisory, unverified" in md
-    provider.complete_text.assert_called_once()
+    # LLM is used for advisory (single-shot + v40 per-fragment decompose); invoked, count not pinned.
+    provider.complete_text.assert_called()
 
 
 def test_mcp_write_analysis_renders_suggested_sql_before_advisory_prose(tmp_path, monkeypatch):
