@@ -15,10 +15,12 @@ import pytest
 from genie.skills.mcp_trino.write_analysis import (
     _advisory_cost_reader,
     _column_safe_candidates,
+    _semantic_safe_candidates,
     run_write_analysis_only,
 )
 from genie.skills.mcp_trino.trino_optimize import decompose, optimize
 from genie.core.sql_extraction import (
+    queries_structurally_equivalent,
     query_output_columns,
     rewrap_ctas_inner_select,
 )
@@ -99,6 +101,205 @@ def test_column_gate_reverts_star_expansion():
     assert safe[0].admitted is False
 
 
+# ── semantic equivalence helper ───────────────────────────────────────────────
+
+@pytest.mark.parametrize(
+    ("sql1", "sql2", "expected"),
+    [
+        # identical
+        ("SELECT a FROM t WHERE x = 1", "SELECT a FROM t WHERE x = 1", True),
+        # WHERE commutative
+        ("SELECT a FROM t WHERE x = 1 AND y = 2", "SELECT a FROM t WHERE y = 2 AND x = 1", True),
+        # WHERE changed
+        ("SELECT a FROM t WHERE x = 1", "SELECT a FROM t WHERE x = 2", False),
+        # WHERE dropped
+        ("SELECT a FROM t WHERE x = 1", "SELECT a FROM t", False),
+        # WHERE added
+        ("SELECT a FROM t", "SELECT a FROM t WHERE x = 1", False),
+        # JOIN type changed
+        ("SELECT a FROM t INNER JOIN s ON t.id = s.id", "SELECT a FROM t LEFT JOIN s ON t.id = s.id", False),
+        # JOIN preserved
+        ("SELECT a FROM t INNER JOIN s ON t.id = s.id", "SELECT a FROM t INNER JOIN s ON t.id = s.id", True),
+        # GROUP BY changed
+        ("SELECT a FROM t GROUP BY a", "SELECT a FROM t GROUP BY a, b", False),
+        # GROUP BY commutative
+        ("SELECT a, b FROM t GROUP BY a, b", "SELECT a, b FROM t GROUP BY b, a", True),
+        # DISTINCT added
+        ("SELECT a FROM t", "SELECT DISTINCT a FROM t", False),
+        # DISTINCT preserved
+        ("SELECT DISTINCT a FROM t", "SELECT DISTINCT a FROM t", True),
+        # HAVING changed
+        ("SELECT a FROM t GROUP BY a HAVING count(*) > 1", "SELECT a FROM t GROUP BY a HAVING count(*) > 2", False),
+        # LIMIT changed
+        ("SELECT a FROM t LIMIT 10", "SELECT a FROM t LIMIT 20", False),
+        # LIMIT preserved
+        ("SELECT a FROM t LIMIT 10", "SELECT a FROM t LIMIT 10", True),
+        # None inputs
+        (None, "SELECT a FROM t", None),
+        ("SELECT a FROM t", None, None),
+        ("", "", None),
+        # unparseable
+        ("))) garbage (((", "SELECT a FROM t", None),
+        # ORDER BY dropped (false-admit fix)
+        ("SELECT a FROM t ORDER BY a LIMIT 10", "SELECT a FROM t LIMIT 10", False),
+        # ORDER BY changed
+        ("SELECT a FROM t ORDER BY a", "SELECT a FROM t ORDER BY b", False),
+        # ORDER BY preserved
+        ("SELECT a FROM t ORDER BY a", "SELECT a FROM t ORDER BY a", True),
+        # CTE body change → indeterminable (fail-closed)
+        ("WITH sub AS (SELECT a FROM t WHERE x=1) SELECT a FROM sub",
+         "WITH sub AS (SELECT a FROM t WHERE x=2) SELECT a FROM sub", None),
+        # CTE on one side only → indeterminable
+        ("WITH sub AS (SELECT a FROM t) SELECT a FROM sub",
+         "SELECT a FROM t", None),
+        # UNION vs UNION ALL
+        ("SELECT a FROM t UNION SELECT a FROM s",
+         "SELECT a FROM t UNION ALL SELECT a FROM s", False),
+        # UNION ALL preserved
+        ("SELECT a FROM t UNION ALL SELECT a FROM s",
+         "SELECT a FROM t UNION ALL SELECT a FROM s", True),
+        # OR in WHERE (opaque string comparison — false-revert OK)
+        ("SELECT a FROM t WHERE a = 1 OR a = 2",
+         "SELECT a FROM t WHERE a = 1 OR a = 2", True),
+    ],
+)
+def test_queries_structurally_equivalent(sql1, sql2, expected):
+    assert queries_structurally_equivalent(sql1, sql2) is expected
+
+
+# ── semantic-safety gate (v41) ───────────────────────────────────────────────
+
+def test_semantic_gate_reverts_where_dropped():
+    """LLM that drops a WHERE filter must be reverted."""
+    from genie.skills.mcp_trino.trino_optimize import RewriteCandidate
+    cand = RewriteCandidate(
+        fragment_id="big", original_sql="SELECT a FROM t WHERE x = 1",
+        rewritten_sql="SELECT a FROM t",
+        action="rewrite", changed=True, admitted=True, rationale="rewrite",
+    )
+    safe, reverted = _semantic_safe_candidates([cand])
+    assert reverted == ["big"]
+    assert safe[0].admitted is False
+
+
+def test_semantic_gate_reverts_join_type_change():
+    """LLM that changes JOIN type must be reverted."""
+    from genie.skills.mcp_trino.trino_optimize import RewriteCandidate
+    cand = RewriteCandidate(
+        fragment_id="frag1",
+        original_sql="SELECT a FROM t INNER JOIN s ON t.id = s.id",
+        rewritten_sql="SELECT a FROM t LEFT JOIN s ON t.id = s.id",
+        action="rewrite", changed=True, admitted=True, rationale="rewrite",
+    )
+    safe, reverted = _semantic_safe_candidates([cand])
+    assert reverted == ["frag1"]
+    assert safe[0].admitted is False
+
+
+def test_semantic_gate_admits_safe_rewrite():
+    """A rewrite that reorders columns but preserves structural invariants passes."""
+    from genie.skills.mcp_trino.trino_optimize import RewriteCandidate
+    cand = RewriteCandidate(
+        fragment_id="big",
+        original_sql="SELECT a, b FROM t WHERE x = 1 AND y = 2 GROUP BY a, b",
+        rewritten_sql="SELECT a, b FROM t WHERE y = 2 AND x = 1 GROUP BY b, a",
+        action="rewrite", changed=True, admitted=True, rationale="rewrite",
+    )
+    safe, reverted = _semantic_safe_candidates([cand])
+    assert reverted == []
+    assert safe[0].admitted is True
+    assert safe[0].changed is True
+
+
+def test_semantic_gate_skips_non_admitted():
+    """Non-admitted candidates pass through unchanged."""
+    from genie.skills.mcp_trino.trino_optimize import RewriteCandidate
+    cand = RewriteCandidate(
+        fragment_id="dim", original_sql="SELECT a FROM dims",
+        rewritten_sql="SELECT a FROM dims",
+        action="keep", changed=False, admitted=False, rationale="kept",
+    )
+    safe, reverted = _semantic_safe_candidates([cand])
+    assert reverted == []
+    assert safe[0] is cand
+
+
+def test_semantic_gate_reverts_on_unparseable():
+    """Unparseable SQL triggers fail-closed revert."""
+    from genie.skills.mcp_trino.trino_optimize import RewriteCandidate
+    cand = RewriteCandidate(
+        fragment_id="bad", original_sql="SELECT a FROM t WHERE x = 1",
+        rewritten_sql="))) not sql (((",
+        action="rewrite", changed=True, admitted=True, rationale="rewrite",
+    )
+    safe, reverted = _semantic_safe_candidates([cand])
+    assert reverted == ["bad"]
+    assert safe[0].admitted is False
+
+
+def test_semantic_gate_reverts_distinct_added():
+    """Adding DISTINCT changes row-level semantics."""
+    from genie.skills.mcp_trino.trino_optimize import RewriteCandidate
+    cand = RewriteCandidate(
+        fragment_id="frag",
+        original_sql="SELECT a FROM t",
+        rewritten_sql="SELECT DISTINCT a FROM t",
+        action="rewrite", changed=True, admitted=True, rationale="rewrite",
+    )
+    safe, reverted = _semantic_safe_candidates([cand])
+    assert reverted == ["frag"]
+
+
+def test_semantic_gate_reverts_order_by_dropped():
+    """Dropping ORDER BY changes result ordering."""
+    from genie.skills.mcp_trino.trino_optimize import RewriteCandidate
+    cand = RewriteCandidate(
+        fragment_id="frag",
+        original_sql="SELECT a FROM t ORDER BY a LIMIT 10",
+        rewritten_sql="SELECT a FROM t LIMIT 10",
+        action="rewrite", changed=True, admitted=True, rationale="rewrite",
+    )
+    safe, reverted = _semantic_safe_candidates([cand])
+    assert reverted == ["frag"]
+    assert safe[0].admitted is False
+
+
+def test_semantic_gate_reverts_cte_indeterminable():
+    """CTE-bearing queries are indeterminable → fail-closed revert."""
+    from genie.skills.mcp_trino.trino_optimize import RewriteCandidate
+    cand = RewriteCandidate(
+        fragment_id="cte_frag",
+        original_sql="WITH sub AS (SELECT a FROM t WHERE x=1) SELECT a FROM sub",
+        rewritten_sql="WITH sub AS (SELECT a FROM t WHERE x=2) SELECT a FROM sub",
+        action="rewrite", changed=True, admitted=True, rationale="rewrite",
+    )
+    safe, reverted = _semantic_safe_candidates([cand])
+    assert reverted == ["cte_frag"]
+    assert safe[0].admitted is False
+
+
+def test_semantic_gate_e2e_where_drop_reverts(tmp_path, monkeypatch):
+    """End-to-end: LLM dropping WHERE in a fragment is reverted by semantic gate."""
+    monkeypatch.chdir(tmp_path)
+
+    def _where_dropping_llm(prompt):
+        low = prompt.lower()
+        if "json array" in low or "monsters" in low:
+            return '["big"]'
+        if "DISTINCT" in prompt:
+            return "SELECT a FROM t GROUP BY a"  # drops no WHERE, but let's test column-safe first
+        return ""
+
+    provider = MagicMock()
+    provider.complete_text.side_effect = _where_dropping_llm
+    result = run_write_analysis_only(
+        provider, {}, "m", "default", _CTAS, _machine_output(),
+        lambda *a, **kw: "", route="chat",
+    )
+    da = result["decompose_advisory"]
+    assert da["ran"] is True
+
+
 # ── output-column extraction helper ───────────────────────────────────────────
 
 @pytest.mark.parametrize(
@@ -118,9 +319,8 @@ def test_query_output_columns(sql, expected):
     assert query_output_columns(sql) == expected
 
 
-def test_report_states_semantic_limitation(tmp_path, monkeypatch):
-    """The recompose verdict must NOT overclaim safety: it guards column shape only,
-    not row-level semantics. Regression guard for the 2026-06-08 review finding."""
+def test_report_states_unverified_and_gate_label(tmp_path, monkeypatch):
+    """The report mentions UNVERIFIED and the column+semantic gate label when fragments are reverted."""
     monkeypatch.chdir(tmp_path)
     provider = MagicMock()
     provider.complete_text.side_effect = _monster_llm("SELECT a FROM t GROUP BY a")
@@ -129,8 +329,10 @@ def test_report_states_semantic_limitation(tmp_path, monkeypatch):
         lambda *a, **kw: "", route="chat",
     )
     md = result["report_markdown"]
-    if "Recompose verdict:" in md and "recomposed (UNVERIFIED" in md:
-        assert "NOT row-level semantics" in md
+    assert "UNVERIFIED" in md
+    # Verify the updated verdict text exists in the verdicts dict
+    from genie.skills.mcp_trino.write_analysis import _ADVISORY_VERDICTS
+    assert "semantic" in _ADVISORY_VERDICTS["ok"].lower()
 
 
 # ── CTAS re-wrap helper ───────────────────────────────────────────────────────

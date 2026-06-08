@@ -271,12 +271,9 @@ def _column_safe_candidates(candidates):
     candidate; if it differs, or either side is indeterminable (``SELECT *`` /
     unparseable), the candidate is reverted (admitted=False) so recompose drops it.
 
-    SCOPE / KNOWN LIMITATION: this guards the column CONTRACT (names + order + arity),
-    NOT row-level semantics. A rewrite that keeps the same column names but changes
-    which ROWS are returned (e.g. an LLM dropping a WHERE filter while "pushing down"
-    R6, or changing a JOIN type) passes this gate. That risk is bounded by the
-    UNVERIFIED label on every recomposed SQL — the user must verify equivalence on a
-    live cluster. A full AST-semantic equivalence gate is tracked for a later pass.
+    SCOPE: this guards the column CONTRACT (names + order + arity), NOT row-level
+    semantics. Row-level semantics (WHERE/JOIN/GROUP BY/DISTINCT/HAVING/LIMIT) are
+    guarded by ``_semantic_safe_candidates`` which runs immediately after this gate.
     Returns (safe_candidates, reverted_ids).
     """
     from dataclasses import replace as _dc_replace
@@ -302,6 +299,40 @@ def _column_safe_candidates(candidates):
             ))
         else:
             safe.append(cand)
+    return safe, reverted_ids
+
+
+def _semantic_safe_candidates(candidates):
+    """Revert any rewrite that changed the fragment's row-level semantics.
+
+    Guards WHERE predicates, JOIN graph, GROUP BY, DISTINCT, HAVING, LIMIT,
+    and set-op type. Runs AFTER the column gate (cheaper) so only candidates
+    that survived column checks are tested here.
+
+    Never raises; any parse/comparison error -> fail-closed revert.
+    Returns (safe_candidates, reverted_ids).
+    """
+    from dataclasses import replace as _dc_replace
+    from genie.core.sql_extraction import queries_structurally_equivalent
+
+    safe = []
+    reverted_ids = []
+    for cand in candidates:
+        if not (getattr(cand, "admitted", False) and getattr(cand, "changed", False)):
+            safe.append(cand)
+            continue
+        equiv = queries_structurally_equivalent(cand.original_sql, cand.rewritten_sql)
+        if equiv is True:
+            safe.append(cand)
+        else:
+            reverted_ids.append(cand.fragment_id)
+            safe.append(_dc_replace(
+                cand,
+                rewritten_sql=cand.original_sql,
+                changed=False,
+                admitted=False,
+                rationale=(cand.rationale + " | reverted: row-level semantics changed/indeterminable"),
+            ))
     return safe, reverted_ids
 
 
@@ -363,6 +394,7 @@ def _run_decompose_advisory(provider, model, reasoning, inner_sql, original_sql,
         # column set changed — the LLM rewrite is unconstrained and recompose
         # substitutes CTE bodies, so this is the real arity guard.
         candidates, col_reverted = _column_safe_candidates(candidates)
+        candidates, sem_reverted = _semantic_safe_candidates(candidates)
         rr = recompose(inner_sql, candidates, scan_fn=scan_sql)
 
         recomposed_inner = rr.sql
@@ -376,7 +408,9 @@ def _run_decompose_advisory(provider, model, reasoning, inner_sql, original_sql,
             and recomposed_advisory_sql is not None
             and _canonical_sql(recomposed_advisory_sql) != _canonical_sql(original_sql)
         )
-        reverted = list(rr.reverted_fragments) + [i for i in col_reverted if i not in rr.reverted_fragments]
+        reverted = list(rr.reverted_fragments) + \
+                   [i for i in col_reverted if i not in rr.reverted_fragments] + \
+                   [i for i in sem_reverted if i not in rr.reverted_fragments and i not in col_reverted]
         return {
             "ran": True,
             "reason": None,
@@ -447,7 +481,7 @@ def _normalize_display_sql(sql: str) -> str:
 
 
 _ADVISORY_VERDICTS = {
-    "ok": "recomposed (UNVERIFIED — the static scan checks structure/column shape only, NOT row-level semantics; verify equivalence before applying).",
+    "ok": "recomposed (UNVERIFIED — column and row-level semantic gates applied, but verify equivalence on a live cluster before applying).",
     "advise": "recomposed with advisory cross-fragment findings (UNVERIFIED — review before applying).",
     "block": "cross-fragment gate blocked the rewrite; reverted to original (no rewrite suggested).",
     "scan_uncertain": "cross-fragment static scan was inconclusive; rewrite withheld (UNVERIFIED).",
@@ -539,7 +573,7 @@ def _render_decompose_advisory(result: dict) -> list:
 
     reverted = da.get("reverted_fragments") or []
     if reverted:
-        lines += [f"Cross-fragment / column gate reverted: {', '.join(str(r) for r in reverted)}.", ""]
+        lines += [f"Cross-fragment / column+semantic gate reverted: {', '.join(str(r) for r in reverted)}.", ""]
 
     lines += ["Per-fragment suggestions are advisory and UNVERIFIED — verify on a live cluster before applying.", ""]
     return lines

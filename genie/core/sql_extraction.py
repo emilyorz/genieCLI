@@ -148,3 +148,131 @@ def query_output_columns(sql: Optional[str]) -> Optional[tuple]:
             return None  # cannot prove the column set is preserved
         names.append(projection.alias_or_name)
     return tuple(names)
+
+
+def queries_structurally_equivalent(sql1: Optional[str], sql2: Optional[str]) -> Optional[bool]:
+    """Return True if two queries have identical row-level structural invariants.
+
+    Compares WHERE predicates (commutative), JOIN graph (count + type + ON),
+    GROUP BY (set), DISTINCT presence, HAVING, ORDER BY, LIMIT, and set-op type
+    (UNION vs UNION ALL). CTE-bearing queries return None (indeterminable) because
+    CTE body changes cannot be reliably compared at the outer-SELECT level.
+
+    Pure sqlglot AST; never raises; never executes.
+
+    Returns True (provably equivalent), False (provably different),
+    or None (indeterminable — parse failure, CTE presence, or comparison uncertainty).
+    """
+    if not sql1 or not sql2:
+        return None
+    try:
+        import sqlglot
+        import sqlglot.expressions as exp
+    except ImportError:
+        return None
+
+    try:
+        t1 = sqlglot.parse_one(sql1, read="trino")
+        t2 = sqlglot.parse_one(sql2, read="trino")
+        if t1 is None or t2 is None:
+            return None
+
+        # CTE-bearing queries: body changes are invisible at outer-SELECT level → indeterminable.
+        if isinstance(t1, exp.With) or isinstance(t2, exp.With):
+            return None
+        if (hasattr(t1, "find") and t1.find(exp.With)) or (hasattr(t2, "find") and t2.find(exp.With)):
+            return None
+
+        def _unwrap_select(tree):
+            sel = tree
+            if isinstance(sel, exp.Subquery):
+                sel = sel.this
+            if isinstance(sel, exp.Union):
+                return sel
+            if not isinstance(sel, exp.Select):
+                sel = sel.find(exp.Select) if sel is not None else None
+            return sel
+
+        s1 = _unwrap_select(t1)
+        s2 = _unwrap_select(t2)
+        if s1 is None or s2 is None:
+            return None
+
+        if isinstance(s1, exp.Union) or isinstance(s2, exp.Union):
+            if type(s1) != type(s2):
+                return False
+            return s1.sql(dialect="trino").strip() == s2.sql(dialect="trino").strip()
+
+        def _predicate_set(node):
+            if node is None:
+                return frozenset()
+            pred = node.this if hasattr(node, "this") else node
+            if pred is None:
+                return frozenset()
+            parts = []
+            if isinstance(pred, exp.And):
+                stack = [pred]
+                while stack:
+                    cur = stack.pop()
+                    if isinstance(cur, exp.And):
+                        stack.append(cur.left)
+                        stack.append(cur.right)
+                    else:
+                        parts.append(cur.sql(dialect="trino").strip().lower())
+            else:
+                parts.append(pred.sql(dialect="trino").strip().lower())
+            return frozenset(parts)
+
+        w1 = _predicate_set(s1.args.get("where"))
+        w2 = _predicate_set(s2.args.get("where"))
+        if w1 != w2:
+            return False
+
+        j1 = s1.args.get("joins") or []
+        j2 = s2.args.get("joins") or []
+        if len(j1) != len(j2):
+            return False
+        for ja, jb in zip(j1, j2):
+            if (ja.args.get("kind"), ja.args.get("side")) != (jb.args.get("kind"), jb.args.get("side")):
+                return False
+            on_a = ja.args.get("on")
+            on_b = jb.args.get("on")
+            if _predicate_set(on_a) != _predicate_set(on_b):
+                return False
+            tbl_a = ja.this.sql(dialect="trino").strip().lower() if ja.this else ""
+            tbl_b = jb.this.sql(dialect="trino").strip().lower() if jb.this else ""
+            if tbl_a != tbl_b:
+                return False
+
+        def _expr_set(node):
+            if node is None:
+                return frozenset()
+            exprs = node.expressions if hasattr(node, "expressions") else []
+            return frozenset(e.sql(dialect="trino").strip().lower() for e in exprs)
+
+        if _expr_set(s1.args.get("group")) != _expr_set(s2.args.get("group")):
+            return False
+
+        d1 = s1.args.get("distinct") is not None
+        d2 = s2.args.get("distinct") is not None
+        if d1 != d2:
+            return False
+
+        h1 = _predicate_set(s1.args.get("having"))
+        h2 = _predicate_set(s2.args.get("having"))
+        if h1 != h2:
+            return False
+
+        if _expr_set(s1.args.get("order")) != _expr_set(s2.args.get("order")):
+            return False
+
+        lim1 = s1.args.get("limit")
+        lim2 = s2.args.get("limit")
+        lim1_sql = lim1.sql(dialect="trino").strip() if lim1 else None
+        lim2_sql = lim2.sql(dialect="trino").strip() if lim2 else None
+        if lim1_sql != lim2_sql:
+            return False
+
+        return True
+    except Exception:
+        return None
