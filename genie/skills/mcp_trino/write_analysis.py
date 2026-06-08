@@ -210,27 +210,52 @@ def _static_findings_dict(static_report) -> dict:
     }
 
 
-def _write_analysis_prompt(sql: str, operation: WriteOperation, static_report) -> str:
+def _write_analysis_prompt(
+    sql: str,
+    operation: WriteOperation,
+    static_report,
+    *,
+    directions_block: str = "",
+    rule_gate_block: str = "",
+    inner_sql: str | None = None,
+) -> str:
     static = _static_findings_dict(static_report)
-    return (
+    parts = [
         "You are reviewing side-effecting Trino SQL. This SQL will not be executed, "
         "EXPLAINed, benchmarked, or MCP-validated by this tool. Provide advisory, "
-        "unverified suggestions only. Do not claim equivalence or safety.\n\n"
-        f"Operation: kind={operation.kind}, keyword={operation.keyword}, reason={operation.reason}\n"
-        f"Static analysis: {static.get('summary')}\n"
-        f"Parse warning: {static.get('parse_error') or 'none'}\n\n"
-        f"SQL:\n```sql\n{sql.rstrip()}\n```\n\n"
+        "unverified suggestions only. Do not claim equivalence or safety.\n",
+        f"Operation: kind={operation.kind}, keyword={operation.keyword}, reason={operation.reason}",
+        f"Static analysis: {static.get('summary')}",
+        f"Parse warning: {static.get('parse_error') or 'none'}",
+    ]
+    if inner_sql is not None:
+        parts.append(
+            "\nThis is a CREATE TABLE AS SELECT. The deterministic optimization "
+            "directions below were computed on its INNER query:\n"
+            f"```sql\n{inner_sql.rstrip()}\n```"
+        )
+    if directions_block:
+        parts.append(
+            "\nDeterministic optimization directions (ranked, zero-cost static "
+            "diagnosis — base your rewrite on these, do not invent new ones):\n"
+            f"{directions_block}"
+        )
+    if rule_gate_block:
+        parts.append(f"\n{rule_gate_block}")
+    parts.append(f"\nFull SQL:\n```sql\n{sql.rstrip()}\n```\n")
+    parts.append(
         "Respond with TWO parts in this order:\n"
         "1. A complete, copy-paste-ready optimized rewrite of the WHOLE statement "
         "in a single ```sql fenced block. Preserve the side-effecting shape "
         "(e.g. for CREATE TABLE AS SELECT keep the CREATE TABLE ... AS wrapper and "
         "optimize the inner SELECT: join order, predicate/filter pushdown, CTE "
-        "materialization vs re-scan, projection pruning). If the statement is "
-        "already well-shaped, return it unchanged and say so. Always include the "
-        "fenced SQL block.\n"
+        "materialization vs re-scan, projection pruning). Apply the ranked "
+        "directions above where they fit. If the statement is already well-shaped, "
+        "return it unchanged and say so. Always include the fenced SQL block.\n"
         "2. Below the SQL block, a short bullet list of the changes and any checks "
         "the user must perform before running it (it is unverified)."
     )
+    return "\n".join(parts)
 
 
 def _normalize_display_sql(sql: str) -> str:
@@ -288,12 +313,65 @@ def render_write_analysis_report(result: dict) -> str:
             )
         lines.append("")
 
+    # Ranked optimization directions — the SAME non-executing directed diagnosis
+    # the read-only --diagnose-only path produces (R1-R9 static + SQL-shape, then
+    # ranked). For CTAS the directions are computed on the inner SELECT.
+    target = result.get("analysis_target")
+    if target == "ctas_inner_select":
+        lines += [
+            "## Ranked Optimization Directions",
+            "",
+            "_Directions below were computed on the CTAS inner SELECT (the part worth optimizing)._",
+            "",
+        ]
+    else:
+        lines += ["## Ranked Optimization Directions", ""]
+    rule_gate = result.get("rule_gate_summary")
+    gate_items = list(getattr(rule_gate, "items", ()) or ()) if rule_gate else []
+    if gate_items:
+        lines += [
+            "| # | Action | Severity | Rule / Kind | Direction | Evidence |",
+            "|---|---|---|---|---|---|",
+        ]
+        for idx, item in enumerate(gate_items, 1):
+            sug = str(getattr(item, "suggestion", "")).replace("|", "\\|")
+            rid = str(getattr(item, "rule_id", "")).replace("|", "\\|")
+            ev = str(getattr(item, "evidence", "")).replace("|", "\\|")
+            lines.append(
+                f"| {idx} | {getattr(item, 'action', '')} | {getattr(item, 'severity', '')} | "
+                f"{rid} | {sug} | {ev} |"
+            )
+        lines.append("")
+    else:
+        lines += [
+            "No structural optimization directions surfaced from non-executing analysis.",
+            "",
+        ]
+
     lines += [
         "## Rule Gate",
         "",
-        "Write-operation rule gate: normal optimizer gates were not run. Static findings above are advisory inputs only.",
-        "",
     ]
+    if rule_gate is not None and getattr(rule_gate, "has_findings", False):
+        counts = rule_gate.counts
+        from genie.skills.mcp_trino.rule_gate import (
+            ACTION_ADVISE,
+            ACTION_BLOCK,
+            ACTION_REWRITE,
+        )
+        lines += [
+            f"Pre-AI rule gate (non-executing; result equivalence remains authoritative): "
+            f"block={counts[ACTION_BLOCK]}, rewrite={counts[ACTION_REWRITE]}, "
+            f"advise={counts[ACTION_ADVISE]}.",
+            "",
+            "These gate the advisory rewrite below; no SQL was auto-mutated and nothing was executed.",
+            "",
+        ]
+    else:
+        lines += [
+            "Non-executing rule gate produced no findings. Static directions above are advisory inputs only.",
+            "",
+        ]
     suggested_sql = result.get("suggested_sql")
     if suggested_sql:
         lines += [
@@ -373,17 +451,65 @@ def run_write_analysis_only(
 ) -> dict:
     """Run offline static + optional LLM advice for write SQL; touch no live Trino/MCP."""
     from genie.core.provider import CompletionRequest
+    from genie.core.sql_extraction import extract_ctas_inner_select
     from genie.session.manager import new_msg
     from genie.skills.trino_query.sql_static import analyze as static_analyze
+    from genie.skills.mcp_trino.pre_execution_diagnosis import (
+        format_directions_for_prompt,
+        format_directions_report,
+        pre_execution_diagnosis,
+    )
+    from genie.skills.mcp_trino.rule_gate import (
+        build_rule_gate_summary,
+        format_rule_gate_for_prompt,
+    )
 
     operation = classify_write_operation(sql)
     if operation is None:
         raise ValueError("run_write_analysis_only called with read-only SQL")
 
+    # CTAS optimization value lives in the inner SELECT. Strip the
+    # CREATE TABLE ... AS wrapper so the read-only optimization steps analyze the
+    # query, not the DDL shell. Falls back to the whole statement when not a CTAS
+    # or the inner query can't be isolated.
+    inner_sql = extract_ctas_inner_select(sql) or sql
+    analysis_is_ctas_inner = inner_sql != sql
+
     try:
-        static_report = static_analyze(sql)
+        static_report = static_analyze(inner_sql)
     except Exception:
         static_report = None
+
+    # Non-executing directed diagnosis: the SAME zero-cost optimization pipeline
+    # the read-only --diagnose-only path uses. All live-cluster inputs are None
+    # (explain_cost / table_metadata / peak_memory) so the contributors that need
+    # Trino degrade to empty — but R1-R9 static + SQL-shape (CTE depth, repeated
+    # raw scans) directions are produced, then ranked. No cluster is touched.
+    try:
+        directions = pre_execution_diagnosis(
+            inner_sql,
+            static_report=static_report,
+            explain_cost=None,
+            table_metadata=None,
+            peak_memory_bytes=None,
+        )
+    except Exception:
+        directions = []
+    try:
+        rule_gate = build_rule_gate_summary(static_report, directions)
+    except Exception:
+        rule_gate = None
+    diagnosis_reason = (
+        "write-operation (CTAS inner SELECT): non-executing directed diagnosis"
+        if analysis_is_ctas_inner
+        else "write-operation: non-executing directed diagnosis (no query executed)"
+    )
+    try:
+        directed_report_md = format_directions_report(
+            directions, sql=inner_sql, reason=diagnosis_reason, model=model,
+        )
+    except Exception:
+        directed_report_md = ""
 
     llm_advice = None
     llm_error = None
@@ -393,7 +519,14 @@ def run_write_analysis_only(
             req = CompletionRequest(
                 messages=[
                     new_msg("system", "You provide advisory-only Trino SQL review."),
-                    new_msg("user", _write_analysis_prompt(sql, operation, static_report)),
+                    new_msg("user", _write_analysis_prompt(
+                        sql, operation, static_report,
+                        directions_block=format_directions_for_prompt(directions),
+                        rule_gate_block=(
+                            format_rule_gate_for_prompt(rule_gate) if rule_gate else ""
+                        ),
+                        inner_sql=inner_sql if analysis_is_ctas_inner else None,
+                    )),
                 ],
                 model=model,
                 reasoning=reasoning,
@@ -422,6 +555,10 @@ def run_write_analysis_only(
         "advisory_only": True,
         "live_dependencies_touched": False,
         "static_analysis": _static_findings_dict(static_report),
+        "directed_report_markdown": directed_report_md,
+        "rule_gate_summary": rule_gate,
+        "analysis_target": "ctas_inner_select" if analysis_is_ctas_inner else "whole_statement",
+        "analyzed_sql": inner_sql,
         "llm_advice": llm_advice,
         "llm_error": llm_error,
         "suggested_sql": suggested_sql,

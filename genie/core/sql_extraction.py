@@ -24,3 +24,40 @@ def extract_sql_from_reply(reply: str) -> Optional[str]:
             return block.rstrip(";")
 
     return None
+
+
+def extract_ctas_inner_select(sql: str) -> Optional[str]:
+    """Return the inner SELECT/WITH body of a CREATE TABLE ... AS statement.
+
+    The optimization value of a CTAS lives entirely in its inner query, so
+    callers strip the ``CREATE TABLE ... AS`` wrapper, run the read-only
+    optimization steps on the inner query, then re-wrap. Returns ``None`` when
+    the SQL is not a CTAS or the inner query cannot be isolated (the caller then
+    falls back to analyzing the whole statement — never crash).
+
+    Pure: sqlglot parse only, no cluster, no network. Never raises.
+    """
+    if not sql or not sql.strip():
+        return None
+    try:
+        import sqlglot
+        import sqlglot.expressions as exp
+    except ImportError:
+        return None
+
+    try:
+        tree = sqlglot.parse_one(sql, read="trino")
+    except Exception:
+        return None
+
+    if not isinstance(tree, exp.Create):
+        return None
+    # CTAS carries the query in `.expression` (a Select, or a With wrapping one).
+    inner = tree.expression
+    if not isinstance(inner, (exp.Select, exp.With, exp.Union, exp.Subquery)):
+        return None
+    try:
+        rendered = inner.sql(dialect="trino")
+    except Exception:
+        return None
+    return rendered.strip() or None

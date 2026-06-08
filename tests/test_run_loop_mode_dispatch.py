@@ -246,6 +246,88 @@ def test_write_analysis_shows_spinner_during_llm_call(tmp_path, monkeypatch):
     assert "CREATE TABLE scratch.r AS SELECT a FROM s" in md
 
 
+# ── v38: write/no-table runs the non-executing directed-diagnosis pipeline ─────
+
+def test_ctas_write_analysis_runs_directed_diagnosis_on_inner_select(tmp_path, monkeypatch):
+    """CTAS extracts its inner SELECT and runs the SAME non-executing optimization
+    steps (R1-R9 + SQL-shape, ranked) the read-only diagnose-only path uses. The
+    report must surface a Ranked Optimization Directions section computed on the
+    inner query — not just a static dump. v38 feature.
+    """
+    monkeypatch.chdir(tmp_path)
+    from genie.skills.mcp_trino.write_analysis import run_write_analysis_only
+
+    output = _output_mock()
+    provider = MagicMock()
+    provider.complete_text.return_value = (
+        "Draft:\n```sql\nCREATE TABLE m.result AS SELECT a, b FROM big WHERE a > 0\n```\n- pruned"
+    )
+
+    # select-star inside a CTAS → R2 fires on the INNER select
+    result = run_write_analysis_only(
+        provider, {}, "test-model", "default",
+        "CREATE TABLE m.result AS SELECT * FROM big JOIN dim ON big.k = dim.k",
+        output, lambda *a, **kw: "", route="chat",
+    )
+
+    assert result["analysis_target"] == "ctas_inner_select"
+    assert result["analyzed_sql"].strip().upper().startswith("SELECT")
+    md = result["report_markdown"]
+    assert "## Ranked Optimization Directions" in md
+    assert "computed on the CTAS inner SELECT" in md
+    # a real direction row from the inner SELECT, not the CREATE wrapper
+    assert "select-star" in md
+    # safety contract unchanged
+    assert "| SQL executed | no |" in md
+    assert "| Verified optimization | no |" in md
+
+
+def test_non_ctas_write_runs_diagnosis_on_whole_statement(tmp_path, monkeypatch):
+    """A non-CTAS write (INSERT ... SELECT) is not unwrapped; the whole statement
+    feeds the non-executing diagnosis without crashing, and the report still has a
+    Ranked Optimization Directions section.
+    """
+    monkeypatch.chdir(tmp_path)
+    from genie.skills.mcp_trino.write_analysis import run_write_analysis_only
+
+    output = _output_mock()
+    provider = MagicMock()
+    provider.complete_text.return_value = "Advisory prose with no fenced SQL."
+
+    result = run_write_analysis_only(
+        provider, {}, "test-model", "default",
+        "INSERT INTO dst SELECT * FROM src",
+        output, lambda *a, **kw: "", route="chat",
+    )
+
+    assert result["analysis_target"] == "whole_statement"
+    md = result["report_markdown"]
+    assert "## Ranked Optimization Directions" in md
+    assert "## Rule Gate" in md
+    assert "| SQL executed | no |" in md
+
+
+def test_write_analysis_diagnosis_uses_no_live_inputs(tmp_path, monkeypatch):
+    """The directed diagnosis must NOT depend on a cluster. With no provider and a
+    clean inner query, the path still completes and the rule gate reports the
+    non-executing wording (never the old hard-coded 'normal optimizer gates were
+    not run' string).
+    """
+    monkeypatch.chdir(tmp_path)
+    from genie.skills.mcp_trino.write_analysis import run_write_analysis_only
+
+    output = _output_mock()
+    result = run_write_analysis_only(
+        None, {}, "test-model", "default",
+        "CREATE TABLE m.result AS SELECT id FROM t WHERE id IS NOT NULL",
+        output, lambda *a, **kw: "", route="chat",
+    )
+    md = result["report_markdown"]
+    assert "## Ranked Optimization Directions" in md
+    assert "normal optimizer gates were not run" not in md
+    assert "non-executing" in md.lower()
+
+
 @pytest.mark.parametrize(
     "sql",
     [
