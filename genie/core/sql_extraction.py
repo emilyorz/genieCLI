@@ -143,7 +143,8 @@ def query_output_columns(sql: Optional[str]) -> Optional[tuple]:
         return None
     names = []
     for projection in sel.expressions:
-        if isinstance(projection, exp.Star):
-            return None  # indeterminable — cannot prove the column set is preserved
+        # Bare `*` or qualified `t.*` (a Column wrapping a Star) → indeterminable.
+        if isinstance(projection, exp.Star) or projection.find(exp.Star) is not None:
+            return None  # cannot prove the column set is preserved
         names.append(projection.alias_or_name)
     return tuple(names)

@@ -108,12 +108,29 @@ def test_column_gate_reverts_star_expansion():
         ("SELECT a AS x, b FROM t", ("x", "b")),
         ("WITH c AS (SELECT 1) SELECT p, q FROM c", ("p", "q")),
         ("SELECT * FROM t", None),            # indeterminable
+        ("SELECT t.* FROM t", None),          # qualified star — also indeterminable
+        ("SELECT t.*, x FROM t", None),       # mixed star — indeterminable
         ("))) not sql (((", None),            # unparseable
         ("", None),
     ],
 )
 def test_query_output_columns(sql, expected):
     assert query_output_columns(sql) == expected
+
+
+def test_report_states_semantic_limitation(tmp_path, monkeypatch):
+    """The recompose verdict must NOT overclaim safety: it guards column shape only,
+    not row-level semantics. Regression guard for the 2026-06-08 review finding."""
+    monkeypatch.chdir(tmp_path)
+    provider = MagicMock()
+    provider.complete_text.side_effect = _monster_llm("SELECT a FROM t GROUP BY a")
+    result = run_write_analysis_only(
+        provider, {}, "m", "default", _CTAS, _machine_output(),
+        lambda *a, **kw: "", route="chat",
+    )
+    md = result["report_markdown"]
+    if "Recompose verdict:" in md and "recomposed (UNVERIFIED" in md:
+        assert "NOT row-level semantics" in md
 
 
 # ── CTAS re-wrap helper ───────────────────────────────────────────────────────

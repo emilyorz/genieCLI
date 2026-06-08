@@ -261,15 +261,23 @@ def _advisory_cost_reader(sql: str):
 
 
 def _column_safe_candidates(candidates):
-    """Revert any rewrite that changed the fragment's output column set.
+    """Revert any rewrite that changed the fragment's output COLUMN NAMES.
 
     optimize() rewrites each monster fragment via an UNCONSTRAINED LLM with no
     column-shape check, and recompose() substitutes CTE/subquery bodies — so an LLM
-    that adds/drops/renames a fragment's output columns (e.g. expanding ``SELECT *``)
-    would yield a semantically-wrong recomposed query. This gate compares the output
-    column set before/after each admitted+changed candidate; if it differs, or either
-    side is indeterminable (``SELECT *`` / unparseable), the candidate is reverted
-    (admitted=False) so recompose drops it. Returns (safe_candidates, reverted_ids).
+    that adds/drops/renames/reorders a fragment's output columns (e.g. expanding
+    ``SELECT *``) would yield a structurally-wrong recomposed query. This gate
+    compares the ordered output column-NAME tuple before/after each admitted+changed
+    candidate; if it differs, or either side is indeterminable (``SELECT *`` /
+    unparseable), the candidate is reverted (admitted=False) so recompose drops it.
+
+    SCOPE / KNOWN LIMITATION: this guards the column CONTRACT (names + order + arity),
+    NOT row-level semantics. A rewrite that keeps the same column names but changes
+    which ROWS are returned (e.g. an LLM dropping a WHERE filter while "pushing down"
+    R6, or changing a JOIN type) passes this gate. That risk is bounded by the
+    UNVERIFIED label on every recomposed SQL — the user must verify equivalence on a
+    live cluster. A full AST-semantic equivalence gate is tracked for a later pass.
+    Returns (safe_candidates, reverted_ids).
     """
     from dataclasses import replace as _dc_replace
     from genie.core.sql_extraction import query_output_columns
@@ -439,7 +447,7 @@ def _normalize_display_sql(sql: str) -> str:
 
 
 _ADVISORY_VERDICTS = {
-    "ok": "recomposed cleanly (UNVERIFIED — cross-fragment static scan found no new blocking issue).",
+    "ok": "recomposed (UNVERIFIED — the static scan checks structure/column shape only, NOT row-level semantics; verify equivalence before applying).",
     "advise": "recomposed with advisory cross-fragment findings (UNVERIFIED — review before applying).",
     "block": "cross-fragment gate blocked the rewrite; reverted to original (no rewrite suggested).",
     "scan_uncertain": "cross-fragment static scan was inconclusive; rewrite withheld (UNVERIFIED).",
