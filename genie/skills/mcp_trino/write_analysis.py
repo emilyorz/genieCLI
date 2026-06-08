@@ -219,7 +219,17 @@ def _write_analysis_prompt(sql: str, operation: WriteOperation, static_report) -
         f"Operation: kind={operation.kind}, keyword={operation.keyword}, reason={operation.reason}\n"
         f"Static analysis: {static.get('summary')}\n"
         f"Parse warning: {static.get('parse_error') or 'none'}\n\n"
-        f"SQL:\n```sql\n{sql.rstrip()}\n```"
+        f"SQL:\n```sql\n{sql.rstrip()}\n```\n\n"
+        "Respond with TWO parts in this order:\n"
+        "1. A complete, copy-paste-ready optimized rewrite of the WHOLE statement "
+        "in a single ```sql fenced block. Preserve the side-effecting shape "
+        "(e.g. for CREATE TABLE AS SELECT keep the CREATE TABLE ... AS wrapper and "
+        "optimize the inner SELECT: join order, predicate/filter pushdown, CTE "
+        "materialization vs re-scan, projection pruning). If the statement is "
+        "already well-shaped, return it unchanged and say so. Always include the "
+        "fenced SQL block.\n"
+        "2. Below the SQL block, a short bullet list of the changes and any checks "
+        "the user must perform before running it (it is unverified)."
     )
 
 
@@ -388,7 +398,14 @@ def run_write_analysis_only(
                 model=model,
                 reasoning=reasoning,
             )
-            llm_advice = provider.complete_text(req)
+            # Live spinner: the advisory LLM call is the long, silent step after
+            # Ctrl-D in interactive mode. Without it the CLI looks frozen until
+            # the report is written. status() is a no-op on MachineSink.
+            if output is not None and hasattr(output, "status"):
+                with output.status("Reviewing write operation and drafting an optimized rewrite (LLM, this can take a while)..."):
+                    llm_advice = provider.complete_text(req)
+            else:
+                llm_advice = provider.complete_text(req)
             if llm_advice:
                 suggested_sql = extract_sql_from_reply(str(llm_advice)) or None
         except Exception as exc:

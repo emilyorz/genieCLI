@@ -200,6 +200,52 @@ def test_direct_write_analysis_renders_suggested_sql_with_one_semicolon(tmp_path
     assert "SELECT order_id FROM source;;" not in md.split("## Advisory Suggestions", 1)[0]
 
 
+def test_write_analysis_shows_spinner_during_llm_call(tmp_path, monkeypatch):
+    """The advisory LLM call must run inside output.status() so interactive CTAS
+    (Ctrl-D) shows a live spinner instead of looking frozen. Regression guard for
+    the 2026-06-08 fix — the write-analysis path had no spinner around the call.
+    """
+    import contextlib
+
+    monkeypatch.chdir(tmp_path)
+    from genie.skills.mcp_trino.write_analysis import run_write_analysis_only
+
+    events = []
+
+    class _SpyOutput:
+        def print(self, *a, **k): pass
+        def progress(self, *a, **k): pass
+        def error(self, *a, **k): pass
+
+        @contextlib.contextmanager
+        def status(self, message):
+            events.append(("status_enter", message))
+            try:
+                yield
+            finally:
+                events.append(("status_exit", message))
+
+    provider = MagicMock()
+
+    def _complete(_req):
+        events.append(("llm_call", None))
+        return "Draft:\n```sql\nCREATE TABLE scratch.r AS SELECT a FROM s\n```\n- pushed filter down"
+
+    provider.complete_text.side_effect = _complete
+
+    run_write_analysis_only(
+        provider, {}, "test-model", "default",
+        "CREATE TABLE x AS SELECT a FROM s",
+        _SpyOutput(), lambda *a, **kw: "", route="chat",
+    )
+
+    kinds = [e[0] for e in events]
+    assert kinds == ["status_enter", "llm_call", "status_exit"], kinds
+    md = _read_write_analysis_report(tmp_path)
+    assert "## Suggested SQL Command (advisory, not executed)" in md
+    assert "CREATE TABLE scratch.r AS SELECT a FROM s" in md
+
+
 @pytest.mark.parametrize(
     "sql",
     [
