@@ -20,6 +20,7 @@ RULE_PREDICATE_NOT_PUSHED_TO_CTE = "predicate-not-pushed-to-cte"
 RULE_NULL_UNSAFE_EQUALS = "null-unsafe-equals"
 RULE_REDUNDANT_CAST_CHAIN = "redundant-cast-chain"
 RULE_JOIN_FIRST_FILTER_LATE = "join-first-filter-late"
+RULE_JOIN_KEY_COMPUTED = "join-key-computed"
 
 ALL_RULE_IDS = frozenset(
     {
@@ -32,6 +33,7 @@ ALL_RULE_IDS = frozenset(
         RULE_NULL_UNSAFE_EQUALS,
         RULE_REDUNDANT_CAST_CHAIN,
         RULE_JOIN_FIRST_FILTER_LATE,
+        RULE_JOIN_KEY_COMPUTED,
     }
 )
 
@@ -45,5 +47,6 @@ __all__ = [
     "RULE_NULL_UNSAFE_EQUALS",
     "RULE_REDUNDANT_CAST_CHAIN",
     "RULE_JOIN_FIRST_FILTER_LATE",
+    "RULE_JOIN_KEY_COMPUTED",
     "ALL_RULE_IDS",
 ]

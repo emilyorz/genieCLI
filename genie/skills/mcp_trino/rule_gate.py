@@ -15,6 +15,7 @@ from rich.markup import escape
 from genie.skills.trino_query.sql_static.rule_ids import (
     RULE_CARTESIAN_JOIN,
     RULE_JOIN_FIRST_FILTER_LATE,
+    RULE_JOIN_KEY_COMPUTED,
     RULE_NULL_UNSAFE_EQUALS,
     RULE_PREDICATE_NOT_PUSHED_TO_CTE,
     RULE_REDUNDANT_CAST_CHAIN,
@@ -128,6 +129,12 @@ _STATIC_ACTIONS: dict[str, tuple[str, str, str]] = {
         ACTION_ADVISE,
         "medium",
         "Consider join/pre-aggregation rewrite, but preserve scalar-subquery semantics.",
+    ),
+    RULE_JOIN_KEY_COMPUTED: (
+        ACTION_ADVISE,
+        "medium",
+        "Join on the raw column so the planner can hash-join; if normalization is needed, "
+        "materialize it upstream. Do not auto-rewrite — may change semantics or need schema work.",
     ),
 }
 

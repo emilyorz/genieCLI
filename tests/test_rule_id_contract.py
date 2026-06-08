@@ -20,8 +20,8 @@ from genie.skills.mcp_trino.rule_gate import (
 from genie.skills.trino_query.sql_static import analyze
 from genie.skills.trino_query.sql_static.rule_ids import ALL_RULE_IDS
 
-# SQL that exercises each of the 8 rules. The contract only requires that every
-# emitted rule_id is known; individual heuristics may or may not fire per snippet.
+# SQL that exercises the rules. The contract only requires that every emitted
+# rule_id is known; individual heuristics may or may not fire per snippet.
 _CORPUS = [
     "SELECT a FROM x CROSS JOIN y",
     "SELECT * FROM t",
@@ -31,6 +31,7 @@ _CORPUS = [
     "WITH c AS (SELECT a, b FROM raw.events) SELECT a FROM c WHERE a > 1",
     "SELECT a FROM t WHERE a = NULL",
     "SELECT CAST(CAST(a AS varchar) AS varchar) AS c FROM t",
+    "SELECT 1 FROM a JOIN b ON UPPER(a.x) = b.y",  # R10 join-key-computed
     (
         "WITH joined AS ("
         " SELECT o.order_id, c.region"

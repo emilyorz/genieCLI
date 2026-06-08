@@ -25,6 +25,7 @@ from typing import TYPE_CHECKING, Any
 from genie.skills.trino_query.sql_static.rule_ids import (
     RULE_CARTESIAN_JOIN,
     RULE_JOIN_FIRST_FILTER_LATE,
+    RULE_JOIN_KEY_COMPUTED,
     RULE_NULL_UNSAFE_EQUALS,
     RULE_PREDICATE_NOT_PUSHED_TO_CTE,
     RULE_REDUNDANT_CAST_CHAIN,
@@ -138,6 +139,7 @@ _RULE_KIND_MAP: dict[str, str] = {
     RULE_NULL_UNSAFE_EQUALS: "fix-null-unsafe-equals",
     RULE_REDUNDANT_CAST_CHAIN: "fix-redundant-cast",
     RULE_JOIN_FIRST_FILTER_LATE: "fix-join-first-filter-late",
+    RULE_JOIN_KEY_COMPUTED: "fix-join-key-computed",
 }
 
 

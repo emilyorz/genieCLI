@@ -250,7 +250,7 @@ def test_write_analysis_shows_spinner_during_llm_call(tmp_path, monkeypatch):
 
 def test_ctas_write_analysis_runs_directed_diagnosis_on_inner_select(tmp_path, monkeypatch):
     """CTAS extracts its inner SELECT and runs the SAME non-executing optimization
-    steps (R1-R9 + SQL-shape, ranked) the read-only diagnose-only path uses. The
+    steps (R1-R10 + SQL-shape, ranked) the read-only diagnose-only path uses. The
     report must surface a Ranked Optimization Directions section computed on the
     inner query — not just a static dump. v38 feature.
     """

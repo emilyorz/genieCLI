@@ -117,6 +117,7 @@ the side effects:
 | `IN (SELECT ...)` correlated                        | `EXISTS (SELECT 1 FROM ... WHERE ...)` or `JOIN` — Trino handles EXISTS more efficiently for correlated patterns |
 | `ORDER BY` on full result                           | Move `ORDER BY` into a CTE or subquery with `LIMIT` — sorting unbounded result sets spills to disk               |
 | `CAST(partition_col AS VARCHAR)` in WHERE           | Use native type comparison — casting partition columns disables partition pruning                                |
+| `JOIN ... ON UPPER(a.x) = b.y` / `ON CAST(a.id AS varchar) = b.id` / `ON a.x + 1 = b.k` (function/cast/arithmetic on a join key) | Join on the raw column so the planner can hash-join. If the value must be normalized/cast, materialize the normalized value as a stored column upstream — a computed join key forces a per-row recompute / nested-loop join. (detected by static rule `join-key-computed`) |
 
 ## Connector-Specific Optimizations
 
