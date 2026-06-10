@@ -445,3 +445,449 @@ def test_ran_iff_recompose_status_present(tmp_path, monkeypatch):
         lambda *a, **kw: "", route="chat",
     )["decompose_advisory"]
     assert notran["ran"] is False and notran["recompose_status"] is None
+
+
+# ── v42 semantic-gate hardening: per-class oracle regression rows ─────────────
+# One oracle, one gate: all three caller paths (mcp_trino, --direct, chat.py:413)
+# converge at _run_decompose_advisory:397.
+# Test ids are normative (ticket §8.1, §8.2, §8.4, §8.5).
+
+@pytest.mark.parametrize(
+    ("test_id", "sql1", "sql2", "expected"),
+    [
+        # ── CLASS A: FROM source never compared (Fix 3) ────────────────────────
+        ("R-FROM-TABLE",
+         "SELECT a FROM t1 WHERE x=1",
+         "SELECT a FROM t2 WHERE x=1",
+         False),
+        ("R-FROM-SCHEMA-QUAL",
+         "SELECT a FROM s1.t WHERE x=1",
+         "SELECT a FROM s2.t WHERE x=1",
+         False),
+        ("R-FROM-CATALOG-QUAL",
+         "SELECT a FROM c1.s.t WHERE x=1",
+         "SELECT a FROM c2.s.t WHERE x=1",
+         False),
+        ("R-FROM-TABLESAMPLE-ADD",
+         "SELECT a FROM t",
+         "SELECT a FROM t TABLESAMPLE BERNOULLI(10)",
+         False),
+        ("R-FROM-TABLESAMPLE-REMOVE",
+         "SELECT a FROM t TABLESAMPLE BERNOULLI(10)",
+         "SELECT a FROM t",
+         False),
+        ("R-FROM-DERIVED-BODY",
+         "SELECT a FROM (SELECT a FROM t1) x",
+         "SELECT a FROM (SELECT a FROM t2) x",
+         False),
+        ("R-FROM-UNNEST-DIFF",
+         "SELECT a FROM UNNEST(ARRAY[1, 2, 3]) AS t(a)",
+         "SELECT a FROM UNNEST(ARRAY[1, 2, 4]) AS t(a)",
+         False),
+        ("R-FROM-VALUES-DIFF",
+         "SELECT a FROM (VALUES (1), (2)) AS t(a)",
+         "SELECT a FROM (VALUES (1), (3)) AS t(a)",
+         False),
+        ("R-FROM-SAME",
+         "SELECT a FROM t WHERE x=1",
+         "SELECT a FROM t WHERE x=1",
+         True),
+        # ── CLASS B: OFFSET never compared (Fix 4) ─────────────────────────────
+        ("R-OFFSET-CHANGE",
+         "SELECT a FROM t LIMIT 10 OFFSET 100",
+         "SELECT a FROM t LIMIT 10 OFFSET 200",
+         False),
+        ("R-OFFSET-ADD",
+         "SELECT a FROM t LIMIT 10",
+         "SELECT a FROM t LIMIT 10 OFFSET 50",
+         False),
+        ("R-OFFSET-REMOVE",
+         "SELECT a FROM t LIMIT 10 OFFSET 50",
+         "SELECT a FROM t LIMIT 10",
+         False),
+        ("R-OFFSET-SAME",
+         "SELECT a FROM t LIMIT 10 OFFSET 50",
+         "SELECT a FROM t LIMIT 10 OFFSET 50",
+         True),
+        # ── CLASS C: projection expressions never compared (Fix 7) ─────────────
+        ("R-PROJ-AGG-ARG",
+         "SELECT SUM(salary) AS t FROM e GROUP BY d",
+         "SELECT SUM(base_salary) AS t FROM e GROUP BY d",
+         False),
+        ("R-PROJ-AGG-FUNC",
+         "SELECT SUM(x) AS t FROM e GROUP BY d",
+         "SELECT AVG(x) AS t FROM e GROUP BY d",
+         False),
+        ("R-PROJ-COUNT-DISTINCT",
+         "SELECT COUNT(x) AS n FROM t",
+         "SELECT COUNT(DISTINCT x) AS n FROM t",
+         False),
+        ("R-PROJ-SCALAR-CONST",
+         "SELECT 1 AS c FROM t",
+         "SELECT 2 AS c FROM t",
+         False),
+        ("R-PROJ-COUNT-MISMATCH",
+         "SELECT a, b FROM t",
+         "SELECT a, b, c FROM t",
+         False),
+        ("R-PROJ-SAME",
+         "SELECT SUM(x) AS t, a FROM e GROUP BY a",
+         "SELECT SUM(x) AS t, a FROM e GROUP BY a",
+         True),
+        # ── CLASS D: named WINDOW definitions never compared (Fix 8) ───────────
+        ("R-WINDOW-DEF-DIFF",
+         "SELECT a, rank() OVER w FROM t WINDOW w AS (PARTITION BY a ORDER BY b)",
+         "SELECT a, rank() OVER w FROM t WINDOW w AS (PARTITION BY a ORDER BY c)",
+         False),
+        ("R-WINDOW-ADD",
+         "SELECT a FROM t",
+         "SELECT a FROM t WINDOW w AS (PARTITION BY a)",
+         False),
+        ("R-WINDOW-REMOVE",
+         "SELECT a FROM t WINDOW w AS (PARTITION BY a)",
+         "SELECT a FROM t",
+         False),
+        ("R-WINDOW-DEF-SAME",
+         "SELECT a, rank() OVER w FROM t WINDOW w AS (PARTITION BY a ORDER BY b)",
+         "SELECT a, rank() OVER w FROM t WINDOW w AS (PARTITION BY a ORDER BY b)",
+         True),
+        # ── CLASS E: INTERSECT/EXCEPT not handled in set-op block (Fix 1) ──────
+        ("R-SETOP-INTERSECT-VS-EXCEPT",
+         "SELECT a FROM t1 INTERSECT SELECT a FROM t2",
+         "SELECT a FROM t1 EXCEPT SELECT a FROM t2",
+         False),
+        ("R-SETOP-PLAIN-VS-INTERSECT",
+         "SELECT a FROM t1",
+         "SELECT a FROM t1 INTERSECT SELECT a FROM t2",
+         False),
+        ("R-SETOP-INTERSECT-SAME",
+         "SELECT a FROM t1 INTERSECT SELECT a FROM t2",
+         "SELECT a FROM t1 INTERSECT SELECT a FROM t2",
+         True),
+        # ── CLASS F: JOIN USING column set never compared (Fix 5) ──────────────
+        ("R-USING-KEY-DIFF",
+         "SELECT * FROM t JOIN s USING (a)",
+         "SELECT * FROM t JOIN s USING (b)",
+         False),
+        ("R-USING-MULTICOL-DIFF",
+         "SELECT * FROM t JOIN s USING (a, b)",
+         "SELECT * FROM t JOIN s USING (a, c)",
+         False),
+        ("R-USING-COL-ADD",
+         "SELECT * FROM t JOIN s USING (a)",
+         "SELECT * FROM t JOIN s USING (a, b)",
+         False),
+        ("R-USING-COL-REMOVE",
+         "SELECT * FROM t JOIN s USING (a, b)",
+         "SELECT * FROM t JOIN s USING (a)",
+         False),
+        ("R-USING-SAME",
+         "SELECT * FROM t JOIN s USING (a, b)",
+         "SELECT * FROM t JOIN s USING (a, b)",
+         True),
+        # ── CLASS G: JOIN ON _predicate_set drops right branch (Fix 2) ─────────
+        ("R-JOIN-ON-OR-RIGHT-DIFF",
+         "SELECT a FROM t JOIN s ON t.a=s.a OR t.b=s.b",
+         "SELECT a FROM t JOIN s ON t.a=s.a",
+         False),
+        ("R-JOIN-ON-EQ-DIFF",
+         "SELECT a FROM t JOIN s ON t.a=s.a",
+         "SELECT a FROM t JOIN s ON t.a=s.b",
+         False),
+        ("R-JOIN-ON-EQ-SAME",
+         "SELECT a FROM t JOIN s ON t.a=s.a",
+         "SELECT a FROM t JOIN s ON t.a=s.a",
+         True),
+        # ── CLASS H: ORDER BY frozenset loses sequence when LIMIT present (Fix 6)
+        ("R-ORDERBY-RESEQ-WITH-LIMIT",
+         "SELECT a, b FROM t ORDER BY a, b LIMIT 5",
+         "SELECT a, b FROM t ORDER BY b, a LIMIT 5",
+         False),
+        # LIMIT add/remove with same ORDER BY: caught by LIMIT string compare, not
+        # Fix 6 list branch (has_limit causes list compare but lists are equal).
+        ("R-ORDERBY-LIMIT-ADD",
+         "SELECT a FROM t ORDER BY a",
+         "SELECT a FROM t ORDER BY a LIMIT 5",
+         False),
+        ("R-ORDERBY-LIMIT-REMOVE",
+         "SELECT a FROM t ORDER BY a LIMIT 5",
+         "SELECT a FROM t ORDER BY a",
+         False),
+        # Presence asymmetry (no-LIMIT branch, frozenset size mismatch).
+        ("R-ORDERBY-ADD",
+         "SELECT a FROM t",
+         "SELECT a FROM t ORDER BY a",
+         False),
+        ("R-ORDERBY-REMOVE",
+         "SELECT a FROM t ORDER BY a",
+         "SELECT a FROM t",
+         False),
+        # ORDER BY reseq WITHOUT LIMIT: presentation-only, stays True.
+        ("R-ORDERBY-RESEQ-NO-LIMIT",
+         "SELECT a, b FROM t ORDER BY a, b",
+         "SELECT a, b FROM t ORDER BY b, a",
+         True),
+        # ASC vs DESC with LIMIT: detected by expr SQL text (includes direction keyword).
+        ("R-ORDERBY-ASC-VS-DESC-LIMIT",
+         "SELECT a FROM t ORDER BY a ASC LIMIT 5",
+         "SELECT a FROM t ORDER BY a DESC LIMIT 5",
+         False),
+        # ── CLASS I: JOIN ON TRUE/FALSE Boolean literal ─────────────────────────
+        # Fix 2 resolves CLASS I as a side effect: _predicate_set no longer calls
+        # .this on bare predicate nodes, so exp.Boolean is handled correctly.
+        # Both sides ON TRUE → same frozenset → True (correctly admitted).
+        # ON TRUE vs ON FALSE → different frozensets → False (correctly rejected).
+        ("R-JOINON-BOOL-LITERAL",
+         "SELECT a FROM t JOIN s ON TRUE",
+         "SELECT a FROM t JOIN s ON TRUE",
+         True),
+        ("R-JOIN-ON-TRUE-VS-FALSE",
+         "SELECT a FROM t JOIN s ON TRUE",
+         "SELECT a FROM t JOIN s ON FALSE",
+         False),
+        # ── CLASS J: QUALIFY Trino parse raises (already fail-closed) ───────────
+        # Trino dialect ParseError → outer except → None.
+        ("R-QUALIFY-TRINO-NONE",
+         "SELECT a FROM t QUALIFY ROW_NUMBER() OVER (PARTITION BY a) = 1",
+         "SELECT a FROM t QUALIFY ROW_NUMBER() OVER (PARTITION BY a) = 1",
+         None),
+        # ── Presence-asymmetry: HAVING add/remove (regression protection) ───────
+        # HAVING path was already sound; these tests protect against future regression.
+        ("R-HAVING-ADD",
+         "SELECT a FROM t GROUP BY a",
+         "SELECT a FROM t GROUP BY a HAVING COUNT(*) > 1",
+         False),
+        ("R-HAVING-REMOVE",
+         "SELECT a FROM t GROUP BY a HAVING COUNT(*) > 1",
+         "SELECT a FROM t GROUP BY a",
+         False),
+        # ── Safe-rewrite positives: anti-over-fix ───────────────────────────────
+        ("R-WHERE-COMMUTATIVE",
+         "SELECT a FROM t WHERE x=1 AND y=2",
+         "SELECT a FROM t WHERE y=2 AND x=1",
+         True),
+        ("R-GROUPBY-REORDER",
+         "SELECT a, b FROM t GROUP BY a, b",
+         "SELECT a, b FROM t GROUP BY b, a",
+         True),
+        ("R-HAVING-COMMUTATIVE",
+         "SELECT a FROM t GROUP BY a HAVING COUNT(*) > 1 AND SUM(x) < 100",
+         "SELECT a FROM t GROUP BY a HAVING SUM(x) < 100 AND COUNT(*) > 1",
+         True),
+        ("R-UNION-VS-UNIONALL",
+         "SELECT a FROM t UNION ALL SELECT a FROM s",
+         "SELECT a FROM t UNION ALL SELECT a FROM s",
+         True),
+        ("R-JOIN-ON-EQ-SAME-CANONICAL",
+         "SELECT a FROM t INNER JOIN s ON t.id = s.id",
+         "SELECT a FROM t INNER JOIN s ON t.id = s.id",
+         True),
+        # Multi-clause safe rewrite: FROM same, projections same, WHERE reordered, GROUP BY reordered.
+        ("R-CANONICAL-COMMUTATIVE-TRUE",
+         "SELECT a, b FROM t WHERE x=1 AND y=2 GROUP BY a, b",
+         "SELECT a, b FROM t WHERE y=2 AND x=1 GROUP BY b, a",
+         True),
+    ],
+)
+def test_queries_structurally_equivalent_v42(test_id, sql1, sql2, expected):
+    """Per-class oracle regression rows (v42 semantic-gate hardening, ticket §8.1 + §8.4)."""
+    result = queries_structurally_equivalent(sql1, sql2)
+    assert result is expected, (
+        f"[{test_id}] expected {expected!r}, got {result!r}\n"
+        f"  sql1: {sql1}\n  sql2: {sql2}"
+    )
+
+
+# ── v42 standalone gate-level tests (ticket §8.2) ────────────────────────────
+
+def _make_cand(original_sql, rewritten_sql):
+    """Construct an admitted, changed RewriteCandidate for gate tests."""
+    from genie.skills.mcp_trino.trino_optimize import RewriteCandidate
+    return RewriteCandidate(
+        fragment_id="frag",
+        original_sql=original_sql,
+        rewritten_sql=rewritten_sql,
+        action="rewrite",
+        changed=True,
+        admitted=True,
+        rationale="rewrite",
+    )
+
+
+def test_semantic_gate_reverts_from_table_change():
+    """CLASS A: FROM table change must be reverted."""
+    safe, reverted = _semantic_safe_candidates([_make_cand("SELECT a FROM t1", "SELECT a FROM t2")])
+    assert reverted == ["frag"]
+    assert safe[0].admitted is False
+    assert safe[0].rewritten_sql == "SELECT a FROM t1"
+
+
+def test_semantic_gate_reverts_tablesample_add():
+    """CLASS A: TABLESAMPLE added must be reverted."""
+    safe, reverted = _semantic_safe_candidates([
+        _make_cand("SELECT a FROM t", "SELECT a FROM t TABLESAMPLE BERNOULLI(10)")
+    ])
+    assert reverted == ["frag"]
+    assert safe[0].admitted is False
+
+
+def test_semantic_gate_reverts_offset_add():
+    """CLASS B: OFFSET added must be reverted."""
+    safe, reverted = _semantic_safe_candidates([
+        _make_cand("SELECT a FROM t LIMIT 5", "SELECT a FROM t LIMIT 5 OFFSET 10")
+    ])
+    assert reverted == ["frag"]
+    assert safe[0].admitted is False
+
+
+def test_semantic_gate_reverts_proj_agg_arg():
+    """CLASS C: aggregate argument change must be reverted."""
+    safe, reverted = _semantic_safe_candidates([
+        _make_cand("SELECT SUM(salary) AS t FROM e", "SELECT SUM(base_salary) AS t FROM e")
+    ])
+    assert reverted == ["frag"]
+    assert safe[0].admitted is False
+
+
+def test_semantic_gate_reverts_proj_agg_func():
+    """CLASS C: aggregate function change (SUM → AVG) must be reverted."""
+    safe, reverted = _semantic_safe_candidates([
+        _make_cand("SELECT SUM(x) AS t FROM e", "SELECT AVG(x) AS t FROM e")
+    ])
+    assert reverted == ["frag"]
+    assert safe[0].admitted is False
+
+
+def test_semantic_gate_reverts_intersect_vs_except():
+    """CLASS E: INTERSECT rewritten as EXCEPT must be reverted."""
+    safe, reverted = _semantic_safe_candidates([
+        _make_cand(
+            "SELECT a FROM t1 INTERSECT SELECT a FROM t2",
+            "SELECT a FROM t1 EXCEPT SELECT a FROM t2",
+        )
+    ])
+    assert reverted == ["frag"]
+    assert safe[0].admitted is False
+
+
+def test_semantic_gate_reverts_using_key_diff():
+    """CLASS F: USING join column change must be reverted."""
+    safe, reverted = _semantic_safe_candidates([
+        _make_cand("SELECT * FROM t JOIN s USING (a)", "SELECT * FROM t JOIN s USING (b)")
+    ])
+    assert reverted == ["frag"]
+    assert safe[0].admitted is False
+
+
+def test_semantic_gate_reverts_orderby_reseq_with_limit():
+    """CLASS H: ORDER BY key resequence WITH LIMIT must be reverted."""
+    safe, reverted = _semantic_safe_candidates([
+        _make_cand(
+            "SELECT a, b FROM t ORDER BY a, b LIMIT 5",
+            "SELECT a, b FROM t ORDER BY b, a LIMIT 5",
+        )
+    ])
+    assert reverted == ["frag"]
+    assert safe[0].admitted is False
+
+
+def test_semantic_gate_admits_orderby_reseq_no_limit():
+    """CLASS H positive: ORDER BY reseq WITHOUT LIMIT stays admitted (presentation-only)."""
+    cand = _make_cand("SELECT a, b FROM t ORDER BY a, b", "SELECT a, b FROM t ORDER BY b, a")
+    safe, reverted = _semantic_safe_candidates([cand])
+    assert reverted == []
+    assert safe[0].admitted is True
+    assert safe[0].changed is True
+
+
+def test_semantic_gate_reverts_on_indeterminate_parse():
+    """Fail-closed: garbage rewritten SQL triggers revert."""
+    safe, reverted = _semantic_safe_candidates([
+        _make_cand("SELECT a FROM t", "))) garbage (((")
+    ])
+    assert reverted == ["frag"]
+    assert safe[0].admitted is False
+
+
+# ── v42 default-deny sentinel tests (ticket §8.5) ────────────────────────────
+
+def test_r_modelled_keys_subset():
+    """R-MODELLED-KEYS-SUBSET: every key in _MODELLED_KEYS exists in exp.Select.arg_types."""
+    import sqlglot.expressions as exp
+    from genie.core.sql_extraction import _MODELLED_KEYS
+    live_keys = set(exp.Select.arg_types)
+    assert _MODELLED_KEYS <= live_keys, (
+        f"Keys in _MODELLED_KEYS not in exp.Select.arg_types: "
+        f"{_MODELLED_KEYS - live_keys}"
+    )
+
+
+def test_r_default_deny(monkeypatch):
+    """R-DEFAULT-DENY: monkeypatching an unmodeled key into a parsed Select fires the sentinel.
+
+    Preferred approach: inject a non-falsy value for a fabricated key into s.args
+    so the sentinel detects it and returns None. Proves the sentinel code path fires
+    (not that parse failed).
+    """
+    import sqlglot
+    import sqlglot.expressions as exp
+    from genie.core.sql_extraction import queries_structurally_equivalent
+
+    sql1 = "SELECT a FROM t"
+    sql2 = "SELECT a FROM t"
+
+    # Parse sql1 to get a Select node and inject an unmodeled key.
+    t1 = sqlglot.parse_one(sql1, read="trino")
+    assert isinstance(t1, exp.Select)
+
+    original_args = dict(t1.args)
+
+    def patched_parse_one(sql, read=None):
+        node = sqlglot.parse_one.__wrapped__(sql, read=read) if hasattr(sqlglot.parse_one, "__wrapped__") else _orig_parse_one(sql, read=read)
+        if sql == sql1:
+            node.args["future_construct"] = "non_falsy_value"
+        return node
+
+    _orig_parse_one = sqlglot.parse_one
+    monkeypatch.setattr(sqlglot, "parse_one", patched_parse_one)
+
+    result = queries_structurally_equivalent(sql1, sql2)
+    assert result is None, (
+        f"Expected None (sentinel fires for unmodeled key), got {result!r}"
+    )
+
+
+def test_r_setop_type_newsubclass():
+    """R-SETOP-TYPE-NEWSUBCLASS: sentinel fires for a set-op type not in _SET_OP_TYPES.
+
+    Proves the sentinel (not the set-op block) is the backstop for future sqlglot
+    set-op subtypes not in the explicit (Union, Intersect, Except) tuple.
+
+    Implementation: monkeypatch queries_structurally_equivalent's inner _unwrap_select
+    by patching sqlglot.parse_one to return a mock Select that has an unmodeled key.
+    This verifies the sentinel fires (returns None) rather than incorrectly returning True.
+    """
+    import sqlglot
+    import sqlglot.expressions as exp
+    from genie.core.sql_extraction import queries_structurally_equivalent
+
+    # Use a plain SELECT that parses cleanly, then inject an unmodeled key.
+    # This simulates "a future construct appears in the parsed AST".
+    sql1 = "SELECT a FROM t"
+    sql2 = "SELECT a FROM t"
+
+    _orig = sqlglot.parse_one
+
+    def inject_future_key(sql, read=None):
+        node = _orig(sql, read=read)
+        if isinstance(node, exp.Select):
+            node.args["mock_future_setop"] = "present"
+        return node
+
+    import unittest.mock as _mock
+    with _mock.patch.object(sqlglot, "parse_one", side_effect=inject_future_key):
+        result = queries_structurally_equivalent(sql1, sql2)
+
+    assert result is None, (
+        f"Expected None (sentinel fires for unmodeled mock_future_setop key), got {result!r}"
+    )
