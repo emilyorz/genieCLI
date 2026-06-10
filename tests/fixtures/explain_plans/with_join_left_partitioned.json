@@ -1,0 +1,26 @@
+{
+  "name": "Output[a_x, b_y]",
+  "descriptor": { "columnNames": "[a_x, b_y]" },
+  "estimates": [{ "outputRowCount": 10000.0 }],
+  "children": [
+    {
+      "name": "Join[LEFT, PARTITIONED]",
+      "descriptor": { "type": "LEFT", "criteria": "(a.id = b.id)" },
+      "estimates": [{ "outputRowCount": 10000.0 }],
+      "children": [
+        {
+          "name": "TableScan[hive.default.a]",
+          "descriptor": { "table": "hive.default.a" },
+          "estimates": [{ "outputRowCount": 5000000.0, "outputSizeInBytes": 524288000.0 }],
+          "children": []
+        },
+        {
+          "name": "TableScan[hive.default.b]",
+          "descriptor": { "table": "hive.default.b" },
+          "estimates": [{ "outputRowCount": 500000.0, "outputSizeInBytes": 52428800.0 }],
+          "children": []
+        }
+      ]
+    }
+  ]
+}

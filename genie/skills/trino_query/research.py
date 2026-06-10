@@ -528,7 +528,7 @@ def _run_plan_cost_loop(
     with the MCP path). This adapter is responsible for:
     - baseline metric / rows extraction (dict fields)
     - candidate_timeout_ms derivation from _baseline_wall_ms
-    - plan_cost call (no directions_block — direct path omits pre_execution_diagnosis)
+    - plan_cost call; directions assembled via pre_execution_diagnosis (includes join diagnosis)
     - building sys_prompt (rule_gate_block only, no directions_block)
     - wrapping output in _SafeOutput
     - building the four injected callables (measure_fn, metric_fn, row_equiv_fn, explain_runner)

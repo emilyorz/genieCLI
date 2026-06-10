@@ -47,6 +47,22 @@ COMPLEX_CTE_COUNT: int = 3                 # chained WITH steps above this are w
 HEAVY_CTE_COUNT: int = 2                   # JOIN/GROUP/window/set-heavy CTE steps above this trigger materialization advice
 REPEATED_RAW_SCAN_COUNT: int = 2            # same likely-raw table seen at least this many times
 
+# Bytes above which a REPLICATED (broadcast) join's build side is a memory-blowup risk.
+# Each worker materialises a full copy of the build side; 1 GiB per worker threatens
+# per-node OOM at cluster scale — same order as HIGH_PEAK_MEMORY_BYTES (line 43).
+BROADCAST_BUILD_BLOWUP_BYTES: int = 1 * 1024**3            # 1 GiB
+
+# Engineering anchor ~100 MiB (order-of-magnitude alignment with Trino's broadcast
+# heuristic; no version-pinned source). Bytes below which a PARTITIONED join's build
+# side is a broadcast candidate. Unit: BYTES only (IL-U3/FM-10).
+BROADCAST_CANDIDATE_SMALL_SIDE_BYTES: int = 100 * 1024**2  # 100 MiB
+
+# Rows below which a PARTITIONED join's build side is a broadcast candidate (bytes
+# fallback when build-side bytes is absent). 1M rows × ~100 B/row ≈ 100 MiB —
+# consistent with the bytes threshold. Unit: ROWS only (FM-10) — never compared
+# against a _BYTES value.
+BROADCAST_CANDIDATE_SMALL_SIDE_ROWS: int = 1_000_000       # 1M rows
+
 
 def _resolve_memory_pressure_fraction() -> float:
     """Effective warning fraction. GENIE_TRINO_MEMORY_PRESSURE_FRACTION overrides
@@ -342,6 +358,293 @@ def _max_non_leaf_output_bytes(node: Any) -> int | None:
                 local_max = child_max
 
     return local_max
+
+
+# ---------------------------------------------------------------------------
+# F1 — join-distribution parser helpers
+# ---------------------------------------------------------------------------
+
+_DIST_TOKEN_MAP: dict[str, str] = {
+    "PARTITIONED": "PARTITIONED",
+    "REPLICATED":  "REPLICATED",
+    "REPLICATE":   "REPLICATED",   # normalise singular → REPLICATED
+}
+# Note: _DIST_TOKEN_MAP and _REMOTE_EXCHANGE_MAP below are NEW constants introduced
+# by F1; neither is a pre-existing pattern (IL-U13 / IL-U11).
+
+
+def _encoding_a_distribution(node_name: str) -> str | None:
+    """Extract join distribution from name-bracket via token-split.
+
+    MANDATED approach (FM-18): split on r'[,_\\s]+', exact-token membership.
+    The \\b word-boundary regex (re.search(r'\\b(PARTITIONED|REPLICATED)\\b', …)) is
+    FORBIDDEN — '_' is a \\w char so \\bPARTITIONED\\b silently fails on INNER_PARTITIONED.
+    Token-split also avoids the REPLICATE-in-REPLICATED substring trap.
+    """
+    start = node_name.find("[")
+    if start == -1:
+        return None
+    bracket = node_name[start + 1:].rstrip("]")
+    for tok in re.split(r"[,_\s]+", bracket):
+        mapped = _DIST_TOKEN_MAP.get(tok.strip().upper())
+        if mapped is not None:
+            return mapped
+    return None
+
+
+def _encoding_b_distribution(node: dict) -> str | None:
+    """Extract join distribution from descriptor dual-probe (version-hedging).
+
+    Priority: distributionType first, then distribution.
+    Priority is version-hedging, not authoritative; either non-None value wins;
+    first-wins is deterministic. No Trino version citation available — develop
+    must NOT treat distributionType as canonical (spec §2.B).
+    """
+    desc = node.get("descriptor") or {}
+    raw = desc.get("distributionType") or desc.get("distribution")
+    if not isinstance(raw, str) or not raw:
+        return None
+    upper = raw.upper().strip()
+    if "PARTITION" in upper:   # PARTITIONED / REPARTITION substrings
+        return "PARTITIONED"
+    if "REPLIC" in upper:      # REPLICATE / REPLICATED substrings
+        return "REPLICATED"
+    return None
+
+
+_REMOTE_EXCHANGE_MAP: dict[str, str] = {
+    "REPARTITION": "PARTITIONED",   # FM-19: shuffle-partitioned join
+    "REPLICATE":   "REPLICATED",
+    "REPLICATED":  "REPLICATED",
+}
+
+
+def _remoteexchange_child_distribution(node: dict) -> str | None:
+    """Detect RemoteExchange parent-context distribution (Encoding C).
+
+    Walk is top-down (spec §2.C). When a RemoteExchange[…] node has a mapped bracket,
+    its distribution is propagated to direct and transitive descendants until a closer
+    RemoteExchange overrides it.
+
+    NOTE: existing with_aggregate.json has 'RemoteExchange' (no bracket) → returns None
+    here → existing plans unaffected. The gap this closes is distribution-bracket
+    content, not RemoteExchange nodes per se (spec §0.3 / explore attempt-2).
+    """
+    name = node.get("name") or ""
+    if not name.startswith("RemoteExchange"):
+        return None
+    start = name.find("[")
+    if start == -1:
+        return None                    # bare RemoteExchange — no bracket, no distribution
+    bracket = name[start + 1:].rstrip("]").strip().upper()
+    return _REMOTE_EXCHANGE_MAP.get(bracket)
+
+
+def _resolve_node_distribution(node: dict, parent_dist: str | None) -> str:
+    """Priority A → B → C(parent) → 'UNKNOWN' (spec §2.D)."""
+    return (
+        _encoding_a_distribution(node.get("name", ""))
+        or _encoding_b_distribution(node)
+        or parent_dist
+        or "UNKNOWN"
+    )
+
+
+def _extract_side_estimates(
+    children: list, idx: int
+) -> tuple[float | None, float | None]:
+    """Read (rows, bytes) from children[idx].estimates[0] with full guard (FM-1/FM-2/FM-8).
+
+    FM-2: None = absent; 0.0 = a present zero (NOT dropped).
+    FM-1: inf/nan → None (rejected before any comparison or int()).
+    FM-8: null or non-dict child → (None, None), no crash.
+    D-bool (IL-U4): bool is an int subclass; True→1.0 would cause a false S2. Rejected.
+    """
+    if idx >= len(children):
+        return None, None
+    child = children[idx]
+    if not isinstance(child, dict):            # FM-8: null / non-dict child guard
+        return None, None
+    estimates = child.get("estimates") or []
+    est = next((e for e in estimates if isinstance(e, dict)), None)
+    if est is None:
+        return None, None
+
+    def _safe(val: object) -> float | None:
+        if val is None:                        # FM-2: None = absent
+            return None
+        if isinstance(val, bool):              # D-bool / IL-U4: bool is int subclass, reject
+            return None
+        if not isinstance(val, (int, float)):
+            return None
+        if not math.isfinite(val):             # FM-1: reject inf/nan
+            return None
+        return float(val)
+
+    return _safe(est.get("outputRowCount")), _safe(est.get("outputSizeInBytes"))
+
+
+_JOIN_BASE_NAMES: frozenset[str] = frozenset({"Join", "SemiJoin", "HashJoin", "MergeJoin"})
+# CrossJoin excluded: handled by RULE_CARTESIAN_JOIN. "CROSS" never appears in output.
+
+_JOIN_TYPE_MAP: dict[str, str] = {
+    "INNER": "INNER", "LEFT": "LEFT", "RIGHT": "RIGHT", "FULL": "FULL", "SEMI": "SEMI",
+}
+
+_MAX_PLAN_DEPTH: int = 50   # FM-16 recursion guard
+
+
+def _extract_join_facts(raw_plan_json: Any) -> list[dict]:
+    """Top-down walk; return one dict per join node across ALL fragments. Fail-open.
+
+    v1 limitation: dict-wrapped fragment lists (e.g. {"fragments":[…]}) are walked as a
+    single root; cross-fragment joins under non-children keys are not detected. Fail-open.
+
+    FM-6: reads node['children'][0]/[1] from the raw plan (NEVER from plan_signature
+    output), to preserve probe(0)/build(1) identity.
+    """
+    if raw_plan_json is None:                       # FM-20: is None, NOT isinstance(dict)
+        return []
+    roots = raw_plan_json if isinstance(raw_plan_json, list) else [raw_plan_json]
+    results: list[dict] = []
+
+    def _walk(node: Any, depth: int, parent_dist: str | None) -> None:
+        if depth > _MAX_PLAN_DEPTH or not isinstance(node, dict):
+            return
+        name = node.get("name", "")
+        child_dist = _remoteexchange_child_distribution(node)
+        effective = child_dist if child_dist is not None else parent_dist  # closest ancestor wins
+
+        base = name.split("[", 1)[0].strip()
+        if base in _JOIN_BASE_NAMES:
+            distribution = _resolve_node_distribution(node, parent_dist)
+            desc = node.get("descriptor") or {}
+            join_type = _JOIN_TYPE_MAP.get(str(desc.get("type", "")).upper(), "UNKNOWN")
+            children = node.get("children") or []
+            p_rows, p_bytes = _extract_side_estimates(children, 0)
+            b_rows, b_bytes = _extract_side_estimates(children, 1)
+            results.append({
+                "node_name": name,
+                "join_type": join_type,
+                "distribution": distribution,
+                "probe_side_rows": p_rows,
+                "probe_side_bytes": p_bytes,
+                "build_side_rows": b_rows,
+                "build_side_bytes": b_bytes,
+                "has_estimates": any(v is not None for v in (p_rows, p_bytes, b_rows, b_bytes)),
+            })
+        for child in node.get("children") or []:
+            _walk(child, depth + 1, effective)
+
+    try:
+        for root in roots:
+            _walk(root, 0, None)
+    except Exception:
+        return []                                   # FM-23: absolute fail-open
+    return results
+
+
+def _diagnose_join_facts(join_facts: list[dict]) -> list[OptimizationDirection]:
+    """Map per-join facts to optimization directions (F2 signal rules, spec §3).
+
+    Mutual exclusivity by distribution:
+    - REPLICATED → only S1 can fire
+    - PARTITIONED → only S2 can fire (bytes path XOR rows fallback)
+    - UNKNOWN → only S3 can fire
+
+    Lower-bound guard (IL-S2 / defect-class 3): S2 requires 0 < x < threshold.
+    A 0-value build side is degenerate (nothing to broadcast); must not fire S2.
+
+    FM-22 injection safety: all rationale and evidence strings are numeric/structured
+    prose. node_safe strips bracket content before any interpolation.
+    """
+    directions: list[OptimizationDirection] = []
+    for fact in join_facts:
+        dist    = fact["distribution"]
+        b_bytes = fact["build_side_bytes"]
+        b_rows  = fact["build_side_rows"]
+        # FM-22: strip bracket / criteria from node_name before any evidence interpolation
+        node_safe = fact["node_name"].split("[", 1)[0].strip()
+
+        if dist == "REPLICATED":
+            if b_bytes is not None and b_bytes > BROADCAST_BUILD_BLOWUP_BYTES:
+                directions.append(OptimizationDirection(
+                    kind="join-broadcast-blowup",
+                    severity="high",
+                    rationale=(
+                        f"Build side ({b_bytes / 1024**3:.1f} GiB) is replicated to every "
+                        "worker; at cluster scale each per-worker copy risks OOM. Consider "
+                        "a partitioned (hash-repartition) join or filtering the build side."
+                    ),
+                    evidence=f"explain:join-broadcast-blowup build_side_bytes={int(b_bytes)}",
+                    target_metric="peak_memory_bytes",
+                ))
+        elif dist == "PARTITIONED":
+            if b_bytes is not None and 0 < b_bytes < BROADCAST_CANDIDATE_SMALL_SIDE_BYTES:
+                directions.append(OptimizationDirection(
+                    kind="join-broadcast-candidate",
+                    severity="medium",
+                    rationale=(
+                        f"Build side ({b_bytes / 1024**2:.0f} MiB) is small enough for a "
+                        "broadcast join; switching to REPLICATED removes the hash-repartition "
+                        "shuffle and may reduce wall time."
+                    ),
+                    evidence=f"explain:join-broadcast-candidate build_side_bytes={int(b_bytes)}",
+                    target_metric="wall_time_ms",
+                ))
+            elif (
+                b_bytes is None
+                and b_rows is not None
+                and 0 < b_rows < BROADCAST_CANDIDATE_SMALL_SIDE_ROWS
+            ):
+                directions.append(OptimizationDirection(
+                    kind="join-broadcast-candidate",
+                    severity="medium",
+                    rationale=(
+                        f"Build side ({int(b_rows):,} rows) is small enough for a broadcast "
+                        "join; switching to REPLICATED removes the hash-repartition shuffle "
+                        "and may reduce wall time."
+                    ),
+                    evidence=f"explain:join-broadcast-candidate build_side_rows={int(b_rows)}",
+                    target_metric="wall_time_ms",
+                ))
+        else:  # UNKNOWN → S3
+            directions.append(OptimizationDirection(
+                kind="join-stats-gap",
+                severity="low",
+                rationale=(
+                    "Join distribution is unknown from the EXPLAIN plan; distribution and "
+                    "size analysis cannot be performed. Consider running ANALYZE on the "
+                    "join tables to refresh statistics."
+                ),
+                evidence=f"explain:join-stats-gap node={node_safe}",
+                target_metric="query_stats",
+            ))
+    return directions
+
+
+def _join_diagnosis_contributor(explain_cost: Any) -> list[OptimizationDirection]:
+    """Emit join-distribution signals from the already-fetched EXPLAIN plan.
+
+    Receives the same 3-tuple as _explain_cost_contributor (rows_est, bytes_est,
+    raw_plan_json). Mirrors the unpack pattern at _explain_cost_contributor.
+    Fail-open: returns [] on any error. Zero additional cluster round-trips.
+    """
+    try:
+        if explain_cost is None:
+            return []
+        try:
+            _, _, raw_plan_json = explain_cost          # mirrors _explain_cost_contributor unpack
+        except (TypeError, ValueError):                 # FM-15: never change tuple shape
+            return []
+        if raw_plan_json is None:                       # FM-20: is None ONLY, not isinstance(dict)
+            return []
+        join_facts = _extract_join_facts(raw_plan_json)
+        if not join_facts:
+            return []                                   # no facts → no signal (IL-S5)
+        return _diagnose_join_facts(join_facts)
+    except Exception:
+        return []                                       # FM-23: absolute fail-open
 
 
 def _explain_cost_contributor(
@@ -791,6 +1094,7 @@ def pre_execution_diagnosis(
             peak_memory_limit_bytes=peak_memory_limit_bytes,
         )
     )
+    directions.extend(_join_diagnosis_contributor(explain_cost))   # F3: join-distribution signals
     directions.extend(_metadata_contributor(table_metadata))
     directions.extend(
         _memory_contributor(
@@ -815,4 +1119,7 @@ __all__ = [
     "LARGE_SCAN_BYTES",
     "HIGH_PEAK_MEMORY_BYTES",
     "MEMORY_PRESSURE_FRACTION",
+    "BROADCAST_BUILD_BLOWUP_BYTES",
+    "BROADCAST_CANDIDATE_SMALL_SIDE_BYTES",
+    "BROADCAST_CANDIDATE_SMALL_SIDE_ROWS",
 ]
