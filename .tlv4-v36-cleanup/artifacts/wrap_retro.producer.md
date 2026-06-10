@@ -11,7 +11,7 @@ Closed in the working tree:
   `make_candidate_timeout_ms()` behavior: 2x headroom and 2000ms floor.
 - T-F-24 is now executable: the test forces MCP plan-cost path entry and
   unconditionally asserts `_run_mcp_plan_cost_loop(...,
-  peak_memory_limit_bytes=5 * 1024**3)`.
+peak_memory_limit_bytes=5 * 1024**3)`.
 - `bad_env_fallthrough` breadcrumb now distinguishes usable `SHOW SESSION`
   from failed/unusable `SHOW SESSION`, and explicitly says the `1.0 GiB`
   fallback is active.

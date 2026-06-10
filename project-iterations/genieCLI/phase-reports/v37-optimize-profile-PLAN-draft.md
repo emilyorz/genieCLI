@@ -11,20 +11,20 @@ was brought down to ~1 min. His debugging method, generalized:
 
 1. A whole query is un-actionable. First **decompose** it (by AI) into smaller queries.
 2. **Optimize each fragment** independently (mirrors how Trino itself splits a plan into stages across workers).
-3. **Recompose** the optimized fragments back along the *original* query structure → Final Query.
+3. **Recompose** the optimized fragments back along the _original_ query structure → Final Query.
 
 Key insight from Sam: the real value of decompose is **hunting the monster** — locate exactly where the
-query is slow. Once the hotspot is named, optimization becomes a *targeted strike*, not blind trial.
+query is slow. Once the hotspot is named, optimization becomes a _targeted strike_, not blind trial.
 genieCLI already does optimization, but feeds the AI the whole query at once → cannot optimize finely.
 
 ## Use-case gate
 
-1. **Concrete scenario:** Sam runs the optimizer on a slow Trino *report* query and wants it
+1. **Concrete scenario:** Sam runs the optimizer on a slow Trino _report_ query and wants it
    decomposed, the cost monsters located, structurally optimized, and recomposed — with a hard
    guarantee the report output does not change.
 2. **Existing-solution gap:** `/trino-research` optimizes the whole query in one pass (coarse).
-   Task-Ledger V4 form-2 has the step/verify/backedge machinery, but its profiles are *for
-   development* (feature / bugfix), not *for optimization*.
+   Task-Ledger V4 form-2 has the step/verify/backedge machinery, but its profiles are _for
+   development_ (feature / bugfix), not _for optimization_.
 3. **Cost of doing vs not:** Without this, the optimizer keeps blind-trialing a whole query and may
    propose rewrites that change report output. With it, deterministic monster-hunting guides a
    targeted, equivalence-verified optimization.
@@ -41,14 +41,14 @@ advance / fail / escalate / backedge — is reused verbatim.
 
 Maps directly onto the manager's method. `entry: baseline`.
 
-| # | Step | Manager's method | V4 mode | Gate criteria |
-|---|------|------------------|---------|---------------|
-| 1 | `baseline` | measure | single producer | Run original query EXPLAIN (+ live run if Trino reachable). Record plan cost, plan_signature, row count, wall time. This is the keep/discard anchor for everything downstream. |
-| 2 | `decompose` | split + **hunt monsters** | **sweep** (multi-angle) | Produce fragment dependency graph **+ ranked monster list + anti-pattern attribution**. Sweep angles: by-cardinality-blowup / by-antipattern / by-explain-cost. Synth merges. **Then a human gate: Sam confirms / overrides / adds a missed monster before optimize runs.** Hard-fail if a monster is missed or mis-attributed — worse than a structural mis-split. |
-| 3 | `optimize` | optimize each fragment | **tournament**, fan-out = monster count | Only the flagged monsters are touched; clean fragments are left untouched. Each monster runs a strategy tournament: Lambda / skinny-join / broadcast (tGenie P6/P7/P8), selector picks size-aware. Review criteria = tGenie 8-principle checklist + the equivalence tier rules below. |
-| 4 | `recompose` | reassemble along original structure | single producer + **strictest gate** | Stitch optimized monsters back into the original structure. **Highest risk step.** Gate MUST pass row-equivalence vs original query AND cost comparison vs baseline. |
-| 5 | `verify` | global acceptance | single producer + panel | Run the full final query: (a) row-equivalent to original? (b) how much faster? Equivalence is a **gate, not a metric** — fail → backedge. |
-| 6 | `wrap_retro` | — | single producer | Standard V4 retro for cross-iteration learning. |
+| #   | Step         | Manager's method                    | V4 mode                                 | Gate criteria                                                                                                                                                                                                                                                                                                                                                       |
+| --- | ------------ | ----------------------------------- | --------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| 1   | `baseline`   | measure                             | single producer                         | Run original query EXPLAIN (+ live run if Trino reachable). Record plan cost, plan_signature, row count, wall time. This is the keep/discard anchor for everything downstream.                                                                                                                                                                                      |
+| 2   | `decompose`  | split + **hunt monsters**           | **sweep** (multi-angle)                 | Produce fragment dependency graph **+ ranked monster list + anti-pattern attribution**. Sweep angles: by-cardinality-blowup / by-antipattern / by-explain-cost. Synth merges. **Then a human gate: Sam confirms / overrides / adds a missed monster before optimize runs.** Hard-fail if a monster is missed or mis-attributed — worse than a structural mis-split. |
+| 3   | `optimize`   | optimize each fragment              | **tournament**, fan-out = monster count | Only the flagged monsters are touched; clean fragments are left untouched. Each monster runs a strategy tournament: Lambda / skinny-join / broadcast (tGenie P6/P7/P8), selector picks size-aware. Review criteria = tGenie 8-principle checklist + the equivalence tier rules below.                                                                               |
+| 4   | `recompose`  | reassemble along original structure | single producer + **strictest gate**    | Stitch optimized monsters back into the original structure. **Highest risk step.** Gate MUST pass row-equivalence vs original query AND cost comparison vs baseline.                                                                                                                                                                                                |
+| 5   | `verify`     | global acceptance                   | single producer + panel                 | Run the full final query: (a) row-equivalent to original? (b) how much faster? Equivalence is a **gate, not a metric** — fail → backedge.                                                                                                                                                                                                                           |
+| 6   | `wrap_retro` | —                                   | single producer                         | Standard V4 retro for cross-iteration learning.                                                                                                                                                                                                                                                                                                                     |
 
 **Backward edges:** `[["verify","optimize"], ["verify","recompose"], ["recompose","decompose"]]`
 (verify can send work back to either optimize or recompose; recompose can demand a re-decompose if
@@ -65,11 +65,11 @@ These queries produce reports → output equivalence is a P0 gate, not a nice-to
 
 ### tGenie 8-principle equivalence tiers (the optimize gate's admission rule)
 
-| Tier | Principles | Why |
-|------|-----------|-----|
-| **Safe (guaranteed-equivalent)** | P1 function pushup, P7 skinny join, P8 broadcast hint | Pure relocation / execution-strategy change; values unchanged |
-| **Trap (must verify)** | P2 correlated EXISTS → LEFT JOIN enrich | EXISTS is a semi-join (does NOT multiply rows); LEFT JOIN on a 1-to-many key **fans out** → base row duplicates → downstream `MAX/SUM/LISTAGG` change. The manager's case worked only because `C.REF_ID`/`D.KEY_ID` happened to be unique to B — **cannot be assumed** |
-| **Dangerous (may change output)** | P3 `LIKE '%v%'`→`contains(split)`, P4 `LISTAGG`→`slice(...,1,N)`, P6 Lambda | P3 = substring vs exact-token match semantics; P4 adds an element cap that **truncates**; P6 is a heavy rewrite |
+| Tier                              | Principles                                                                  | Why                                                                                                                                                                                                                                                                    |
+| --------------------------------- | --------------------------------------------------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| **Safe (guaranteed-equivalent)**  | P1 function pushup, P7 skinny join, P8 broadcast hint                       | Pure relocation / execution-strategy change; values unchanged                                                                                                                                                                                                          |
+| **Trap (must verify)**            | P2 correlated EXISTS → LEFT JOIN enrich                                     | EXISTS is a semi-join (does NOT multiply rows); LEFT JOIN on a 1-to-many key **fans out** → base row duplicates → downstream `MAX/SUM/LISTAGG` change. The manager's case worked only because `C.REF_ID`/`D.KEY_ID` happened to be unique to B — **cannot be assumed** |
+| **Dangerous (may change output)** | P3 `LIKE '%v%'`→`contains(split)`, P4 `LISTAGG`→`slice(...,1,N)`, P6 Lambda | P3 = substring vs exact-token match semantics; P4 adds an element cap that **truncates**; P6 is a heavy rewrite                                                                                                                                                        |
 
 **Admission rule:** Safe-tier rewrites are always allowed. Trap-tier and Dangerous-tier rewrites are
 admitted ONLY if they pass live row-equivalence verification → **when Trino is unreachable they are
@@ -92,15 +92,42 @@ Reuse genieCLI's existing L3 row-equivalence + plan_signature primitives for the
 {
   "name": "trino-optimize",
   "entry": "baseline",
-  "steps": ["baseline", "decompose", "optimize", "recompose", "verify", "wrap_retro"],
-  "backward_edges": [["verify", "optimize"], ["verify", "recompose"], ["recompose", "decompose"]],
+  "steps": [
+    "baseline",
+    "decompose",
+    "optimize",
+    "recompose",
+    "verify",
+    "wrap_retro"
+  ],
+  "backward_edges": [
+    ["verify", "optimize"],
+    ["verify", "recompose"],
+    ["recompose", "decompose"]
+  ],
   "routing": {
-    "baseline":   {"producer": "sonnet", "reviewer": "sonnet"},
-    "decompose":  {"producer": "opus",   "reviewer": "opus", "sweep": 3, "synth": "opus"},
-    "optimize":   {"producer": "sonnet", "reviewer": "opus", "tournament": 3, "select": "opus", "panel": 3},
-    "recompose":  {"producer": "opus",   "reviewer": "opus", "panel": 3, "gate": "opus"},
-    "verify":     {"producer": "sonnet", "reviewer": "opus", "panel": 3},
-    "wrap_retro": {"producer": "sonnet", "reviewer": "sonnet"}
+    "baseline": { "producer": "sonnet", "reviewer": "sonnet" },
+    "decompose": {
+      "producer": "opus",
+      "reviewer": "opus",
+      "sweep": 3,
+      "synth": "opus"
+    },
+    "optimize": {
+      "producer": "sonnet",
+      "reviewer": "opus",
+      "tournament": 3,
+      "select": "opus",
+      "panel": 3
+    },
+    "recompose": {
+      "producer": "opus",
+      "reviewer": "opus",
+      "panel": 3,
+      "gate": "opus"
+    },
+    "verify": { "producer": "sonnet", "reviewer": "opus", "panel": 3 },
+    "wrap_retro": { "producer": "sonnet", "reviewer": "sonnet" }
   }
 }
 ```
@@ -129,24 +156,24 @@ Reuse genieCLI's existing L3 row-equivalence + plan_signature primitives for the
 
 ## Layer clarification (do not conflate)
 
-- **v37 itself is a *development* iteration**: it BUILDS the `trino-optimize` profile (write the
+- **v37 itself is a _development_ iteration**: it BUILDS the `trino-optimize` profile (write the
   profile JSON, extend the driver, build the Trino-MCP integration, row-equiv, tests). It is run with
   genieCLI's normal task-ledger development discipline.
-- **The `trino-optimize` profile is v37's *product***: once built, IT is what later optimizes a real
+- **The `trino-optimize` profile is v37's _product_**: once built, IT is what later optimizes a real
   report query via form-2. Building the optimizer ≠ running the optimizer.
 
 ## v37 development row breakdown
 
-| Row | Work | Verify |
-|-----|------|--------|
-| T1 | `profiles/trino-optimize.json` + profile loader recognizes it | `tlv4 begin` starts a state.json on the `trino-optimize` profile |
-| T2 | Driver `sweep-by-monster` extension (optimize fan-out N from prior step output) | mock decompose → 3 monsters → optimize spawns 3 parallel agents |
-| T3 | Trino-MCP integration: baseline cost read + EXPLAIN (env-configurable, graceful no-cluster) | against test cluster: reads real plan cost; unreachable → clean fallback |
-| T4 | Row-equivalence: full-set compare + non-deterministic column exclusion | known equivalent/non-equivalent query pairs judged correctly |
-| T5 | `decompose` monster-hunt prompt + human-confirm gate | on the 4h golden query: surfaces the correlated-EXISTS monster + ranks it #1 |
-| T6 | `optimize` tGenie 3-tier admission gate | Safe-tier passes; Trap/Dangerous blocked when Trino unreachable |
-| T7 | `recompose` + `verify` step tasks/criteria (row-equiv P0 gate + cost compare) | end-to-end on golden case: before → equivalent, faster output |
-| T8 | Golden-case end-to-end run + feature docs | manager's 4h→1min query reaches an independently-verified equivalent result |
+| Row | Work                                                                                        | Verify                                                                       |
+| --- | ------------------------------------------------------------------------------------------- | ---------------------------------------------------------------------------- |
+| T1  | `profiles/trino-optimize.json` + profile loader recognizes it                               | `tlv4 begin` starts a state.json on the `trino-optimize` profile             |
+| T2  | Driver `sweep-by-monster` extension (optimize fan-out N from prior step output)             | mock decompose → 3 monsters → optimize spawns 3 parallel agents              |
+| T3  | Trino-MCP integration: baseline cost read + EXPLAIN (env-configurable, graceful no-cluster) | against test cluster: reads real plan cost; unreachable → clean fallback     |
+| T4  | Row-equivalence: full-set compare + non-deterministic column exclusion                      | known equivalent/non-equivalent query pairs judged correctly                 |
+| T5  | `decompose` monster-hunt prompt + human-confirm gate                                        | on the 4h golden query: surfaces the correlated-EXISTS monster + ranks it #1 |
+| T6  | `optimize` tGenie 3-tier admission gate                                                     | Safe-tier passes; Trap/Dangerous blocked when Trino unreachable              |
+| T7  | `recompose` + `verify` step tasks/criteria (row-equiv P0 gate + cost compare)               | end-to-end on golden case: before → equivalent, faster output                |
+| T8  | Golden-case end-to-end run + feature docs                                                   | manager's 4h→1min query reaches an independently-verified equivalent result  |
 
 First real run (T8) uses the manager's 4h→1min query as the **golden case**: before is known, after
 is known → validates the pipeline reaches an equivalent, faster result on its own.
@@ -177,7 +204,7 @@ in Run B, not now — it does not block Run A.
 
 - Monster detection has two inputs: the **9-rule static scan** (anti-patterns) AND **cost/EXPLAIN**
   (a fragment can pass all 9 rules yet be a cost monster). Both feed the monster ranking.
-- The 8 principles are *how to fix* a named monster (the rewrite menu, applied in Run B's optimize
+- The 8 principles are _how to fix_ a named monster (the rewrite menu, applied in Run B's optimize
   step) — they are not a second detection pass.
 
 ### Detection runs at THREE stages (Sam's state-machine insight)
@@ -208,11 +235,11 @@ the state machine: states share the tool, differ in transitions.
 Build the functions first (Run A), then connect them with the state machine (Run B). Run A's revised
 function list:
 
-| # | Run A function | Pure? | Notes |
-|---|----------------|-------|-------|
-| 1 | **detection scan** — sqlglot 9-rule + per-finding action-tier via `rule_gate.py`; accepts whole query OR a fragment | pure | the shared 3-stage tool; this REPLACES the old "tier classifier" framing |
-| 2 | **cost reader** — baseline plan cost + EXPLAIN via Trino-MCP; graceful no-cluster | impure | env-configurable; the other half of monster detection |
-| 3 | **row-equivalence comparator** — full-set compare + non-deterministic-column exclusion | impure | **extend the existing `genie/skills/mcp_trino/research.py:_results_equivalent()`**, do not rebuild |
+| #   | Run A function                                                                                                      | Pure?  | Notes                                                                                              |
+| --- | ------------------------------------------------------------------------------------------------------------------- | ------ | -------------------------------------------------------------------------------------------------- |
+| 1   | **detection scan** — sqlglot 9-rule + per-finding action-tier via `rule_gate.py`; accepts whole query OR a fragment | pure   | the shared 3-stage tool; this REPLACES the old "tier classifier" framing                           |
+| 2   | **cost reader** — baseline plan cost + EXPLAIN via Trino-MCP; graceful no-cluster                                   | impure | env-configurable; the other half of monster detection                                              |
+| 3   | **row-equivalence comparator** — full-set compare + non-deterministic-column exclusion                              | impure | **extend the existing `genie/skills/mcp_trino/research.py:_results_equivalent()`**, do not rebuild |
 
 Run B (later) = the decompose / optimize / recompose / verify state machine that calls these three,
 plus the manager's P1–P8 rewrite strategy menu.
@@ -225,8 +252,8 @@ here so they survive session loss; not yet resolved.
 1. **tGenie 8-principle full definitions are NOT documented anywhere.** The tier table above
    references P1–P8 by number only. The tier mapping uses just 7 (P1/P7/P8 Safe, P2 Trap,
    P3/P4/P6 Dangerous) — **P5 is entirely absent**, and no doc defines what each Pn rewrite actually
-   *is*. The tier *classifier* (Run A primitive #3) can be built from the mapping above, but the
-   per-principle *detection/optimize prompts* (Run B) need the full definitions from Sam. **Run B blocker.**
+   _is_. The tier _classifier_ (Run A primitive #3) can be built from the mapping above, but the
+   per-principle _detection/optimize prompts_ (Run B) need the full definitions from Sam. **Run B blocker.**
 2. **Run A scope vs this plan's T1–T4 row breakdown drifted.** The form-2 Run A driver
    (`workspace-emily/projects/genieCLI-v37/runA-driver.js`) delivers 3 deterministic primitives —
    cost reader (≈T3), row-equiv comparator (≈T4), tGenie tier classifier (pulled forward from T6) —

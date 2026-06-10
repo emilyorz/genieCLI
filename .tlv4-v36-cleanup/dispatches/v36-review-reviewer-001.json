@@ -1,1 +1,7 @@
-{"role":"reviewer","step":"review","model":"inherited-codex","profile":"bugfix","reviewed_artifact":"artifacts/review.producer.md"}
+{
+  "role": "reviewer",
+  "step": "review",
+  "model": "inherited-codex",
+  "profile": "bugfix",
+  "reviewed_artifact": "artifacts/review.producer.md"
+}

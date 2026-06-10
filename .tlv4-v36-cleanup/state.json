@@ -3,18 +3,8 @@
   "project": "genieCLI",
   "project_root": "/Users/leeabc/work/emilyorz/genieCLI",
   "entry_profile": "bugfix",
-  "active_steps": [
-    "ticket",
-    "develop",
-    "review",
-    "wrap_retro"
-  ],
-  "backward_edges": [
-    [
-      "review",
-      "develop"
-    ]
-  ],
+  "active_steps": ["ticket", "develop", "review", "wrap_retro"],
+  "backward_edges": [["review", "develop"]],
   "routing": {
     "ticket": {
       "producer": "sonnet",

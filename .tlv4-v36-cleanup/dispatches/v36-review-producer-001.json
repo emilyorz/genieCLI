@@ -1,1 +1,7 @@
-{"role":"producer","step":"review","model":"inherited-codex","profile":"bugfix","notes":"final quality review producer; no file edits"}
+{
+  "role": "producer",
+  "step": "review",
+  "model": "inherited-codex",
+  "profile": "bugfix",
+  "notes": "final quality review producer; no file edits"
+}

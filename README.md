@@ -206,12 +206,12 @@ genie --skills
 
 報告輸出：
 
-| 情境                                 | 輸出                                                  |
-| ------------------------------------ | ----------------------------------------------------- |
-| 一般 direct path                     | `./report/trino-research-YYYYMMDD-HHMMSS.md`          |
-| 一般 MCP path                        | `trino-research-mcp-YYYYMMDD-HHMMSS.md`               |
-| `--diagnose-only` 或長查詢 gate-trip | `./report/trino-research-diagnose-YYYYMMDD-HHMMSS.md` |
-| table/schema/catalog no-data         | `./report/trino-research-nodata-YYYYMMDD-HHMMSS.md`   |
+| 情境                                 | 輸出                                                        |
+| ------------------------------------ | ----------------------------------------------------------- |
+| 一般 direct path                     | `./report/trino-research-YYYYMMDD-HHMMSS.md`                |
+| 一般 MCP path                        | `trino-research-mcp-YYYYMMDD-HHMMSS.md`                     |
+| `--diagnose-only` 或長查詢 gate-trip | `./report/trino-research-diagnose-YYYYMMDD-HHMMSS.md`       |
+| table/schema/catalog no-data         | `./report/trino-research-nodata-YYYYMMDD-HHMMSS.md`         |
 | write / DDL analysis-only            | `./report/trino-research-write-analysis-YYYYMMDD-HHMMSS.md` |
 
 ---

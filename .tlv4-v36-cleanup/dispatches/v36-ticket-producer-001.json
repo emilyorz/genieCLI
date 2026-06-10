@@ -1,1 +1,7 @@
-{"role":"producer","step":"ticket","model":"inherited-codex","profile":"bugfix","notes":"v36 cleanup ticket; user excluded live-cluster numeric validation"}
+{
+  "role": "producer",
+  "step": "ticket",
+  "model": "inherited-codex",
+  "profile": "bugfix",
+  "notes": "v36 cleanup ticket; user excluded live-cluster numeric validation"
+}

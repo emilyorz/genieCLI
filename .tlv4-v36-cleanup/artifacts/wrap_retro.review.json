@@ -1,1 +1,8 @@
-{"score":9.5,"hard_fails":[],"open_issues":[],"pass_bool":true,"reviewer_dispatch_id":"v36-wrap-reviewer-001","reviewed_artifact_hash":"2a3b428d5b4333d54e366b995903ee423b90342cbe03ff6276f9392333c4d279"}
+{
+  "score": 9.5,
+  "hard_fails": [],
+  "open_issues": [],
+  "pass_bool": true,
+  "reviewer_dispatch_id": "v36-wrap-reviewer-001",
+  "reviewed_artifact_hash": "2a3b428d5b4333d54e366b995903ee423b90342cbe03ff6276f9392333c4d279"
+}

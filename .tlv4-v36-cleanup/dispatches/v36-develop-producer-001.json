@@ -1,1 +1,11 @@
-{"role":"producer","step":"develop","model":"inherited-codex","profile":"bugfix","owned_files":["genie/skills/mcp_trino/preflight.py","genie/skills/mcp_trino/research.py","tests/test_per_node_memory_limit.py"]}
+{
+  "role": "producer",
+  "step": "develop",
+  "model": "inherited-codex",
+  "profile": "bugfix",
+  "owned_files": [
+    "genie/skills/mcp_trino/preflight.py",
+    "genie/skills/mcp_trino/research.py",
+    "tests/test_per_node_memory_limit.py"
+  ]
+}
