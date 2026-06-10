@@ -1749,6 +1749,9 @@ def run_mcp_enhancement(
         DEFAULT_MAX_FALLBACKS,
         LongQueryAbort,
         NoDataDetected,
+        PreflightDecision,
+        PreflightRoute,
+        build_preflight_decision,
         check_long_query_gate,
         detect_no_data_reason,
         make_query_max_run_time_sql,
@@ -1789,18 +1792,70 @@ def run_mcp_enhancement(
                 "query.max-memory-per-node)"
             )
 
-    # ── --diagnose-only short-circuit (v29 T3): zero query cost ──
-    # No baseline, no iteration loop, no EXPLAIN ANALYZE. EXPLAIN (FORMAT JSON)
-    # plans the query without running it; static + metadata are cheap. Emit a
-    # directed report and stop. peak_memory_bytes is None (no run happened).
-    if diagnose_only:
+    # ── Pre-decision: fact computation ──
+    _baseline = None
+    _baseline_exc: BaseException | None = None
+    _baseline_metrics = None
+    if not diagnose_only:
+        if output:
+            output.progress("  Measuring baseline...")
+        try:
+            _baseline = _measure_mcp(client, sql, metric_key, verify_runs,
+                                     capture_rows=True, output=output, label="baseline")
+            _baseline_metrics = _baseline.metrics
+        except Exception as exc:
+            _baseline_exc = exc
+    _baseline_row_count = _baseline.row_count if _baseline else None
+
+    _gate = None
+    fallbacks = max_fallbacks if max_fallbacks is not None else DEFAULT_MAX_FALLBACKS
+    mcp_explain_runner = _build_mcp_explain_runner(client)
+    mcp_explain_available = False
+    mcp_plan_seen_no_estimates = False
+    if _baseline is not None:
+        # Baseline progress prints (verbatim from current code)
+        if output:
+            output.progress(f"  Baseline {metric_key}: {_baseline.median_metric:.1f} (median of {verify_runs} runs)")
+            output.progress(f"  Baseline rows: {_baseline.row_count}")
+            output.print(f"    [dim]{_baseline.metrics.summary()}[/dim]")
+            if static_report and static_report.findings:
+                output.progress(
+                    f"  Static analysis: {static_report.summary} "
+                    f"({len(static_report.findings)} finding(s))"
+                )
+        threshold_s = long_query_threshold_s if long_query_threshold_s is not None else DEFAULT_LONG_QUERY_THRESHOLD_S
+        _gate = check_long_query_gate(
+            baseline_wall_ms=float(_baseline.metrics.wall_time_ms or _baseline.metrics.query_time_ms or 0),
+            max_iterations=max_iterations, long_query_opt_in=long_query_opt_in,
+            threshold_s=threshold_s, max_fallbacks=fallbacks)
+        if _gate.ok and long_query_opt_in and max_iterations > 0:   # preserve guard
+            try:
+                rows_est, bytes_est, raw_plan = plan_cost(sql, mcp_explain_runner)
+                mcp_explain_available = rows_est is not None or bytes_est is not None
+                mcp_plan_seen_no_estimates = (not mcp_explain_available) and raw_plan is not None
+            except Exception:
+                mcp_explain_available = False
+
+    decision = build_preflight_decision(
+        diagnose_only=diagnose_only,
+        baseline_row_count=_baseline_row_count,
+        baseline_exc=_baseline_exc,
+        gate=_gate,
+        long_query_opt_in=long_query_opt_in,
+        plan_cost_available=mcp_explain_available,
+        seen_no_estimates=mcp_plan_seen_no_estimates,
+        max_iterations=max_iterations,
+    )
+
+    # ── Consumption blocks — bodies verbatim from current code ──
+    if decision.route == PreflightRoute.DIAGNOSE_ONLY:
         from genie.skills.mcp_trino.pre_execution_diagnosis import format_directions_report
         if output:
             output.progress("  Diagnose only: EXPLAIN-cost + static + metadata, no query execution")
         directions, _ = _assemble_mcp_directions(
             client, sql, static_report,
             peak_memory_bytes=None,
-            peak_memory_limit_bytes=memory_limit_bytes,   # NEW
+            peak_memory_limit_bytes=memory_limit_bytes,
         )
         report_md = format_directions_report(
             directions, sql=sql,
@@ -1812,26 +1867,9 @@ def run_mcp_enhancement(
             0.0, 0.0, report_markdown=report_md,
         )
 
-    # ── Baseline ──
-    if output:
-        output.progress("  Measuring baseline...")
-
-    baseline = None
-    baseline_exc: BaseException | None = None
-    try:
-        baseline = _measure_mcp(client, sql, metric_key, verify_runs, capture_rows=True,
-                                output=output, label="baseline")
-    except Exception as exc:
-        baseline_exc = exc
-
-    # ── No-data dispatch (v28 T9 — wired into MCP path) ──
-    no_data = detect_no_data_reason(
-        baseline_row_count=baseline.row_count if baseline else None,
-        baseline_exc=baseline_exc,
-    )
-    if no_data is not None:
+    elif decision.route == PreflightRoute.NO_DATA:
         if output:
-            if no_data == "table_not_found":
+            if decision.no_data_reason == "table_not_found":
                 output.progress(f"  [yellow]No-data path:[/yellow] table/schema not found — switching to static analysis report")
             else:
                 output.progress(f"  [yellow]No-data path:[/yellow] baseline returned 0 rows — switching to static analysis report")
@@ -1841,77 +1879,42 @@ def run_mcp_enhancement(
             model=model,
             reasoning=reasoning,
             original_sql=sql,
-            no_data_reason=no_data,
+            no_data_reason=decision.no_data_reason,
             static_report=static_report,
-            baseline_exc=baseline_exc,
+            baseline_exc=decision.baseline_exc,
             output=output,
         )
-        raise NoDataDetected(no_data, result)
+        raise NoDataDetected(decision.no_data_reason, result)
 
-    if baseline_exc is not None:
-        # Real failure — not a no-data case, propagate
-        raise baseline_exc
+    elif decision.route == PreflightRoute.REAL_FAILURE:
+        raise decision.baseline_exc
 
-    if output:
-        output.progress(f"  Baseline {metric_key}: {baseline.median_metric:.1f} (median of {verify_runs} runs)")
-        output.progress(f"  Baseline rows: {baseline.row_count}")
-        output.print(f"    [dim]{baseline.metrics.summary()}[/dim]")
-        if static_report and static_report.findings:
-            output.progress(
-                f"  Static analysis: {static_report.summary} "
-                f"({len(static_report.findings)} finding(s))"
-            )
-
-    # ── Upfront cost gate (v28) ──
-    threshold_s = long_query_threshold_s if long_query_threshold_s is not None else DEFAULT_LONG_QUERY_THRESHOLD_S
-    fallbacks = max_fallbacks if max_fallbacks is not None else DEFAULT_MAX_FALLBACKS
-    gate = check_long_query_gate(
-        baseline_wall_ms=float(baseline.metrics.wall_time_ms or baseline.metrics.query_time_ms or 0),
-        max_iterations=max_iterations,
-        long_query_opt_in=long_query_opt_in,
-        threshold_s=threshold_s,
-        max_fallbacks=fallbacks,
-    )
-    if not gate.ok:
-        # v29 T3: instead of a bare abort, emit a directed report.
-        # The baseline already ran (one query) so its real peak memory feeds
-        # the diagnosis; EXPLAIN (FORMAT JSON) + static + metadata add the rest.
-        # No further query / no EXPLAIN ANALYZE / no iteration loop.
+    elif decision.route == PreflightRoute.LONG_QUERY_ABORT:
         from genie.skills.mcp_trino.pre_execution_diagnosis import format_directions_report
+        g = decision.gate_result
         if output:
-            output.progress(f"  Long-query gate: {gate.message}")
+            output.progress(f"  Long-query gate: {g.message}")
             output.progress("  Writing directed report and skipping further query executions")
         directions, _ = _assemble_mcp_directions(
             client, sql, static_report,
-            peak_memory_bytes=getattr(baseline.metrics, "peak_memory_bytes", 0) or None,
-            peak_memory_limit_bytes=memory_limit_bytes,   # NEW
+            peak_memory_bytes=getattr(_baseline_metrics, "peak_memory_bytes", 0) or None,
+            peak_memory_limit_bytes=memory_limit_bytes,
         )
         report_md = format_directions_report(
             directions, sql=sql,
-            reason=gate.message,
+            reason=g.message,
             model=model,
             baseline_already_ran=True,
         )
         raise LongQueryAbort(
-            gate.message, gate.baseline_s, gate.predicted_total_s,
+            g.message, g.baseline_s, g.predicted_total_s,
             report_markdown=report_md,
         )
 
-    mcp_explain_runner = _build_mcp_explain_runner(client)
-    mcp_explain_available = False
-    mcp_plan_seen_no_estimates = False
-    if long_query_opt_in and max_iterations > 0:
-        try:
-            rows_est, bytes_est, raw_plan = plan_cost(sql, mcp_explain_runner)
-            # Plan-cost ranking needs real row/byte ESTIMATES, not just a plan.
-            # A cluster without table statistics returns a plan with no estimates
-            # (CBO can't estimate) — in that case every candidate would skip and
-            # the loop would do nothing, so fall back to the standard measure loop.
-            mcp_explain_available = rows_est is not None or bytes_est is not None
-            mcp_plan_seen_no_estimates = (not mcp_explain_available) and raw_plan is not None
-        except Exception:
-            mcp_explain_available = False
-    if output and mcp_plan_seen_no_estimates:
+    # Else: PLAN_COST_LOOP or STANDARD_LOOP — continue to pre-loop blocks below.
+
+    # ── Pre-loop: seen_no_estimates progress (one-block, verbatim from current code) ──
+    if output and decision.seen_no_estimates:
         output.progress(
             "  [info] Plan-cost mode unavailable: EXPLAIN returned a plan but no cost "
             "estimates (table statistics missing — run ANALYZE). Using standard iteration loop."
@@ -1921,7 +1924,7 @@ def run_mcp_enhancement(
     # mcp-trino may or may not persist SET SESSION across separate tool calls.
     # We emit it anyway; if the server ignores it, candidates that overshoot
     # baseline wall-time are also capped by the MCP request timeout below.
-    baseline_wall_ms = float(baseline.metrics.wall_time_ms or baseline.metrics.query_time_ms or 0)
+    baseline_wall_ms = float(_baseline.metrics.wall_time_ms or _baseline.metrics.query_time_ms or 0)
     candidate_timeout_ms = make_candidate_timeout_ms(baseline_wall_ms) if baseline_wall_ms > 0 else None
     if baseline_wall_ms > 0:
         timeout_sql = make_query_max_run_time_sql(baseline_wall_ms)
@@ -1938,10 +1941,8 @@ def run_mcp_enhancement(
                 f"(baseline wall-time)"
             )
 
-    # ── Long-query plan-cost loop ──
-    # Avoid per-iteration real execution: EXPLAIN candidates first, then verify
-    # only ranked survivors with real MCP queries.
-    if long_query_opt_in and mcp_explain_available and max_iterations > 0:
+    # ── Loop dispatch ──
+    if decision.route == PreflightRoute.PLAN_COST_LOOP:
         return _run_mcp_plan_cost_loop(
             client=client,
             provider=provider,
@@ -1953,13 +1954,17 @@ def run_mcp_enhancement(
             verify_runs=verify_runs,
             output=output,
             build_prompt=build_prompt,
-            baseline=baseline,
+            baseline=_baseline,
             static_report=static_report,
             explain_runner=mcp_explain_runner,
             max_fallbacks=fallbacks,
             candidate_timeout_ms=candidate_timeout_ms,
-            peak_memory_limit_bytes=memory_limit_bytes,   # NEW
+            peak_memory_limit_bytes=memory_limit_bytes,
         )
+
+    # STANDARD_LOOP fall-through — EXPLAIN ANALYZE baseline follows.
+    # Alias _baseline → baseline for the standard-loop body below (no rename needed).
+    baseline = _baseline
 
     # ── EXPLAIN ANALYZE baseline ──
     original_explain: ExplainAnalyzeResult | None = None

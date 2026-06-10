@@ -35,10 +35,13 @@ def _mcp_client_returning_plan(plan_json: str) -> MagicMock:
 
 
 def _non_explain_tuples(directions) -> set[tuple[str, str, str]]:
+    # S3: exclude the 'metadata-unavailable' info note — it is intentionally
+    # appended only by the --direct assembler and must not break MCP/direct parity
+    # checks for real diagnostic directions.
     return {
         (d.kind, d.severity, d.target_metric)
         for d in directions
-        if not d.evidence.startswith("explain:")
+        if not d.evidence.startswith("explain:") and d.kind != "metadata-unavailable"
     }
 
 

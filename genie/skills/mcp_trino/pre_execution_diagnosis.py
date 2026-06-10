@@ -842,6 +842,9 @@ def format_directions_for_prompt(
             f"{i}. [{d.severity}] {d.kind} (target: {d.target_metric}) — "
             f"{d.rationale} [{d.evidence}]"
         )
+    if len(directions) > limit:
+        extra = len(directions) - limit
+        lines.append(f"(+{extra} more directions in the full report)")
     return "\n".join(lines)
 
 

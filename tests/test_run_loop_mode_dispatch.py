@@ -49,6 +49,38 @@ def test_detect_handles_does_not_exist_phrase():
     assert detect_no_data_reason(baseline_exc=exc) == "table_not_found"
 
 
+@pytest.mark.parametrize("text", [
+    "Session property query_max_execution_time does not exist",
+    "Session property query_max_memory does not exist",
+    "Function my_udf does not exist",
+    "Role 'analyst' does not exist",
+    "Column 'foo' does not exist",
+    "Type my_type does not exist",
+    "Materialized view 'm' does not exist",
+    "Procedure p does not exist",
+    "Property x does not exist",
+    "MCP query failed: Session property X does not exist",
+])
+def test_detect_flips_non_container_does_not_exist_to_none(text):
+    """S2: non-container subjects must NOT be classified as table_not_found."""
+    assert detect_no_data_reason(baseline_exc=RuntimeError(text)) is None
+
+
+@pytest.mark.parametrize("text", [
+    "Table 'c.s.t' does not exist",
+    "View 'a.v' does not exist",
+    "Schema 'db.bad' does not exist",
+    "line 1:8: Catalog 'foo' does not exist",
+    "Query failed: TABLE_NOT_FOUND for hive.default.foo",
+    "SCHEMA_NOT_FOUND: hive.missing",
+    "CATALOG_NOT_FOUND: catalog 'hive' not found",
+    "Table x not found",
+])
+def test_detect_holds_container_not_found_as_table_not_found(text):
+    """S2: container subjects must still classify as table_not_found (hold/regression)."""
+    assert detect_no_data_reason(baseline_exc=Exception(text)) == "table_not_found"
+
+
 # ── _format_static_findings ───────────────────────────────────────────────────
 
 def test_format_static_findings_empty():

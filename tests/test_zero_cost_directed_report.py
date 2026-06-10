@@ -457,9 +457,11 @@ def test_both_assemblers_produce_identical_directions_for_same_inputs():
         for d in mcp_directions
         if not d.evidence.startswith("explain:")
     }
+    # S3: --direct appends a 'metadata-unavailable' info note; exclude it from
+    # the parity comparison (it is intentionally absent on the MCP path).
     direct_non_explain = {
         (d.kind, d.severity, d.target_metric)
         for d in direct_directions
-        if not d.evidence.startswith("explain:")
+        if not d.evidence.startswith("explain:") and d.kind != "metadata-unavailable"
     }
     assert mcp_non_explain == direct_non_explain

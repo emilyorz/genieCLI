@@ -750,13 +750,29 @@ def _assemble_direct_directions(
         except Exception:
             explain_cost = None
 
-    return pre_execution_diagnosis(
+    from genie.skills.mcp_trino.pre_execution_diagnosis import OptimizationDirection
+    base_dirs = pre_execution_diagnosis(
         original_sql,
         static_report=static_report,
         explain_cost=explain_cost,
         table_metadata=None,
         peak_memory_bytes=peak_memory_bytes,
     )
+    # S3: append honest degradation note — the --direct path has no table-metadata
+    # fetcher, so partition/clustering/statistics-dependent directions are missing.
+    # severity="info" → sort rank 3 → always last, never displacing a real direction.
+    metadata_note = OptimizationDirection(
+        kind="metadata-unavailable",
+        severity="info",
+        rationale=(
+            "This report was generated via --direct mode: no table metadata was fetched. "
+            "Partition pruning, clustering, and statistics-dependent directions are "
+            "not available. Use the MCP path for full diagnosis."
+        ),
+        evidence="direct-path:no-metadata",
+        target_metric="query_time_ms",
+    )
+    return list(base_dirs) + [metadata_note]
 
 
 def _run_optimization_loop(
@@ -786,7 +802,11 @@ def _run_optimization_loop(
     """
     from genie.core.provider import CompletionRequest
     from genie.session.manager import new_msg, new_session
-    from genie.skills.mcp_trino.preflight import detect_no_data_reason
+    from genie.skills.mcp_trino.preflight import (
+        build_preflight_decision, PreflightDecision, PreflightRoute,
+        detect_no_data_reason, check_long_query_gate,
+        DEFAULT_LONG_QUERY_THRESHOLD_S, DEFAULT_MAX_FALLBACKS,
+    )
     from genie.skills.trino_query.sql_static import analyze as static_analyze
     from genie.skills.trino_query.sql_static import summary_line as _static_summary_line
 
@@ -799,11 +819,73 @@ def _run_optimization_loop(
     if static_report is not None:
         output.progress(f"  Static analysis: {_static_summary_line(static_report)}")
 
-    # ── --diagnose-only short-circuit (v29 T3): zero query cost ──
-    # No baseline, no iteration loop, no EXPLAIN ANALYZE. EXPLAIN (FORMAT JSON)
-    # plans the query without running it; static analysis is cheap. Emit a
-    # directed report and stop. peak_memory_bytes is None (no run happened).
-    if diagnose_only:
+    # ── Pre-decision: fact computation ──
+    _baseline = None
+    _baseline_exc: Optional[BaseException] = None
+    _baseline_metrics = None
+    if not diagnose_only:
+        output.progress("  Measuring baseline...")
+        try:
+            _baseline = _measure(
+                original_sql, metric_key, verify_runs, capture_rows=True,
+                output=output, label="baseline",
+            )
+            _baseline_metrics = _baseline["metrics"] if _baseline else None
+        except Exception as e:
+            _baseline_exc = e
+    _baseline_row_count = _baseline["row_count"] if _baseline else None
+
+    _gate = None
+    fallbacks = max_fallbacks if max_fallbacks is not None else DEFAULT_MAX_FALLBACKS
+    _plan_cost_available = False
+    _plan_seen_no_estimates = False
+    if _baseline is not None:
+        # Baseline progress prints (verbatim from current code)
+        baseline_metric = _baseline["median"]
+        baseline_rows = _baseline["row_count"]
+        baseline_data = _baseline["rows"]
+        baseline_wall_ms = _baseline_wall_ms(_baseline["metrics"])
+        candidate_timeout_ms = make_candidate_timeout_ms(baseline_wall_ms) if baseline_wall_ms > 0 else None
+        output.progress(f"  Baseline {metric_key}: {baseline_metric} (median of {verify_runs} runs)")
+        output.progress(f"  Baseline row count: {baseline_rows}")
+        _print_metrics(output, _baseline["metrics"])
+        if candidate_timeout_ms is not None:
+            output.progress(
+                f"  Candidate timeout: {candidate_timeout_ms / 1000.0:.1f}s "
+                f"(baseline wall-time)"
+            )
+        if static_report and static_report.findings:
+            output.progress(
+                f"  Static analysis: {static_report.summary} "
+                f"({len(static_report.findings)} finding(s) — feeding into prompt)"
+            )
+        threshold_s = long_query_threshold_s if long_query_threshold_s is not None else DEFAULT_LONG_QUERY_THRESHOLD_S
+        _gate = check_long_query_gate(
+            baseline_wall_ms=baseline_wall_ms,
+            max_iterations=max_iterations, long_query_opt_in=long_query_opt_in,
+            threshold_s=threshold_s, max_fallbacks=fallbacks)
+        if _gate.ok and long_query_opt_in and explain_runner is not None:
+            from genie.skills.mcp_trino.preflight import plan_cost as _plan_cost_probe
+            try:
+                _pr, _pb, _pp = _plan_cost_probe(original_sql, explain_runner)
+                _plan_cost_available = _pr is not None or _pb is not None
+                _plan_seen_no_estimates = (not _plan_cost_available) and _pp is not None
+            except Exception:
+                _plan_cost_available = False
+
+    decision = build_preflight_decision(
+        diagnose_only=diagnose_only,
+        baseline_row_count=_baseline_row_count,
+        baseline_exc=_baseline_exc,
+        gate=_gate,
+        long_query_opt_in=long_query_opt_in,
+        plan_cost_available=_plan_cost_available,
+        seen_no_estimates=_plan_seen_no_estimates,
+        max_iterations=max_iterations,
+    )
+
+    # ── Consumption blocks — bodies verbatim from current code ──
+    if decision.route == PreflightRoute.DIAGNOSE_ONLY:
         from genie.skills.mcp_trino.pre_execution_diagnosis import format_directions_report
         output.progress("  --diagnose-only: EXPLAIN-cost + static, no query execution")
         directions = _assemble_direct_directions(
@@ -816,122 +898,54 @@ def _run_optimization_loop(
         )
         return {"status": "diagnosed", "report_markdown": report_md}
 
-    # ── Baseline ──
-    output.progress("  Measuring baseline...")
-    baseline = None
-    baseline_exc: Optional[BaseException] = None
-    try:
-        baseline = _measure(
-            original_sql, metric_key, verify_runs, capture_rows=True,
-            output=output, label="baseline",
-        )
-    except Exception as e:
-        baseline_exc = e
-
-    no_data = detect_no_data_reason(
-        baseline_row_count=baseline["row_count"] if baseline else None,
-        baseline_exc=baseline_exc,
-    )
-
-    if no_data is not None:
+    elif decision.route == PreflightRoute.NO_DATA:
+        # NO progress line on direct NO_DATA today — do NOT add one
         return _run_no_data_path(
             provider=provider,
             model=model,
             reasoning=reasoning,
             original_sql=original_sql,
-            no_data_reason=no_data,
+            no_data_reason=decision.no_data_reason,
             static_report=static_report,
-            baseline_exc=baseline_exc,
+            baseline_exc=decision.baseline_exc,
             output=output,
         )
 
-    if baseline_exc is not None:
-        # Real failure — not a no-data case
-        output.error(f"  Baseline measurement failed: {baseline_exc}")
-        return {"status": "failed", "error": str(baseline_exc)}
+    elif decision.route == PreflightRoute.REAL_FAILURE:
+        output.error(f"  Baseline measurement failed: {decision.baseline_exc}")
+        return {"status": "failed", "error": str(decision.baseline_exc)}
 
-    baseline_metric = baseline["median"]
-    baseline_rows = baseline["row_count"]
-    baseline_data = baseline["rows"]
-    baseline_wall_ms = _baseline_wall_ms(baseline["metrics"])
-    candidate_timeout_ms = make_candidate_timeout_ms(baseline_wall_ms) if baseline_wall_ms > 0 else None
-
-    output.progress(f"  Baseline {metric_key}: {baseline_metric} (median of {verify_runs} runs)")
-    output.progress(f"  Baseline row count: {baseline_rows}")
-    _print_metrics(output, baseline["metrics"])
-    if candidate_timeout_ms is not None:
-        output.progress(
-            f"  Candidate timeout: {candidate_timeout_ms / 1000.0:.1f}s "
-            f"(baseline wall-time)"
-        )
-
-    if static_report and static_report.findings:
-        output.progress(
-            f"  Static analysis: {static_report.summary} "
-            f"({len(static_report.findings)} finding(s) — feeding into prompt)"
-        )
-
-    # ── Upfront cost gate (v28) ──
-    from genie.skills.mcp_trino.preflight import (
-        DEFAULT_LONG_QUERY_THRESHOLD_S,
-        DEFAULT_MAX_FALLBACKS,
-        check_long_query_gate,
-    )
-    threshold_s = long_query_threshold_s if long_query_threshold_s is not None else DEFAULT_LONG_QUERY_THRESHOLD_S
-    fallbacks = max_fallbacks if max_fallbacks is not None else DEFAULT_MAX_FALLBACKS
-    gate = check_long_query_gate(
-        baseline_wall_ms=baseline_wall_ms,
-        max_iterations=max_iterations,
-        long_query_opt_in=long_query_opt_in,
-        threshold_s=threshold_s,
-        max_fallbacks=fallbacks,
-    )
-    if not gate.ok:
-        # v29 T3: instead of a bare abort, emit a directed report.
-        # The baseline already ran (one query) so its real peak memory feeds the
-        # diagnosis; EXPLAIN (FORMAT JSON) + static add the rest. No further
-        # query / no EXPLAIN ANALYZE / no iteration loop.
+    elif decision.route == PreflightRoute.LONG_QUERY_ABORT:
         from genie.skills.mcp_trino.pre_execution_diagnosis import format_directions_report
-        output.progress(f"  Long-query gate: {gate.message}")
+        g = decision.gate_result
+        output.progress(f"  Long-query gate: {g.message}")
         output.progress("  Writing directed report and skipping further query executions")
         directions = _assemble_direct_directions(
             original_sql, static_report, explain_runner,
-            peak_memory_bytes=getattr(baseline["metrics"], "peak_memory_bytes", 0) or None,
+            peak_memory_bytes=getattr(_baseline_metrics, "peak_memory_bytes", 0) or None,
         )
         report_md = format_directions_report(
-            directions, sql=original_sql, reason=gate.message, model=model,
+            directions, sql=original_sql, reason=g.message, model=model,
             baseline_already_ran=True,
         )
         return {
             "status": "diagnosed",
             "reason": "long_query_gate",
-            "message": gate.message,
+            "message": g.message,
             "report_markdown": report_md,
         }
 
-    # ── v28 T4 dispatch: long-query plan-cost loop ──
-    # When the user opts into long-query mode AND EXPLAIN yields real cost
-    # ESTIMATES, skip per-iteration execution; rank candidates by plan cost;
-    # verify only the top-K via real _measure with row-equivalence check.
-    # A cluster without table statistics returns a plan but no estimates — then
-    # plan-cost ranking is impossible (every candidate skips), so fall back to
-    # the standard measure loop.
-    plan_cost_available = False
-    plan_seen_no_estimates = False
-    if long_query_opt_in and explain_runner is not None:
-        from genie.skills.mcp_trino.preflight import plan_cost as _plan_cost_probe
-        try:
-            _pr, _pb, _pp = _plan_cost_probe(original_sql, explain_runner)
-            plan_cost_available = _pr is not None or _pb is not None
-            plan_seen_no_estimates = (not plan_cost_available) and _pp is not None
-        except Exception:
-            plan_cost_available = False
-    if plan_seen_no_estimates:
+    # Else: PLAN_COST_LOOP or STANDARD_LOOP — continue to pre-loop blocks below.
+
+    # ── Pre-loop: seen_no_estimates progress (verbatim from current code) ──
+    if decision.seen_no_estimates:
         output.progress(
             "  [info] Plan-cost mode unavailable: EXPLAIN returned a plan but no cost "
             "estimates (table statistics missing — run ANALYZE). Using standard iteration loop."
         )
-    if plan_cost_available:
+
+    # ── Loop dispatch ──
+    if decision.route == PreflightRoute.PLAN_COST_LOOP:
         return _run_plan_cost_loop(
             provider=provider,
             model=model,
@@ -942,13 +956,17 @@ def _run_optimization_loop(
             verify_runs=verify_runs,
             output=output,
             build_prompt=build_prompt,
-            baseline=baseline,
+            baseline=_baseline,
             baseline_data=baseline_data,
             static_report=static_report,
             explain_runner=explain_runner,
             max_fallbacks=fallbacks,
             candidate_timeout_ms=candidate_timeout_ms,
         )
+
+    # STANDARD_LOOP fall-through — rule-gate + directions block + session setup + loop body.
+    # baseline/_baseline are available (we only reach here when _baseline is not None).
+    baseline = _baseline
 
     # ── Pre-execution diagnosis (v29 T2 — dual-path parity with MCP path) ──
     # The --direct path has no table-metadata fetcher, so diagnosis is driven by

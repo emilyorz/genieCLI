@@ -7,6 +7,7 @@ Before any SQL is executed against the MCP server, these checks verify:
 """
 from __future__ import annotations
 
+import enum
 import json
 import re
 from dataclasses import dataclass
@@ -304,6 +305,33 @@ class LongQueryGateResult:
     message: str = ""
     baseline_s: float = 0.0
     predicted_total_s: float = 0.0
+
+
+class PreflightRoute(enum.Enum):
+    """Routing decision returned by build_preflight_decision.
+
+    Priority is enforced by the builder's if/elif chain (decision table §4),
+    NOT by enum value order. One value per observable exit branch.
+    """
+    DIAGNOSE_ONLY    = "diagnose_only"     # --diagnose-only; no baseline ran
+    NO_DATA          = "no_data"           # baseline 0 rows OR table/schema/catalog not found
+    REAL_FAILURE     = "real_failure"      # baseline raised a non-no-data exception
+    LONG_QUERY_ABORT = "long_query_abort"  # baseline ran; gate.ok == False
+    PLAN_COST_LOOP   = "plan_cost_loop"    # gate passed; EXPLAIN yielded estimates
+    STANDARD_LOOP    = "standard_loop"     # all above false; standard measure loop
+
+
+@dataclass(frozen=True)
+class PreflightDecision:
+    """Immutable routing decision. Carries ONLY the evidence each adapter needs
+    to build its own exit artifact. Builds no reports, calls no I/O, raises nothing.
+    frozen=True: single-computation, no adapter mutation."""
+    route: PreflightRoute
+    no_data_reason: Optional[str] = None
+    baseline_exc: Optional[BaseException] = None
+    gate_result: Optional["LongQueryGateResult"] = None
+    plan_cost_available: bool = False
+    seen_no_estimates: bool = False
 
 
 def check_long_query_gate(
@@ -680,15 +708,23 @@ def apply_safe_limit(sql: str, limit: int) -> str:
 
 # ── No-data detection (v28 T9) ────────────────────────────────────────────────
 
-# Substrings the Trino client surfaces when a referenced table/schema/catalog
-# doesn't exist. Matched case-insensitively against str(exception).
-_TABLE_NOT_FOUND_MARKERS = (
+# Tier 1: Trino structured errorName tokens (uppercase, appear in exception text).
+_TABLE_NOT_FOUND_PLAIN: frozenset = frozenset({
     "TABLE_NOT_FOUND",
     "SCHEMA_NOT_FOUND",
     "CATALOG_NOT_FOUND",
-    "does not exist",
-    "Table.*not found",
-    "Schema.*does not exist",
+})
+
+# Tier 2: anchored free-text fallback.
+# CONTAINER subjects only: Table, View, Schema, Catalog.
+# Case-SENSITIVE on the subject word: Trino capitalizes the leading subject noun
+# ("Table 'x' does not exist") but NOT "Materialized view" (lowercase "view").
+# A case-sensitive `View` therefore matches "View 'a.v' does not exist" but NOT
+# "Materialized view 'm' does not exist" — the latter is a real failure.
+# The `\S+` matches any quoted/back-ticked/unquoted object name token.
+_TABLE_NOT_FOUND_REGEX: tuple = (
+    re.compile(r"\b(?:Table|View|Schema|Catalog)\s+\S+\s+[Dd]oes not exist"),
+    re.compile(r"\bTable\b.*\bnot found\b", re.IGNORECASE),  # old "Table.*not found" preserved
 )
 
 
@@ -700,23 +736,90 @@ def detect_no_data_reason(
     """Classify why a baseline run has no usable data.
 
     Returns one of:
-        - "table_not_found": exception text matches a known not-found marker
+        - "table_not_found": exception matches a known TABLE/SCHEMA/CATALOG not-found pattern
         - "empty_result": baseline succeeded but row count == 0
-        - None: there is data, no fallback needed
+        - None: there is data (or it is a different error)
 
-    The caller decides what to do — typically: switch from the iteration loop
-    to a single-call static-analysis report.
+    Direction-of-error rule: when unsure, return None to SURFACE the real error.
+    A false-negative (real not-found slips through to None) is safer than a
+    false-positive (a genuine failure swallowed into a no-data advisory report).
     """
     if baseline_exc is not None:
         msg = str(baseline_exc)
         upper = msg.upper()
-        for marker in _TABLE_NOT_FOUND_MARKERS:
-            if marker.upper() in upper:
+        for marker in _TABLE_NOT_FOUND_PLAIN:          # tier 1 (exact token)
+            if marker in upper:
                 return "table_not_found"
-            if re.search(marker, msg, re.IGNORECASE):
+        for pattern in _TABLE_NOT_FOUND_REGEX:         # tier 2 (anchored regex)
+            if pattern.search(msg):
                 return "table_not_found"
-        # Any other exception → not a no-data case (let caller surface error)
-        return None
+        return None                                    # everything else → real failure
     if baseline_row_count is not None and baseline_row_count == 0:
         return "empty_result"
     return None
+
+
+def build_preflight_decision(
+    *,
+    diagnose_only: bool,
+    baseline_row_count: Optional[int],
+    baseline_exc: Optional[BaseException],
+    gate: Optional["LongQueryGateResult"],
+    long_query_opt_in: bool,
+    plan_cost_available: bool,
+    seen_no_estimates: bool,
+    max_iterations: int,
+) -> "PreflightDecision":
+    """Pure routing decision. No I/O, no network, no LLM. Inputs are
+    pre-computed facts (NOT live callables). detect_no_data_reason is called
+    INSIDE so both paths classify identically (single source of routing truth).
+
+    Decision tree (first match wins — exhaustive over all routes):
+      1. diagnose_only            -> DIAGNOSE_ONLY
+      2. no-data (rows/exc)       -> NO_DATA
+      3. other baseline exc       -> REAL_FAILURE
+      4. gate.ok is False         -> LONG_QUERY_ABORT
+      5. opt-in & plan estimates & max_iter>0 -> PLAN_COST_LOOP
+      6. otherwise                -> STANDARD_LOOP
+    """
+    if diagnose_only:
+        return PreflightDecision(route=PreflightRoute.DIAGNOSE_ONLY)
+
+    no_data = detect_no_data_reason(
+        baseline_row_count=baseline_row_count,
+        baseline_exc=baseline_exc,
+    )
+    if no_data is not None:
+        return PreflightDecision(
+            route=PreflightRoute.NO_DATA,
+            no_data_reason=no_data,
+            baseline_exc=baseline_exc,
+        )
+    if baseline_exc is not None:
+        return PreflightDecision(
+            route=PreflightRoute.REAL_FAILURE,
+            baseline_exc=baseline_exc,
+        )
+
+    assert gate is not None, (
+        "build_preflight_decision: gate required when baseline succeeded "
+        "(baseline_exc is None and no_data is None)"
+    )
+    if not gate.ok:
+        return PreflightDecision(
+            route=PreflightRoute.LONG_QUERY_ABORT,
+            gate_result=gate,
+        )
+
+    if long_query_opt_in and plan_cost_available and max_iterations > 0:
+        return PreflightDecision(
+            route=PreflightRoute.PLAN_COST_LOOP,
+            plan_cost_available=True,
+            seen_no_estimates=seen_no_estimates,
+        )
+
+    return PreflightDecision(
+        route=PreflightRoute.STANDARD_LOOP,
+        plan_cost_available=False,
+        seen_no_estimates=seen_no_estimates,
+    )
