@@ -524,28 +524,29 @@ def _run_plan_cost_loop(
 ) -> dict:
     """Plan-cost ranking + L1 structural guard + K-retry on row-equivalence.
 
-    Iteration phase: generate candidates via LLM, score each by EXPLAIN plan
-    cost (rows × bytes estimate). No execution, no measurement — cheap.
-    Reject candidates whose plan signature diverges from baseline (L1).
-
-    Verification phase: rank surviving candidates by plan cost ascending; for
-    each in turn run real _measure + _results_equivalent. First L3 PASS wins.
-    If all top candidates fail L3 within max_fallbacks attempts, emit
-    `no_verifiable_improvement`.
+    Delegates the iteration + verification loop to _plan_cost_loop_core (shared
+    with the MCP path). This adapter is responsible for:
+    - baseline metric / rows extraction (dict fields)
+    - candidate_timeout_ms derivation from _baseline_wall_ms
+    - plan_cost call (no directions_block — direct path omits pre_execution_diagnosis)
+    - building sys_prompt (rule_gate_block only, no directions_block)
+    - wrapping output in _SafeOutput
+    - building the four injected callables (measure_fn, metric_fn, row_equiv_fn, explain_runner)
+    - reconstructing the three-case return dict from _PlanCostCoreResult fields
     """
-    from genie.core.provider import CompletionRequest
-    from genie.session.manager import new_msg, new_session
     from genie.skills.mcp_trino.pre_execution_diagnosis import pre_execution_diagnosis
-    from genie.skills.mcp_trino.preflight import plan_cost, _combine_cost
+    from genie.skills.mcp_trino.preflight import (
+        _SafeOutput,
+        _plan_cost_loop_core,
+        plan_cost,
+        _combine_cost,
+    )
     from genie.skills.mcp_trino.rule_gate import (
         build_rule_gate_summary,
         format_rule_gate_for_prompt,
         render_rule_gate_summary,
     )
-    from genie.skills.trino_query.plan_signature import (
-        plan_signature,
-        structural_equivalent,
-    )
+    from genie.skills.trino_query.plan_signature import plan_signature
 
     baseline_metric = baseline["median"]
     baseline_rows = baseline["row_count"]
@@ -564,6 +565,7 @@ def _run_plan_cost_loop(
         static_report=static_report,
         explain_cost=(baseline_rows_est, baseline_bytes_est, baseline_plan),
         table_metadata=None,
+        # D4: direct path omits peak_memory_limit_bytes → default None preserves identical behavior
         peak_memory_bytes=getattr(baseline.get("metrics"), "peak_memory_bytes", 0) or None,
     )
     rule_gate = build_rule_gate_summary(static_report, directions)
@@ -582,6 +584,7 @@ def _run_plan_cost_loop(
     render_rule_gate_summary(output, rule_gate)
 
     # Session setup — same prompt structure as the legacy loop
+    # (direct path: rule_gate_block only, no directions_block)
     skill_prompt = build_prompt(True, model)
     sys_prompt = (
         f"You are optimizing a Trino SQL query for performance.\n"
@@ -597,263 +600,124 @@ def _run_plan_cost_loop(
         f"{(rule_gate_block + chr(10) + chr(10)) if rule_gate_block else ''}"
         f"{skill_prompt}"
     )
-    session = new_session(sys_prompt)
 
-    candidates: list[dict] = []  # ranked entries with plan_cost + sig + sql
-    history: list[dict] = []
+    # ── Direct adapter closures (§2.2 reconstruction) ──
+    measure_fn = lambda sql, label: _measure(
+        sql, metric_key, verify_runs,
+        capture_rows=True, output=output, label=label,
+        timeout_ms=candidate_timeout_ms,
+    )
+    metric_fn = lambda m: m["median"]
+    # D8: NO row_count pre-check on direct path (differs from MCP adapter intentionally).
+    row_equiv_fn = lambda measured: _results_equivalent(baseline_data, measured["rows"])
+    # Single-emission empty-branch message; core emits this via empty_message param.
+    _DIRECT_EMPTY_MSG = "  [verify] No candidate beats baseline plan cost — emitting no_verifiable_improvement"
 
-    for iteration in range(1, max_iterations + 1):
-        output.print("")
-        output.progress(f"  ── Iteration {iteration}/{max_iterations} (plan-cost mode) ──")
-
-        static_block = ""
-        if iteration == 1 and static_report and static_report.findings:
-            static_block = (
-                "Static analysis findings (sqlglot AST rules — apply these in priority order):\n"
-                f"{_format_static_findings(static_report)}\n\n"
-            )
-
-        # Lean history
-        sys_msgs = [m for m in session["history"] if m["role"] == "system"]
-        non_sys = [m for m in session["history"] if m["role"] != "system"]
-        session["history"] = sys_msgs + non_sys[-4:]
-
-        context = (
-            f"[Long-query plan-cost iteration {iteration}]\n"
-            f"Baseline rows estimate: {baseline_rows_est}\n"
-            f"Baseline bytes estimate: {baseline_bytes_est}\n"
-            f"{static_block}"
-            f"Current SQL:\n```sql\n{original_sql}\n```\n\n"
-            f"Return the COMPLETE optimized SQL in a ```sql block. ONE change only. "
-            f"Do NOT include a trailing semicolon."
-        )
-        session["history"].append(new_msg("user", context))
-
-        output.progress("  AI thinking...")
-        req = CompletionRequest(messages=session["history"], model=model, reasoning=reasoning)
-        reply = provider.complete_text(req)
-        if not reply:
-            output.error("  Empty AI response — stopping iteration phase.")
-            break
-        session["history"].append(new_msg("assistant", reply))
-
-        candidate_sql = extract_sql_from_reply(reply)
-        if not candidate_sql:
-            output.progress("  [SKIP] No SQL extracted")
-            history.append({
-                "iteration": iteration, "status": "no_sql",
-                "candidate_sql": None, "plan_cost": None,
-            })
-            continue
-
-        # Lint guard (cheap)
-        lint_ok, lint_msg = _lint_sql(candidate_sql)
-        if not lint_ok:
-            output.progress(f"  [SKIP] Lint failed: {lint_msg}")
-            history.append({
-                "iteration": iteration, "status": "lint_failed",
-                "candidate_sql": candidate_sql, "plan_cost": None,
-            })
-            session["history"].append(new_msg("user", f"SQL failed lint: {lint_msg}. Try a different change."))
-            continue
-
-        # Plan cost (cheap, no execution)
-        try:
-            cand_rows_est, cand_bytes_est, cand_plan = plan_cost(candidate_sql, explain_runner)
-        except Exception as exc:
-            output.progress(f"  [SKIP] EXPLAIN failed: {exc}")
-            history.append({
-                "iteration": iteration, "status": "explain_failed",
-                "candidate_sql": candidate_sql, "plan_cost": None,
-            })
-            continue
-
-        if cand_rows_est is None and cand_bytes_est is None:
-            output.progress("  [SKIP] EXPLAIN returned no estimates")
-            history.append({
-                "iteration": iteration, "status": "explain_failed",
-                "candidate_sql": candidate_sql, "plan_cost": None,
-            })
-            continue
-
-        cand_cost = _combine_cost(cand_rows_est, cand_bytes_est)
-        cand_sig = plan_signature(cand_plan) if cand_plan is not None else None
-
-        # L1 structural guard
-        if baseline_sig is not None and cand_sig is not None:
-            if not structural_equivalent(baseline_plan, cand_plan):
-                output.progress(
-                    f"  [REJECT] Structural divergence (L1) — candidate plan shape differs from baseline"
-                )
-                history.append({
-                    "iteration": iteration, "status": "structural_reject",
-                    "candidate_sql": candidate_sql, "plan_cost": cand_cost,
-                })
-                session["history"].append(new_msg(
-                    "user",
-                    "Candidate plan shape differs from baseline (L1 reject) — likely lost a column / "
-                    "filter / aggregation. Try a different change that preserves the plan structure."
-                ))
-                continue
-
-        # If baseline EXPLAIN yielded no estimates at all, plan-cost comparison is
-        # impossible (would raise TypeError on None < int).  Skip ranking and treat
-        # every candidate as unranked — do not falsely promote them.
-        if baseline_cost is None:
-            output.progress("  [SKIP] Baseline has no plan-cost estimates; skipping cost comparison")
-            history.append({
-                "iteration": iteration, "status": "explain_failed",
-                "candidate_sql": candidate_sql, "plan_cost": cand_cost,
-            })
-            continue
-
-        verdict = "plan_cost_better" if cand_cost < baseline_cost else "plan_cost_worse"
-        output.progress(
-            f"  [{'+' if verdict == 'plan_cost_better' else '-'}] {verdict} "
-            f"(cand_cost={cand_cost:.2e}, baseline_cost={baseline_cost:.2e})"
-        )
-
-        candidates.append({
-            "iteration": iteration,
-            "sql": candidate_sql,
-            "plan_cost": cand_cost,
-            "rows_est": cand_rows_est,
-            "bytes_est": cand_bytes_est,
-            "verdict": verdict,
-        })
-        history.append({
-            "iteration": iteration, "status": verdict,
-            "candidate_sql": candidate_sql, "plan_cost": cand_cost,
-        })
-        session["history"].append(new_msg(
-            "user",
-            f"Candidate accepted into ranking pool with plan cost {cand_cost:.2e} "
-            f"(baseline {baseline_cost:.2e}). Suggest another rewrite for the next iteration."
-        ))
-
-    # ── Verification phase: rank by plan cost, K-retry on L3 fail ──
-    output.print("")
-    output.progress(f"  [verify] {len(candidates)} candidate(s) survived L1; ranking by plan cost")
-
-    surviving_better = sorted(
-        [c for c in candidates if c["plan_cost"] < baseline_cost],
-        key=lambda c: c["plan_cost"],
+    result = _plan_cost_loop_core(
+        provider=provider,
+        model=model,
+        reasoning=reasoning,
+        sys_prompt=sys_prompt,
+        original_sql=original_sql,
+        metric_key=metric_key,
+        max_iterations=max_iterations,
+        max_fallbacks=max_fallbacks,
+        baseline_cost=baseline_cost,
+        baseline_sig=baseline_sig,
+        baseline_plan=baseline_plan,
+        baseline_rows_est=baseline_rows_est,
+        baseline_bytes_est=baseline_bytes_est,
+        explain_runner=explain_runner,
+        measure_fn=measure_fn,
+        metric_fn=metric_fn,
+        row_equiv_fn=row_equiv_fn,
+        static_report=static_report,
+        output=_SafeOutput(output),
+        candidate_timeout_ms=candidate_timeout_ms,
+        empty_message=_DIRECT_EMPTY_MSG,
     )
 
-    if not surviving_better:
-        output.progress("  [verify] No candidate beats baseline plan cost — emitting no_verifiable_improvement")
+    # ── Three-case return reconstruction (§3.1 / §3.2 / §3.3) ──
+
+    if result.surviving_better_was_empty:
+        # Case A: no candidates beat baseline plan cost (13 keys; NO verify_log, NO fallbacks_used)
         return {
             "status": "no_verifiable_improvement",
             "baseline_metric": baseline_metric,
             "best_metric": baseline_metric,
             "total_improvement": 0.0,
             "improvement_pct": 0.0,
-            "iterations": len(history),
+            "iterations": len(result.history),
             "kept": 0,
             "baseline_rows": baseline_rows,
-            "baseline_plan_cost": baseline_cost,
+            "baseline_plan_cost": result.baseline_cost,
             "original_sql": original_sql,
             "best_sql": original_sql,
-            "history": history,
-            "candidates_evaluated": len(candidates),
+            "history": result.history,
+            "candidates_evaluated": result.candidates_evaluated,
+            # NO "verify_log"     <-- T-S1-K1
+            # NO "fallbacks_used" <-- T-S1-K1
         }
 
-    fallbacks_used = 0
-    winner: Optional[dict] = None
-    verify_log: list[dict] = []
-    for ranked in surviving_better:
-        if fallbacks_used > max_fallbacks:
-            output.progress(f"  [verify] Exhausted K={max_fallbacks} fallbacks")
-            break
-        output.progress(
-            f"  [verify] Trying iter#{ranked['iteration']} "
-            f"(plan_cost={ranked['plan_cost']:.2e})"
-        )
-        try:
-            measured = _measure(
-                ranked["sql"], metric_key, verify_runs, capture_rows=True,
-                output=output, label=f"verify iter {ranked['iteration']}",
-                timeout_ms=candidate_timeout_ms,
-            )
-        except CandidateTimeoutError as exc:
-            output.progress(f"  [verify] timeout_worse: {exc}")
-            verify_log.append({"iter": ranked["iteration"], "result": "timeout_worse", "reason": str(exc)})
-            fallbacks_used += 1
-            continue
-        except Exception as exc:
-            output.progress(f"  [verify] _measure failed: {exc}")
-            verify_log.append({"iter": ranked["iteration"], "result": "exec_failed", "reason": str(exc)})
-            fallbacks_used += 1
-            continue
-
-        equiv, reason = _results_equivalent(baseline_data, measured["rows"])
-        if not equiv:
-            output.progress(f"  [verify] L3 row-equiv FAIL — {reason}")
-            verify_log.append({"iter": ranked["iteration"], "result": "row_equiv_fail", "reason": reason})
-            fallbacks_used += 1
-            continue
-
-        # WINNER
-        winner = {
-            **ranked,
-            "measured_metric": measured["median"],
-            "measured_rows": measured["row_count"],
-            "samples": measured["samples"],
-            "metrics": measured["metrics"],
-        }
-        verify_log.append({"iter": ranked["iteration"], "result": "verified", "metric": measured["median"]})
-        break
-
-    if winner is None:
+    if result.winner_sql is None:
+        # Case B: non-empty surviving_better but all L3 candidates failed (14 keys; verify_log present, NO fallbacks_used)
         return {
             "status": "no_verifiable_improvement",
             "baseline_metric": baseline_metric,
             "best_metric": baseline_metric,
             "total_improvement": 0.0,
             "improvement_pct": 0.0,
-            "iterations": len(history),
+            "iterations": len(result.history),
             "kept": 0,
             "baseline_rows": baseline_rows,
-            "baseline_plan_cost": baseline_cost,
+            "baseline_plan_cost": result.baseline_cost,
             "original_sql": original_sql,
             "best_sql": original_sql,
-            "history": history,
-            "verify_log": verify_log,
-            "candidates_evaluated": len(candidates),
+            "history": result.history,
+            "candidates_evaluated": result.candidates_evaluated,
+            "verify_log": result.verify_log,    # PRESENT in Case B  <-- T-S1-K2
+            # still NO "fallbacks_used"          <-- T-S1-K2
         }
 
-    # Convert winner into legacy-shape result so report rendering works as-is
-    winner_history = [{
-        "iteration": h["iteration"],
-        "status": "improved" if (h["candidate_sql"] == winner["sql"]) else h["status"],
-        "metric": winner["measured_metric"] if (h["candidate_sql"] == winner["sql"]) else baseline_metric,
-        "delta": winner["measured_metric"] - baseline_metric if (h["candidate_sql"] == winner["sql"]) else 0.0,
-        "hypothesis": "(plan-cost-loop)",
-        "base_sql": original_sql,
-        "candidate_sql": h.get("candidate_sql"),
-    } for h in history]
-
+    # Case C: winner found
+    # CRITICAL (ILG[11]): do NOT use {**h, 'status': 'improved'}.
+    # result.history entries have 4 keys: {iteration, status, candidate_sql, plan_cost}.
+    # _generate_report reads h['metric'], h['hypothesis'], h['delta'], h['base_sql']:
+    # all absent from the 4-key history entries — must build 7-key dicts explicitly.
+    winner_metric = result.winner_measure["median"]   # direct path: measure is a dict
+    winner_history = [
+        {
+            "iteration": h["iteration"],
+            "status": "improved" if (h["candidate_sql"] == result.winner_sql) else h["status"],
+            "metric": winner_metric if (h["candidate_sql"] == result.winner_sql) else baseline_metric,
+            "delta": winner_metric - baseline_metric if (h["candidate_sql"] == result.winner_sql) else 0.0,
+            "hypothesis": "(plan-cost-loop)",
+            "base_sql": original_sql,
+            "candidate_sql": h.get("candidate_sql"),
+        }
+        for h in result.history
+    ]
     return {
         "status": "completed",
         "mode": "plan_cost",
         "baseline_metric": baseline_metric,
-        "best_metric": winner["measured_metric"],
-        "total_improvement": winner["measured_metric"] - baseline_metric,
+        "best_metric": winner_metric,
+        "total_improvement": winner_metric - baseline_metric,
         "improvement_pct": (
-            (winner["measured_metric"] - baseline_metric) / baseline_metric * 100
+            (winner_metric - baseline_metric) / baseline_metric * 100
             if baseline_metric else 0
         ),
-        "iterations": len(history),
+        "iterations": len(result.history),
         "kept": 1,
         "baseline_rows": baseline_rows,
-        "baseline_plan_cost": baseline_cost,
-        "winner_plan_cost": winner["plan_cost"],
+        "baseline_plan_cost": result.baseline_cost,
+        "winner_plan_cost": result.winner_ranked["plan_cost"],  # EXPLAIN cost, NOT from measure dict  <-- T-S1-WPC
         "original_sql": original_sql,
-        "best_sql": winner["sql"],
+        "best_sql": result.winner_sql,
         "history": winner_history,
-        "verify_log": verify_log,
-        "candidates_evaluated": len(candidates),
-        "fallbacks_used": fallbacks_used,
+        "verify_log": result.verify_log,
+        "candidates_evaluated": result.candidates_evaluated,
+        "fallbacks_used": result.fallbacks_used,               # PRESENT in Case C  <-- T-S1-K3
     }
 
 

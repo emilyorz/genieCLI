@@ -114,3 +114,54 @@ def test_join_first_filter_late_has_same_non_explain_tuple_on_both_paths(monkeyp
         "medium",
         "wall_time_ms",
     ) in _non_explain_tuples(mcp_directions)
+
+
+# ---------------------------------------------------------------------------
+# S3 — Pin KIND and ACTION for every rule in ALL_RULE_IDS (v43)
+# ---------------------------------------------------------------------------
+
+import pytest
+from genie.skills.trino_query.sql_static.rule_ids import (
+    ALL_RULE_IDS,
+    RULE_CARTESIAN_JOIN,
+    RULE_SELECT_STAR,
+    RULE_REDUNDANT_DISTINCT_AFTER_GROUP_BY,
+    RULE_UNNECESSARY_ORDER_BY_IN_SUBQUERY,
+    RULE_SUBQUERY_IN_SELECT_PUSHABLE_TO_JOIN,
+    RULE_PREDICATE_NOT_PUSHED_TO_CTE,
+    RULE_NULL_UNSAFE_EQUALS,
+    RULE_REDUNDANT_CAST_CHAIN,
+    RULE_JOIN_FIRST_FILTER_LATE,
+    RULE_JOIN_KEY_COMPUTED,
+)
+from genie.skills.mcp_trino.pre_execution_diagnosis import _RULE_KIND_MAP
+from genie.skills.mcp_trino.rule_gate import ACTION_BLOCK, ACTION_REWRITE, ACTION_ADVISE, _STATIC_ACTIONS
+
+_PINS = [
+    (RULE_CARTESIAN_JOIN,                      "fix-cartesian-join",           ACTION_BLOCK),
+    (RULE_SELECT_STAR,                         "fix-select-star",              ACTION_ADVISE),
+    (RULE_REDUNDANT_DISTINCT_AFTER_GROUP_BY,   "fix-distinct-after-group-by",  ACTION_REWRITE),
+    (RULE_UNNECESSARY_ORDER_BY_IN_SUBQUERY,    "fix-order-by-in-subquery",     ACTION_REWRITE),
+    (RULE_SUBQUERY_IN_SELECT_PUSHABLE_TO_JOIN, "fix-subquery-in-select",       ACTION_ADVISE),
+    (RULE_PREDICATE_NOT_PUSHED_TO_CTE,         "fix-predicate-pushdown",       ACTION_REWRITE),
+    (RULE_NULL_UNSAFE_EQUALS,                  "fix-null-unsafe-equals",       ACTION_BLOCK),
+    (RULE_REDUNDANT_CAST_CHAIN,                "fix-redundant-cast",           ACTION_REWRITE),
+    (RULE_JOIN_FIRST_FILTER_LATE,              "fix-join-first-filter-late",   ACTION_REWRITE),
+    (RULE_JOIN_KEY_COMPUTED,                   "fix-join-key-computed",        ACTION_ADVISE),
+]
+
+
+def test_pin_table_covers_all_rule_ids():
+    """Completeness gate: pin table must cover ALL_RULE_IDS exactly.
+    Adding an 11th rule fails this test until the pin table is updated.
+    """
+    assert {rid for rid, _, _ in _PINS} == set(ALL_RULE_IDS)
+
+
+@pytest.mark.parametrize("rule_id,kind,action", _PINS)
+def test_rule_kind_and_action_pinned(rule_id, kind, action):
+    """Pin _RULE_KIND_MAP and _STATIC_ACTIONS[0] for every rule in ALL_RULE_IDS.
+    Catches VALUE renames that are invisible to key-set-only tests.
+    """
+    assert _RULE_KIND_MAP[rule_id] == kind
+    assert _STATIC_ACTIONS[rule_id][0] == action
