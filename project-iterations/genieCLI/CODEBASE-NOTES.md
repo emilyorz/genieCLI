@@ -15,7 +15,7 @@
 - `format_directions_for_prompt` caps at 6 directions (+K-more signal on truncation); the markdown report path lists all.
 - Static rules R1-R10 live under `genie/skills/trino_query/sql_static/`; `rule_gate.py` maps each to BLOCK/REWRITE/ADVISE; `tests/test_rule_id_contract.py` enforces exact registration coverage — adding rule R11+ requires all five registration points or that contract test fails (by design, after the v32 silent fall-through).
 - Write/CTAS path: `write_analysis.py` (v35 safety contract: SQL executed=no / EXPLAIN=no on write path) + `_run_decompose_advisory` with column gate (v40) + semantic gate `queries_structurally_equivalent` in `genie/core/sql_extraction.py` (v42, fail-closed tri-state).
-- Metadata contributor input is MCP-only; --direct always passes None and its report carries an honest unavailable note (v45 S3) — do NOT "fix" by building a direct metadata fetcher without a ticket.
+- Metadata contributor input: after v46, --direct fetches real metadata via `_fetch_table_metadata_direct` (in `trino_query/research.py`); metadata-unavailable note is now conditional on fetch outcome. The prior seed fact "(MCP-only)" is superseded.
 
 ### Conventions / invariants
 - Tests: pytest, `test_should_<behavior>_when_<scenario>` naming; realistic EXPLAIN plan fixtures live in `tests/fixtures/explain_plans/`; acceptance-test files from tlv4 runs are named `test_<feature>_acceptance.py`.
@@ -24,3 +24,11 @@
 - No-data classification errs toward None (surface the real error) — "does not exist" free-text alone must never classify; structured errorName first (v45 S2).
 - Comparison soundness in sql_extraction: ORDER BY is positional (sequence-sensitive under LIMIT), JOIN ON/USING and FROM are compared per-join; frozenset (commutative) comparisons are only sound for genuinely commutative clauses — the v42 false-admit classes (FROM/ORDER BY/ON/USING) are pinned by tests.
 - Thresholds in diagnosis are named constants with written rationale (e.g. LARGE_SCAN_BYTES, MEMORY_PRESSURE_FRACTION env-overridable) — no magic numbers.
+
+## run .tlv4-v46-direct-metadata (run: 2026-06-10)
+
+- `_fetch_table_metadata_from_runner(tables, execute_fn, …)` in `mcp_trino/research.py` is the shared pure helper for table metadata probing; `execute_fn: (str) -> list[dict]` is injected — pass `_make_mcp_execute_fn(client)` for MCP, `_execute_direct_as_dicts` for --direct. Both paths share identical Probe 1 (columns) + Probe 2 (properties) logic.
+- `_execute_via_mcp(client, sql)` returns an envelope dict `{rows, columns, error, …}`, NOT `list[dict]` — any adapter that passes the raw return to an iterator over rows will silently iterate dict keys. Always extract `result.get("rows") or []`; `_make_mcp_execute_fn` is the canonical adapter pattern (v46).
+- `_SAFE_IDENT_RE = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*$")` (module-level constant in `mcp_trino/research.py`) — stricter than `^[A-Za-z0-9_]+$`; rejects identifiers starting with digits; silently skips quoted/hyphenated Trino identifiers (fail-open, validated by mocks only).
+- `_assemble_direct_directions` returns a 2-tuple `(directions: list, pre_table_metadata: list)` after v46; all call sites use `directions, _ = …` (4 sites in `trino_query/research.py`). Previously returned a bare list.
+- `_extract_table_names` (private underscore) is the name used at all call sites including cross-module imports; no public alias `extract_table_names` exists — importing the public form raises ImportError.

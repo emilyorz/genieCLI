@@ -63,7 +63,7 @@ def test_real_rule_id_maps_to_same_direction_kind_on_mcp_and_direct(monkeypatch)
         sql,
         static_report,
     )
-    direct_directions = direct_research._assemble_direct_directions(
+    direct_directions, _ = direct_research._assemble_direct_directions(
         sql,
         static_report,
         lambda _sql: _PLAN_JSON,
@@ -105,7 +105,7 @@ def test_join_first_filter_late_has_same_non_explain_tuple_on_both_paths(monkeyp
     monkeypatch.setattr(mcp_research, "_resolved_tool", None)
 
     mcp_directions, _ = mcp_research._assemble_mcp_directions(client, sql, static_report)
-    direct_directions = direct_research._assemble_direct_directions(
+    direct_directions, _ = direct_research._assemble_direct_directions(
         sql,
         static_report,
         lambda _sql: _PLAN_JSON,

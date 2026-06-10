@@ -286,7 +286,7 @@ def test_direct_diagnose_only_returns_diagnosed_without_baseline():
 
     with patch.object(direct_research, "_measure", measure), \
          patch.object(direct_research, "_assemble_direct_directions",
-                      return_value=_sample_directions()):
+                      return_value=(_sample_directions(), [])):
         result = direct_research._run_optimization_loop(
             provider=MagicMock(),
             model="m",
@@ -313,7 +313,7 @@ def test_direct_gate_trip_returns_diagnosed_with_report():
     output = RecordingOutput()
     with patch.object(direct_research, "_measure", return_value=_fake_direct_baseline()), \
          patch.object(direct_research, "_assemble_direct_directions",
-                      return_value=_sample_directions()):
+                      return_value=(_sample_directions(), [])):
         result = direct_research._run_optimization_loop(
             provider=MagicMock(),
             model="m",
@@ -361,7 +361,7 @@ def test_both_paths_emit_same_report_header_on_gate_trip():
 
     with patch.object(direct_research, "_measure", return_value=_fake_direct_baseline()), \
          patch.object(direct_research, "_assemble_direct_directions",
-                      return_value=_sample_directions()):
+                      return_value=(_sample_directions(), [])):
         direct_result = direct_research._run_optimization_loop(
             provider=MagicMock(), model="m", reasoning="disable",
             original_sql="SELECT 1", metric_key="wall_time_ms",
@@ -429,7 +429,7 @@ def test_both_assemblers_produce_identical_directions_for_same_inputs():
         static_report,
         peak_memory_bytes=_HIGH_PEAK,
     )
-    direct_directions = direct_research._assemble_direct_directions(
+    direct_directions, _ = direct_research._assemble_direct_directions(
         sql,
         static_report,
         explain_runner,

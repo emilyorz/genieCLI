@@ -286,7 +286,7 @@ class TestDirectCallerDiagnoseOnly:
         measure = MagicMock()
         with patch.object(direct_research, "_measure", measure), \
              patch.object(direct_research, "_assemble_direct_directions",
-                          return_value=[]):
+                          return_value=([], [])):
             result = direct_research._run_optimization_loop(
                 provider=MagicMock(),
                 model="m",
@@ -371,7 +371,7 @@ class TestDirectCallerLongQueryGate:
         with patch.object(direct_research, "_measure",
                           return_value=_slow_direct_baseline()), \
              patch.object(direct_research, "_assemble_direct_directions",
-                          return_value=[]):
+                          return_value=([], [])):
             result = direct_research._run_optimization_loop(
                 provider=MagicMock(), model="m", reasoning="disable",
                 original_sql="SELECT 1",
@@ -601,10 +601,10 @@ class TestS3HonestDegradationDirect:
     to every diagnosis call site (spec §7)."""
 
     def test_should_include_metadata_unavailable_direction_in_direct_directions(self):
-        """After S3: _assemble_direct_directions always appends kind='metadata-unavailable'."""
+        """After S3: _assemble_direct_directions appends kind='metadata-unavailable' when no metadata."""
         from genie.skills.trino_query.research import _assemble_direct_directions
 
-        dirs = _assemble_direct_directions("SELECT 1", None, None)
+        dirs, _ = _assemble_direct_directions("SELECT 1", None, None)
         kinds = [d.kind for d in dirs]
         assert "metadata-unavailable" in kinds, (
             f"Expected a 'metadata-unavailable' direction on --direct path. "
@@ -621,7 +621,7 @@ class TestS3HonestDegradationDirect:
 
         # A CROSS JOIN gives at least one high-severity direction to test ordering
         static_report = static_analyze("SELECT * FROM a CROSS JOIN b")
-        dirs = _assemble_direct_directions("SELECT * FROM a CROSS JOIN b", static_report, None)
+        dirs, _ = _assemble_direct_directions("SELECT * FROM a CROSS JOIN b", static_report, None)
         if len(dirs) > 1:
             assert dirs[-1].kind == "metadata-unavailable", (
                 f"Expected metadata-unavailable last, got {dirs[-1].kind!r}"

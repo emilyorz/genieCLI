@@ -722,6 +722,64 @@ def _run_plan_cost_loop(
 
 
 # ---------------------------------------------------------------------------
+# Direct-path table metadata fetcher (F1/F2: v46 dual-path parity)
+# ---------------------------------------------------------------------------
+
+def _execute_direct_as_dicts(sql: str) -> list:
+    """Execute *sql* on the direct Trino connection; return rows as list[dict].
+
+    Uses the active profile's cursor; builds dicts from cursor.description
+    (DB-API 2 column names) and fetchall() tuples.  Returns [] on any error
+    (fail-open — no propagation to caller).  Never raises.
+    """
+    try:
+        profile = get_active_profile()
+        conn = profile.connect()
+    except Exception:
+        return []
+    try:
+        cur = conn.cursor()
+        cur.execute(sql)
+        description = cur.description or []
+        if not description:
+            return []
+        col_names = [col[0] for col in description]
+        rows = cur.fetchall() or []
+        return [dict(zip(col_names, row)) for row in rows]
+    except Exception:
+        return []
+    finally:
+        # fail-open must not leak the connection when execute/fetch raises
+        try:
+            conn.close()
+        except Exception:
+            pass
+
+
+def _fetch_table_metadata_direct(sql: str) -> list:
+    """Fetch table metadata for qualified tables in *sql* via the --direct connection.
+
+    Extracts catalog.schema.table triples from *sql*, then calls
+    ``_fetch_table_metadata_from_runner`` with ``_execute_direct_as_dicts`` as the
+    execute_fn.  Returns [] when no qualified tables are found or on any error.
+    Duck-type compatible with ``_fetch_table_metadata`` (returns list[TableMetadata]).
+    """
+    from genie.skills.mcp_trino.research import (
+        _extract_table_names,
+        _fetch_table_metadata_from_runner,
+    )
+
+    try:
+        tables = _extract_table_names(sql)
+        qualified = [(c, s, t) for (c, s, t) in tables if c and s]
+        if not qualified:
+            return []
+        return _fetch_table_metadata_from_runner(qualified, _execute_direct_as_dicts)
+    except Exception:
+        return []
+
+
+# ---------------------------------------------------------------------------
 # Core iteration loop (no RunManager / file_patch / git dependency)
 # ---------------------------------------------------------------------------
 
@@ -731,17 +789,41 @@ def _assemble_direct_directions(
     explain_runner: Optional[Callable[[str], Optional[str]]],
     *,
     peak_memory_bytes: Optional[int] = None,
+    table_metadata=None,
 ):
     """Assemble ranked optimization directions for the --direct path.
 
-    Mirrors the MCP path's `_assemble_mcp_directions` but with no table-metadata
-    fetcher (the direct path has none). Diagnosis is driven by static findings +
-    EXPLAIN (FORMAT JSON) plan cost (zero query) + the baseline's real peak
-    memory when available. Never raises; a failing EXPLAIN runner yields no
-    plan-cost contribution.
+    Mirrors the MCP path's ``_assemble_mcp_directions``.  Returns a 2-tuple
+    ``(directions, pre_table_metadata)`` — same shape as the MCP assembler —
+    so callers can unpack symmetrically.
+
+    F2: Fetches real table metadata via ``_fetch_table_metadata_direct`` when
+    ``table_metadata`` is not injected (None).  When metadata is injected
+    (non-None list), the fetch is skipped (same reuse logic as MCP path).
+
+    F3: The ``metadata-unavailable`` note is CONDITIONAL on the fetch outcome:
+    present only when ``pre_table_metadata`` is empty (fetch failed or
+    returned nothing), absent when metadata flows.  The predicate keys on
+    ``bool(pre_table_metadata)``, not on contributor output.
+
+    Fail-open: any fetch error degrades to pre_table_metadata=[] → today's
+    exact behavior including the note.  Never crashes or delays the diagnosis
+    beyond the fetch attempt.
     """
-    from genie.skills.mcp_trino.pre_execution_diagnosis import pre_execution_diagnosis
+    from genie.skills.mcp_trino.pre_execution_diagnosis import (
+        pre_execution_diagnosis,
+        OptimizationDirection,
+    )
     from genie.skills.mcp_trino.preflight import plan_cost as _plan_cost
+
+    # F2: metadata acquisition (mirrors MCP assembler's table_metadata= logic)
+    if table_metadata is not None:
+        pre_table_metadata = list(table_metadata)
+    else:
+        try:
+            pre_table_metadata = _fetch_table_metadata_direct(original_sql)
+        except Exception:
+            pre_table_metadata = []
 
     explain_cost = None
     if explain_runner is not None:
@@ -750,29 +832,33 @@ def _assemble_direct_directions(
         except Exception:
             explain_cost = None
 
-    from genie.skills.mcp_trino.pre_execution_diagnosis import OptimizationDirection
     base_dirs = pre_execution_diagnosis(
         original_sql,
         static_report=static_report,
         explain_cost=explain_cost,
-        table_metadata=None,
+        table_metadata=pre_table_metadata or None,
         peak_memory_bytes=peak_memory_bytes,
     )
-    # S3: append honest degradation note — the --direct path has no table-metadata
-    # fetcher, so partition/clustering/statistics-dependent directions are missing.
-    # severity="info" → sort rank 3 → always last, never displacing a real direction.
-    metadata_note = OptimizationDirection(
-        kind="metadata-unavailable",
-        severity="info",
-        rationale=(
-            "This report was generated via --direct mode: no table metadata was fetched. "
-            "Partition pruning, clustering, and statistics-dependent directions are "
-            "not available. Use the MCP path for full diagnosis."
-        ),
-        evidence="direct-path:no-metadata",
-        target_metric="query_time_ms",
-    )
-    return list(base_dirs) + [metadata_note]
+
+    directions = list(base_dirs)
+
+    # F3: conditional note — present only when metadata was unavailable
+    if not pre_table_metadata:
+        # S3: honest degradation note — severity="info" → sort rank 3 → always last.
+        metadata_note = OptimizationDirection(
+            kind="metadata-unavailable",
+            severity="info",
+            rationale=(
+                "This report was generated via --direct mode: no table metadata was fetched. "
+                "Partition pruning, clustering, and statistics-dependent directions are "
+                "not available. Use the MCP path for full diagnosis."
+            ),
+            evidence="direct-path:no-metadata",
+            target_metric="query_time_ms",
+        )
+        directions.append(metadata_note)
+
+    return directions, pre_table_metadata
 
 
 def _run_optimization_loop(
@@ -888,7 +974,7 @@ def _run_optimization_loop(
     if decision.route == PreflightRoute.DIAGNOSE_ONLY:
         from genie.skills.mcp_trino.pre_execution_diagnosis import format_directions_report
         output.progress("  --diagnose-only: EXPLAIN-cost + static, no query execution")
-        directions = _assemble_direct_directions(
+        directions, _ = _assemble_direct_directions(
             original_sql, static_report, explain_runner, peak_memory_bytes=None
         )
         report_md = format_directions_report(
@@ -920,7 +1006,7 @@ def _run_optimization_loop(
         g = decision.gate_result
         output.progress(f"  Long-query gate: {g.message}")
         output.progress("  Writing directed report and skipping further query executions")
-        directions = _assemble_direct_directions(
+        directions, _ = _assemble_direct_directions(
             original_sql, static_report, explain_runner,
             peak_memory_bytes=getattr(_baseline_metrics, "peak_memory_bytes", 0) or None,
         )
@@ -978,7 +1064,7 @@ def _run_optimization_loop(
         render_rule_gate_summary,
     )
 
-    directions = _assemble_direct_directions(
+    directions, _ = _assemble_direct_directions(
         original_sql, static_report, explain_runner,
         peak_memory_bytes=getattr(baseline["metrics"], "peak_memory_bytes", 0) or None,
     )
@@ -1043,12 +1129,11 @@ def _run_optimization_loop(
         fresh_block = rediag_cache.get(best_sql)
         if fresh_block is None:
             try:
-                fresh_block = format_directions_for_prompt(
-                    _assemble_direct_directions(
-                        best_sql, static_analyze(best_sql), explain_runner,
-                        peak_memory_bytes=None,
-                    )
+                _rediag_dirs, _ = _assemble_direct_directions(
+                    best_sql, static_analyze(best_sql), explain_runner,
+                    peak_memory_bytes=None,
                 )
+                fresh_block = format_directions_for_prompt(_rediag_dirs)
             except Exception:
                 fresh_block = ""
             rediag_cache[best_sql] = fresh_block

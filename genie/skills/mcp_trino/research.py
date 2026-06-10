@@ -139,6 +139,121 @@ class TableSuggestion:
 # Table metadata helpers
 # ---------------------------------------------------------------------------
 
+_SAFE_IDENT_RE = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*$")
+
+
+def _validate_ident(name: str) -> None:
+    """Raise ValueError if *name* is not a safe bare SQL identifier.
+
+    Accepted: letters, digits, underscores, starting with a letter or underscore.
+    Rejected: quotes, spaces, dots, semicolons, or any other characters that
+    could permit SQL injection when interpolated into a query string.
+    This is intentionally strict — the caller's except-guard catches the
+    ValueError and skips the table (fail-open, no propagation).
+    """
+    if not _SAFE_IDENT_RE.match(name):
+        raise ValueError(f"Unsafe SQL identifier: {name!r}")
+
+
+def _fetch_table_metadata_from_runner(
+    tables: list[tuple[str, str, str]],
+    execute_fn,
+    default_catalog: str = "",
+    default_schema: str = "",
+) -> list:
+    """Pure shared helper — fetch metadata for *tables* using *execute_fn*.
+
+    *execute_fn* is injected so this function is usable from both the MCP path
+    (where a ``_make_mcp_execute_fn(client)`` adapter is passed) and the
+    --direct path (where ``_execute_direct_as_dicts`` is passed directly).
+
+    Contract:
+      execute_fn(sql: str) -> list[dict]  — callers provide rows as plain dicts.
+
+    Returns a ``list[TableMetadata]`` — only tables with at least one column or
+    one property are appended.  Any execute_fn exception for a given table is
+    caught and that table is silently skipped (fail-open).
+    """
+    results = []
+    for catalog, schema, table_name in tables:
+        cat = catalog or default_catalog
+        sch = schema or default_schema
+        if not cat or not sch:
+            continue
+
+        # Validate all three identifier components before interpolating into SQL.
+        # ValueError here → caught by `except ValueError` below → table skipped (fail-open).
+        try:
+            _validate_ident(cat)
+            _validate_ident(sch)
+            _validate_ident(table_name)
+        except ValueError:
+            continue
+
+        meta = TableMetadata(catalog=cat, schema=sch, table_name=table_name)
+
+        # Probe 1: column schema
+        col_sql = (
+            f"SELECT column_name, data_type, is_nullable, ordinal_position "
+            f"FROM {cat}.information_schema.columns "
+            f"WHERE table_schema = '{sch}' AND table_name = '{table_name}' "
+            f"ORDER BY ordinal_position"
+        )
+        try:
+            rows = execute_fn(col_sql)
+            for row in rows:
+                if isinstance(row, dict):
+                    meta.columns.append(ColumnInfo(
+                        column_name=row.get("column_name", ""),
+                        data_type=row.get("data_type", ""),
+                        is_nullable=row.get("is_nullable", ""),
+                        ordinal_position=int(row.get("ordinal_position", 0)),
+                    ))
+        except Exception:
+            pass
+
+        # Probe 2: table properties (Iceberg partition/sort/etc.)
+        prop_sql = (
+            f"SELECT property_name, property_value "
+            f"FROM system.metadata.table_properties "
+            f"WHERE catalog_name = '{cat}' "
+            f"AND schema_name = '{sch}' "
+            f"AND table_name = '{table_name}'"
+        )
+        try:
+            rows = execute_fn(prop_sql)
+            for row in rows:
+                if isinstance(row, dict):
+                    key = row.get("property_name", "")
+                    val = row.get("property_value", "")
+                    if key:
+                        meta.properties[key] = val
+        except Exception:
+            pass
+
+        if meta.columns or meta.properties:
+            results.append(meta)
+
+    return results
+
+
+def _make_mcp_execute_fn(client):
+    """Return an execute_fn that wraps _execute_via_mcp, extracting the rows list.
+
+    _execute_via_mcp returns a dict envelope ``{"rows": [...], "columns": [...],
+    "error": ...}``.  Iterating the envelope directly yields dict keys (strings),
+    not row dicts — silently producing empty metadata.  This adapter extracts
+    ``envelope["rows"]`` (or [] on error / None rows) so the shared
+    ``_fetch_table_metadata_from_runner`` receives a plain ``list[dict]``.
+    """
+    def _fn(sql: str) -> list:
+        envelope = _execute_via_mcp(client, sql)
+        if envelope.get("error") or not envelope.get("rows"):
+            return []
+        return list(envelope["rows"])
+    return _fn
+
+
 def _extract_table_names(sql: str) -> list[tuple[str, str, str]]:
     """Extract (catalog, schema, table) tuples from SQL using sqlglot.
 
@@ -213,61 +328,15 @@ def _fetch_table_metadata(
     """Query information_schema.columns and table properties via MCP.
 
     Gracefully returns empty list if the MCP server can't handle these queries.
+    Delegates to the shared pure helper ``_fetch_table_metadata_from_runner``
+    via the MCP envelope-extracting adapter ``_make_mcp_execute_fn``.
     """
-    results = []
-    for catalog, schema, table_name in tables:
-        cat = catalog or default_catalog
-        sch = schema or default_schema
-        if not cat or not sch:
-            continue
-
-        meta = TableMetadata(catalog=cat, schema=sch, table_name=table_name)
-
-        # Query columns
-        col_sql = (
-            f"SELECT column_name, data_type, is_nullable, ordinal_position "
-            f"FROM {cat}.information_schema.columns "
-            f"WHERE table_schema = '{sch}' AND table_name = '{table_name}' "
-            f"ORDER BY ordinal_position"
-        )
-        try:
-            result = _execute_via_mcp(client, col_sql)
-            if not result.get("error") and result.get("rows"):
-                for row in result["rows"]:
-                    if isinstance(row, dict):
-                        meta.columns.append(ColumnInfo(
-                            column_name=row.get("column_name", ""),
-                            data_type=row.get("data_type", ""),
-                            is_nullable=row.get("is_nullable", ""),
-                            ordinal_position=int(row.get("ordinal_position", 0)),
-                        ))
-        except Exception:
-            pass
-
-        # Query table properties (Trino system metadata)
-        prop_sql = (
-            f"SELECT property_name, property_value "
-            f"FROM system.metadata.table_properties "
-            f"WHERE catalog_name = '{cat}' "
-            f"AND schema_name = '{sch}' "
-            f"AND table_name = '{table_name}'"
-        )
-        try:
-            result = _execute_via_mcp(client, prop_sql)
-            if not result.get("error") and result.get("rows"):
-                for row in result["rows"]:
-                    if isinstance(row, dict):
-                        key = row.get("property_name", "")
-                        val = row.get("property_value", "")
-                        if key:
-                            meta.properties[key] = val
-        except Exception:
-            pass
-
-        if meta.columns or meta.properties:
-            results.append(meta)
-
-    return results
+    execute_fn = _make_mcp_execute_fn(client)
+    return _fetch_table_metadata_from_runner(
+        tables, execute_fn,
+        default_catalog=default_catalog,
+        default_schema=default_schema,
+    )
 
 
 from typing import NamedTuple
