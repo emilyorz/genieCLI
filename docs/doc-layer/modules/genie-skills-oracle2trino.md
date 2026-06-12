@@ -3,70 +3,62 @@ covers:
   - "genie/skills/oracle2trino/*.md"
   - "genie/skills/oracle2trino/*.py"
   - "genie/skills/oracle2trino/*.yaml"
-last_synced: "df1131522263a60bac2a7a0326499f43bc63c490"
+last_synced: "572f7ff30399bed1a1a3c230918ba037ae874272"
 ---
 
 ## Purpose
 
-Provides six genie skills for Oracle-to-Trino SQL migration. The package wraps
-`sqlglot` (Oracle→Trino transpilation), a YAML function/type mapping database
-(`data/oracle_trino_functions.yaml`), and the shared `ORACLE_CONSTRUCTS` catalog
-from `genie.core.sql_patterns` to detect unsupported PL/SQL constructs. All
-skills register under the `oracle2trino` group and return JSON or plain-text
-suitable for LLM consumption. The sixth skill (`lint_trino_sql`) delegates to
-`genie.core.lint_analyzer` to lint already-converted Trino SQL for Oracle
-residuals and common anti-patterns.
+Oracle-to-Trino SQL migration toolkit. Owns six skills registered under the `oracle2trino` group: mechanical sqlglot transpilation with confidence scoring, Oracle function/type lookup against a static YAML reference database, a Trino-limitations reference list, full stored-procedure analysis with connector-aware guidance, and a Trino SQL linter that catches Oracle residuals and Trino anti-patterns.
 
 ## Exports
 
-### Skills registered via `register(registry)`
-
-| Skill class | Tool name | Signature | Description |
-|---|---|---|---|
-| `TranspileSQL` | `transpile_sql` | `run(sql: str) -> str` | Runs `sqlglot.transpile(read="oracle", write="trino")`, detects unsupported constructs in the original SQL, and returns a JSON `ConversionResult`. |
-| `LookupOracleFunction` | `lookup_oracle_function` | `run(oracle_name: str) -> str` | Looks up an Oracle function name (case-insensitive) in the YAML DB; returns up to 5 matches with Trino equivalent, example, and notes. |
-| `LookupOracleType` | `lookup_oracle_type` | `run(oracle_type: str) -> str` | Exact-match lookup of an Oracle data type in the YAML DB; returns Trino equivalent and notes. |
-| `ListTrinoLimitations` | `list_trino_limitations` | `run() -> str` | Returns a numbered list of Trino hard limits from the `trino_limitations` key of the YAML DB. |
-| `AnalyzeOracleSP` | `analyze_oracle_sp` | `run(sql: str, connector: str = "iceberg") -> str` | Full SP analysis: transpile + construct detection + connector-specific notes (`hive`/`iceberg`/`delta`/`generic`) + `manual_fix_notes` for each PL/SQL item. Returns JSON `ConversionResult`. |
-| `LintTrinoSQL` | `lint_trino_sql` | `run(sql: str) -> str` | Delegates to `genie.core.lint_analyzer.analyze(sql)`; returns structured findings (severity, rule, score, fix suggestions) for Oracle residuals and Trino anti-patterns. |
-
-### Module-level helpers (internal, not registered)
-
-| Function | Signature | Description |
-|---|---|---|
-| `_load_db` | `() -> dict` | Lazy-loads `data/oracle_trino_functions.yaml` into module-level `_DB`; cached after first call. |
-| `_truncate` | `(text: str, limit: int = 3000) -> str` | Truncates display SQL to `MAX_SQL_DISPLAY` (3000) chars. |
-| `_sqlglot_transpile` | `(sql: str) -> tuple[str, list[str], bool]` | Wraps `sqlglot.transpile`; returns `(transpiled, errors, success)`. `success=False` on `ImportError` or any exception. |
-| `_detect_unsupported` | `(sql: str) -> list[UnsupportedConstruct]` | Strips comments/strings then pattern-matches each entry in `ORACLE_CONSTRUCTS`; deduplicates by construct name. |
-
-### Models (`models.py`)
-
-| Dataclass | Fields | `to_dict` output keys |
-|---|---|---|
-| `UnsupportedConstruct` | `construct`, `severity`, `message`, `suggestion` | same 4 keys |
-| `ConversionResult` | `converted_sql`, `unsupported`, `warnings`, `confidence`, `manual_fix_notes` | same 5 keys; `confidence` rounded to 4 decimal places |
+# genie/skills/oracle2trino/SKILL.md: [tree-only: file:line citations required — LLM-written section]
+from __future__ import annotations
+import: json
+import: re
+from pathlib import Path
+import: yaml
+from genie.core.arg import Arg
+from genie.core.registry import BaseSkill
+from models import ConversionResult, UnsupportedConstruct
+from genie.core.sql_patterns import ORACLE_CONSTRUCTS, compute_confidence
+from genie.core.sql_utils import strip_comments_and_strings
+function: def _load_db() -> dict (__init__.py:21)
+function: def _truncate(text, limit) -> str (__init__.py:30)
+function: def _sqlglot_transpile(sql) -> tuple[str, list[str], bool] (__init__.py:36)
+function: def _detect_unsupported(sql) -> list[UnsupportedConstruct] (__init__.py:59)
+class: TranspileSQL (__init__.py:84)
+  method: def run(self, sql) -> str (__init__.py:95)
+class: LookupOracleFunction (__init__.py:127)
+  method: def run(self, oracle_name) -> str (__init__.py:135)
+class: LookupOracleType (__init__.py:155)
+  method: def run(self, oracle_type) -> str (__init__.py:163)
+class: ListTrinoLimitations (__init__.py:175)
+  method: def run(self) -> str (__init__.py:181)
+class: AnalyzeOracleSP (__init__.py:192)
+  method: def run(self, sql, connector) -> str (__init__.py:208)
+class: LintTrinoSQL (__init__.py:262)
+  method: def run(self, sql) -> str (__init__.py:281)
+function: def register(registry) -> None (__init__.py:287)
+# genie/skills/oracle2trino/data/oracle_trino_functions.yaml: [tree-only: file:line citations required — LLM-written section]
+from __future__ import annotations
+from dataclasses import dataclass, field
+class: UnsupportedConstruct (models.py:8)
+  method: def to_dict(self) -> dict (models.py:14)
+class: ConversionResult (models.py:24)
+  method: def to_dict(self) -> dict (models.py:31)
 
 ## Invariants
 
-- `_detect_unsupported` always runs on the **original** Oracle SQL, never on the
-  `sqlglot` output; this prevents lossy/incorrect transpilations from hiding
-  constructs that require manual attention.
-- `_sqlglot_transpile` uses `error_level=IGNORE` so partial transpilation succeeds
-  rather than raising; callers check `success=False` to distinguish hard failures
-  (missing `sqlglot` package or unhandled exception) from partial results.
-- `_load_db` is module-singleton (`_DB`): mutating the returned dict affects all
-  subsequent calls in the same process.
-- `LookupOracleFunction.run` returns at most 5 results; exact-name match takes
-  priority over substring match.
-- `LookupOracleType.run` is exact-match only (case-insensitive); no fuzzy fallback.
-- `AnalyzeOracleSP` inserts a preamble into `manual_fix_notes` only when at least
-  one PL/SQL construct is flagged; an empty SP produces an empty list.
-- `register` must be called exactly once per registry instance to avoid duplicate
-  skill registration.
+- `_load_db()` is a module-level singleton; `oracle_trino_functions.yaml` is loaded once into `_DB` and cached for the process lifetime (`__init__.py:18-27`). Hot-reloading requires a process restart.
+- `_detect_unsupported()` scans the **original** SQL before transpilation, not the sqlglot output, so Oracle constructs that sqlglot silently mistranslates are still surfaced (`__init__.py:98-102`, `__init__.py:211-212`).
+- `_sqlglot_transpile()` returns `(sql, [error], False)` on `ImportError` or any exception — callers must check the `success` bool, not the returned SQL string (`__init__.py:53-56`).
+- `TranspileSQL.run` and `AnalyzeOracleSP.run` both return JSON serialised via `ConversionResult.to_dict()`, not plain text (`__init__.py:124`, `__init__.py:259`).
+- `ConversionResult.confidence` is computed by `compute_confidence(unsupported)` from `genie.core.sql_patterns`; the value flows through `to_dict()` unmodified (`__init__.py:120`, `models.py:31`).
+- `AnalyzeOracleSP` accepts `connector` choices `["hive", "iceberg", "delta", "generic"]`, defaulting to `"iceberg"` (`__init__.py:204-205`).
+- `LintTrinoSQL.run` delegates entirely to `genie.core.lint_analyzer.analyze`; the skill itself contains no lint logic (`__init__.py:282-283`).
+- `register()` must be called to make skills available; it registers exactly 6 skill instances in fixed order (`__init__.py:287-293`).
 
 ## Change log
 
-- `df1131522263a60bac2a7a0326499f43bc63c490`: initial module card; six skills
-  documented (`transpile_sql`, `lookup_oracle_function`, `lookup_oracle_type`,
-  `list_trino_limitations`, `analyze_oracle_sp`, `lint_trino_sql`); models and
-  internal helpers captured.
+572f7ff30399bed1a1a3c230918ba037ae874272: fix covers glob annotation — staleness scanner fnmatch confirmed matching data/oracle_trino_functions.yaml; Invariants citations re-verified against source
