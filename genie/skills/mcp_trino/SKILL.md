@@ -119,6 +119,29 @@ the side effects:
 | `CAST(partition_col AS VARCHAR)` in WHERE           | Use native type comparison — casting partition columns disables partition pruning                                |
 | `JOIN ... ON UPPER(a.x) = b.y` / `ON CAST(a.id AS varchar) = b.id` / `ON a.x + 1 = b.k` (function/cast/arithmetic on a join key) | Join on the raw column so the planner can hash-join. If the value must be normalized/cast, materialize the normalized value as a stored column upstream — a computed join key forces a per-row recompute / nested-loop join. (detected by static rule `join-key-computed`) |
 
+## P1–P8 Rewrite Strategy Menu
+
+The named **fix menu** the optimize step applies to a flagged fragment (how to
+rewrite a monster — NOT detection). Single source of truth:
+`genie/skills/mcp_trino/p_strategies.py` (the `optimize()` prompt is built from it).
+Apply a NAMED strategy; do not freestyle. Safety tier gates auto-apply:
+
+- **SAFE** — value-preserving; apply freely.
+- **TRAP** — usually equivalent but a known pitfall; apply only if exact
+  row-equivalence holds (the recompose gate verifies and reverts otherwise).
+- **DANGEROUS** — may change output; **advise only, never auto-apply**.
+
+| #  | Strategy | Tier | When → How |
+| -- | -------- | ---- | ---------- |
+| P1 | function-pushup | SAFE | function/cast/arithmetic wraps a JOIN/WHERE/partition key → move it off the column so pruning works |
+| P2 | exists-to-left-join | TRAP | correlated `EXISTS` enrich → `LEFT JOIN`, **only when the join key is unique** (else fan-out duplicates rows → MAX/SUM/LISTAGG change) |
+| P3 | like-to-contains | DANGEROUS | `LIKE '%v%'` → `contains(split(col, delim), 'v')` — substring vs exact-token semantics differ |
+| P4 | listagg-to-slice | DANGEROUS | `LISTAGG` → `array_join(slice(array_agg(x),1,N),…)` — caps/**truncates** groups > N |
+| P5 | predicate-partition-pushdown | TRAP | filter evaluated late → push WHERE/partition predicate down to the scan to prune early (safe for inner joins/base filters; verify when crossing an OUTER-join null-producing side) |
+| P6 | lambda-rewrite | DANGEROUS | per-row array/map expansion → higher-order lambda (transform/filter/reduce) — heavy; null/empty/order easy to change |
+| P7 | skinny-join | SAFE | join inputs carry unused columns → project only keys + needed columns before the join (narrow the shuffle) |
+| P8 | broadcast-hint | SAFE | small build side distributed (PARTITIONED) → broadcast hint to replicate it and avoid a large shuffle |
+
 ## Connector-Specific Optimizations
 
 ### Hive Connector

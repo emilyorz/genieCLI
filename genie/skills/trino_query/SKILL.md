@@ -20,3 +20,24 @@ Provides four tools for Trino SQL execution and introspection:
 - **trino_explain** — Run EXPLAIN and return the query plan
 - **trino_schema** — Inspect catalogs, schemas, tables, and columns
 - **trino_optimize** — Analyze query performance and suggest optimizations
+
+## P1–P8 Rewrite Strategy Menu
+
+`trino_optimize` rewrites a flagged fragment by applying a **named** strategy from
+the P1–P8 fix menu (not freestyle). Source of truth + safety tiers:
+`genie/skills/mcp_trino/p_strategies.py`; the full guide is in
+`genie/skills/mcp_trino/SKILL.md` ("P1–P8 Rewrite Strategy Menu"). Summary:
+
+| #  | Strategy | Tier | Auto-apply? |
+| -- | -------- | ---- | ----------- |
+| P1 | function-pushup | SAFE | yes |
+| P2 | exists-to-left-join | TRAP | only if join key unique (verify row-equivalence) |
+| P3 | like-to-contains | DANGEROUS | advise only |
+| P4 | listagg-to-slice | DANGEROUS | advise only |
+| P5 | predicate-partition-pushdown | TRAP | yes, verify when crossing an OUTER join |
+| P6 | lambda-rewrite | DANGEROUS | advise only |
+| P7 | skinny-join | SAFE | yes |
+| P8 | broadcast-hint | SAFE | yes |
+
+SAFE = value-preserving; TRAP = rewrite only behind a row-equivalence check;
+DANGEROUS = surfaced as advice, never auto-applied.
