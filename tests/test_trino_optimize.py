@@ -1008,3 +1008,49 @@ def test_golden_case_live():
     """
     # placeholder — run manually with a real Trino cluster injected
     pass
+
+
+# ---------------------------------------------------------------------------
+# TestOptimizePStrategyMenu (v47 T2) — the rewrite prompt carries the P1–P8 menu
+# ---------------------------------------------------------------------------
+
+class TestOptimizePStrategyMenu:
+    def _capture_prompt(self):
+        captured = {}
+
+        def llm(prompt: str) -> str:
+            captured["prompt"] = prompt
+            return "SELECT 1"  # any rewrite; we only inspect the prompt
+
+        frag = _make_fragment(
+            sql="SELECT * FROM big JOIN small ON big.k = small.k",
+            is_monster=True,
+            monster_rank=1,
+            findings=(REWRITE_FINDING,),
+        )
+        optimize(frag, llm)
+        return captured["prompt"]
+
+    def test_prompt_includes_all_eight_strategies(self):
+        prompt = self._capture_prompt()
+        for i in range(1, 9):
+            assert f"P{i}" in prompt
+
+    def test_prompt_includes_p5_predicate_pushdown(self):
+        prompt = self._capture_prompt()
+        assert "predicate-partition-pushdown" in prompt
+
+    def test_prompt_enforces_tier_discipline(self):
+        prompt = self._capture_prompt()
+        # DANGEROUS must be flagged advise-only; TRAP must be flagged verify-gated.
+        assert "ADVISE ONLY" in prompt
+        assert "MUST verify row-equivalence" in prompt
+        assert "do NOT rewrite" in prompt
+        assert "do not freestyle" in prompt
+
+    def test_non_monster_does_not_call_llm(self):
+        # Guard: the menu only enters the prompt on the monster→LLM path.
+        called = []
+        clean = _make_fragment(is_monster=False, findings=(PASS_FINDING,))
+        optimize(clean, lambda p: called.append(p) or "x")
+        assert called == []

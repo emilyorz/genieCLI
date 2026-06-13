@@ -18,6 +18,7 @@ from typing import Callable, Optional, Sequence
 # §5.5  Import aliasing (shadow-free; resolves B4)
 # ---------------------------------------------------------------------------
 from genie.skills.mcp_trino.cost_reader import CostReading, read_cost
+from genie.skills.mcp_trino.p_strategies import render_menu as _render_p_menu
 from genie.skills.mcp_trino.research import rows_equivalent as _check_rows_equivalent
 from genie.skills.trino_query.detection_scan import DetectionFinding, scan_sql
 
@@ -729,10 +730,20 @@ def optimize(fragment: Fragment, llm: LlmFn) -> RewriteCandidate:
         )
 
     prompt = (
-        f"Optimize this SQL fragment. "
-        f"Issues: {[{'rule_id': f.rule_id, 'action': f.action, 'suggestion': f.suggestion} for f in tier_findings]}. "
+        f"Optimize this SQL fragment by applying a NAMED strategy from the menu below — "
+        f"do not freestyle.\n\n"
+        f"{_render_p_menu()}\n\n"
+        f"Tier discipline:\n"
+        f"- SAFE: apply freely (value-preserving).\n"
+        f"- TRAP [MUST verify]: apply ONLY if exact row-equivalence is preserved; the "
+        f"recompose gate verifies and reverts otherwise.\n"
+        f"- DANGEROUS [ADVISE ONLY]: do NOT rewrite — it may change output. Leave the SQL "
+        f"unchanged; the strategy is advisory only.\n\n"
+        f"Detected issues for this fragment: "
+        f"{[{'rule_id': f.rule_id, 'action': f.action, 'suggestion': f.suggestion} for f in tier_findings]}.\n"
         f"SQL:\n{original}\n\n"
-        f"Return ONLY the rewritten SQL (no explanation, no markdown fences)."
+        f"Return ONLY the rewritten SQL (no explanation, no markdown fences). "
+        f"If no SAFE or TRAP strategy applies, return the original SQL unchanged."
     )
     try:
         rewritten = llm(prompt).strip()
