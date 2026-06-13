@@ -1,51 +1,37 @@
 ---
 covers:
   - "genie/session/*.py"
-last_synced: "572f7ff30399bed1a1a3c230918ba037ae874272"
+last_synced: "dfeabc1a64fb3dcf297942cf39e4cf5ba55f334b"
 ---
 
 ## Purpose
 
-Owns conversation-history persistence for genieCLI. The module creates, saves, loads, and lists chat sessions as JSON files under the repo-relative `sessions/` directory. It also provides helpers for constructing individual message dicts and for deriving filesystem-safe title slugs. There is no network I/O; all state lives on disk.
+`genie/session` owns conversation-history persistence. It provides CRUD for session dicts (create, save, load, list) and the message-construction helper used throughout the CLI. Sessions are written as JSON files under a `sessions/` directory at the repo root; filenames are derived from the creation timestamp and a slug of the session title. No backend or LLM logic lives here — it is pure file I/O and dict manipulation.
 
 ## Exports
 
-```
-from __future__ import annotations
-import: json
-import: re
-import: time
-import: uuid
-from pathlib import Path
-function: def _ensure_dir() -> None (manager.py:13)
-function: def new_msg(role, text) -> dict (manager.py:17)
-function: def slug(text, max_len) -> str (manager.py:26)
-function: def new_session(system_prompt) -> dict (manager.py:32)
-function: def save_session(session) -> None (manager.py:48)
-function: def load_session(filename) -> dict (manager.py:57)
-function: def list_sessions() -> list[dict] (manager.py:65)
-function: def update_title(session, first_user_msg) -> None (manager.py:83)
-```
+> See exports file: /Users/leeabc/work/emilyorz/genieCLI/docs/doc-layer/exports/genie-session.md
 
-Annotations:
-- `_ensure_dir` — creates `sessions/` if absent
-- `new_msg` — builds a single message dict with uuid + millisecond timestamp
-- `slug` — lowercases, strips non-word chars, collapses separators, truncates
-- `new_session` — initialises session dict; optionally prepends a system message
-- `save_session` — auto-derives filename from title slug on first save, writes JSON
-- `load_session` — reads JSON, back-fills missing `redo_stack`
-- `list_sessions` — returns metadata list sorted newest-first, skips corrupt files
-- `update_title` — renames title+filename once first user turn is known
+- new_session: Creates a fresh session dict with optional system prompt.
+- save_session: Serialises session dict to JSON; derives filename on first save.
+- load_session: Reads JSON file and back-fills missing redo_stack.
+- list_sessions: Returns summary list sorted newest-first, silently skips corrupt files.
+- new_msg: Builds a single message dict with uuid, role, content, and timestamp.
+- update_title: Renames session from default title using first user message (≤40 chars).
+- slug: Converts arbitrary text to a URL-safe hyphenated identifier.
 
 ## Invariants
 
-- `SESSIONS_DIR` is always `<repo-root>/sessions/` resolved at import time via `Path(__file__).parent.parent.parent / "sessions"` (manager.py:10). No config override exists.
-- Every message dict produced by `new_msg` contains exactly the keys `id`, `role`, `content`, `timestamp`; `content` is a list with one element whose `reasonText` is `None` (manager.py:17-23).
-- `save_session` mutates `session["filename"]` in-place when the field is falsy — callers must treat the dict as owned after the call (manager.py:50-52).
-- `load_session` silently back-fills `redo_stack` to `[]` if the key is absent or non-list, providing forward-compatibility with older saved files (manager.py:60-61).
-- `list_sessions` silently swallows any `Exception` raised while reading individual files, so a corrupt `.json` never prevents the rest of the listing from returning (manager.py:78-79).
-- `update_title` only renames when the current title is still the literal string `"New conversation"`; subsequent calls are no-ops (manager.py:84).
+- SESSIONS_DIR is repo-relative — `manager.py:10` — `SESSIONS_DIR = Path(__file__).parent.parent.parent / "sessions"`
+- new_msg always includes a reasonText key set to None — `manager.py:21` — `"reasonText": None`
+- new_session title defaults to "New conversation" — `manager.py:38` — `"title":      "New conversation",`
+- filename is None until first save — `manager.py:39` — `"filename":   None,`
+- save_session derives filename from created_at + slug when filename is None — `manager.py:51-52` — `title_slug = slug(session["title"])` / `session["filename"] = f"{session['created_at']}_{title_slug}.json"`
+- load_session back-fills redo_stack if absent or non-list — `manager.py:60-61` — `if not isinstance(session.get("redo_stack"), list):` / `session["redo_stack"] = []`
+- list_sessions counts only "user" role messages as turns — `manager.py:76` — `sum(1 for m in s.get("history", []) if m["role"] == "user")`
+- update_title only fires when title is still the default — `manager.py:84` — `if session["title"] == "New conversation":`
+- slug strips non-word characters and collapses whitespace/hyphens — `manager.py:27-28` — `text = re.sub(r"[^\w\s-]", "", text.lower())`
 
 ## Change log
 
-- 572f7ff30399bed1a1a3c230918ba037ae874272: initial card created
+- dfeabc1a64fb3dcf297942cf39e4cf5ba55f334b: initial card generated by doc-bootstrap pilot

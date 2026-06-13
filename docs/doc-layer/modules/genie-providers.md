@@ -1,110 +1,43 @@
 ---
 covers:
   - "genie/providers/*.py"
-last_synced: "572f7ff30399bed1a1a3c230918ba037ae874272"
+last_synced: "dfeabc1a64fb3dcf297942cf39e4cf5ba55f334b"
 ---
 
 ## Purpose
 
-Concrete LLM backend drivers. Each provider wraps a remote HTTP API and exposes the
-`Provider` protocol (`complete`, `complete_text`, `capabilities`) defined in
-`genie/core/provider.py`. The three providers cover: OpenAI-compatible endpoints
-(including Ollama local inference), Anthropic-format internal proxies (system prompt
-extracted to a top-level field), and the internal TGenie multipart/form-data API.
-`base.py` supplies the shared SSE parser used by all three.
+Concrete LLM backend adapters for genieCLI. Each provider wraps a distinct HTTP
+wire protocol — OpenAI-compatible `/v1/chat/completions`, Anthropic-format
+(system prompt extracted to a top-level field), Ollama native `/api/chat`, and the
+internal TGenie multipart/form-data API — and exposes a uniform interface:
+`complete()` (streaming `Iterator[Delta]`) and `complete_text()` (blocking `str`).
+`base.py` supplies the shared SSE parser used by every provider.
 
 ## Exports
 
-from __future__ import annotations
-import: base64
-from typing import Iterator
-import: requests
-from genie.core.provider import CompletionRequest, Delta, ProviderCapabilities
-from genie.providers.base import parse_sse
-from genie.providers.openai import _history_to_openai
-function: def set_debug(enabled) -> None (anthropic.py:16)
-function: def _dbg(*args) -> None (anthropic.py:21)
-class: AnthropicProvider (anthropic.py:26)
-  method: def __init__(self, cfg) -> None (anthropic.py:29)
-  property: def name(self) -> str (anthropic.py:33)
-  method: def capabilities(self) -> ProviderCapabilities (anthropic.py:36)
-  method: def complete(self, req) -> Iterator[Delta] (anthropic.py:39)
-  method: def complete_text(self, req) -> str (anthropic.py:43)
-  method: def _call(self, req) -> str (anthropic.py:46)
-from __future__ import annotations
-import: json
-import: re
-function: def parse_sse(raw) -> str (base.py:8)
-from __future__ import annotations
-import: base64
-from typing import Iterator
-import: requests
-from genie.core.provider import CompletionRequest, Delta, ProviderCapabilities
-from genie.providers.base import parse_sse
-function: def set_debug(enabled) -> None (openai.py:15)
-function: def _dbg(*args) -> None (openai.py:20)
-function: def _history_to_openai(history, content_as_array) -> list[dict] (openai.py:25)
-class: OpenAIProvider (openai.py:39)
-  method: def __init__(self, cfg) -> None (openai.py:42)
-  property: def name(self) -> str (openai.py:46)
-  method: def capabilities(self) -> ProviderCapabilities (openai.py:49)
-  method: def complete(self, req) -> Iterator[Delta] (openai.py:52)
-  method: def complete_text(self, req) -> str (openai.py:56)
-  method: def _is_ollama(self) -> bool (openai.py:59)
-  method: def _call(self, req) -> str (openai.py:64)
-  method: def _call_ollama_native(self, req) -> str (openai.py:70)
-  method: def _call_openai(self, req) -> str (openai.py:116)
-from __future__ import annotations
-import: subprocess
-import: sys
-import: uuid
-from typing import Iterator
-import: requests
-import: urllib3
-from genie.core.provider import CompletionRequest, Delta, ProviderCapabilities
-from genie.providers.base import parse_sse
-function: def set_debug(enabled) -> None (tgenie.py:20)
-function: def _dbg(*args) -> None (tgenie.py:25)
-class: TGenieProvider (tgenie.py:30)
-  method: def __init__(self, cfg) -> None (tgenie.py:33)
-  property: def name(self) -> str (tgenie.py:37)
-  method: def capabilities(self) -> ProviderCapabilities (tgenie.py:40)
-  method: def complete(self, req) -> Iterator[Delta] (tgenie.py:43)
-  method: def complete_text(self, req) -> str (tgenie.py:47)
-  method: def _call(self, req) -> str (tgenie.py:50)
-  method: def _refresh_token(self) -> bool (tgenie.py:150)
+> See exports file: /Users/leeabc/work/emilyorz/genieCLI/docs/doc-layer/exports/genie-providers.md
+
+- `parse_sse`: Shared SSE parser; falls back to reasoning tokens when content is empty.
+- `AnthropicProvider`: Extracts `system` message to top-level Anthropic wire field.
+- `OpenAIProvider`: Routes to Ollama native path or standard `/v1/chat/completions`.
+- `TGenieProvider`: Multipart/form-data adapter; auto-refreshes expired auth tokens.
+- `_history_to_openai`: Converts internal message history to OpenAI message list.
+- `_is_ollama`: Detects Ollama by inspecting base URL for `localhost:11434` / `ollama`.
+- `_refresh_token`: Spawns `grab_auth.py` subprocess on 401; retries the call once.
 
 ## Invariants
 
-- All three provider classes report `tool_calls=False` in `capabilities()` —
-  tool-call routing is handled upstream in `chat.py`, not inside providers.
-  (anthropic.py:37, openai.py:50, tgenie.py:41)
-- `parse_sse` falls back to `reasoning_content` / `reasonText` when `content` is
-  empty, enabling extended-thinking models to return output transparently. (base.py:38–47)
-- `OpenAIProvider._call` routes to `_call_ollama_native` (non-streaming,
-  `think=false`) when the base URL contains `localhost:11434` or `ollama`, bypassing
-  the streaming SSE path. (openai.py:59–68)
-- `_history_to_openai` silently drops any message whose role is not one of
-  `user`, `assistant`, `system`. (openai.py:30)
-- `AnthropicProvider._call` extracts the system message into a top-level `"system"`
-  key before posting; it delegates history serialisation to `_history_to_openai`
-  from `openai.py`. (anthropic.py:73–89)
-- `TGenieProvider._call` sends requests with `verify=False` (TLS verification
-  disabled) and suppresses `urllib3` InsecureRequestWarning at module load time.
-  (tgenie.py:12, tgenie.py:121)
-- On HTTP 401, `TGenieProvider._call` calls `_refresh_token()`; if that returns
-  `False`, `RuntimeError("Token refresh failed. Run grab_auth.py manually.")` is
-  raised immediately (tgenie.py:128–134). If `_refresh_token()` returns `True`, the
-  method reloads config and recurses via `self._call(req)` with no retry counter or
-  guard flag — a second 401 after the refresh re-enters the same 401 branch and
-  attempts another refresh rather than raising `RuntimeError`. (tgenie.py:128–134)
-- `_DEBUG` is a module-level global in each provider file; `set_debug(True)` must be
-  called before the first request to see debug output. (anthropic.py:13–18,
-  openai.py:12–17, tgenie.py:17–22)
+- `parse_sse` falls back to reasoning tokens when content accumulates to empty — `base.py:47` — `return full or reasoning`
+- SSE terminator `data: [DONE]` and `{"done": true}` are both silently skipped — `base.py:24` — `if line == "data: [DONE]" or re.match(r'^data:\s*\{"done"\s*:\s*true', line):`
+- `OpenAIProvider` routes Ollama to the native `/api/chat` path, not `/v1` — `openai.py:66` — `if self._is_ollama() and not req.files:`
+- Ollama native path sets `stream: False` and `think: False` explicitly — `openai.py:85-86` — `"stream": False,`
+- `AnthropicProvider` strips `system` role from the messages array and promotes to top-level payload key — `anthropic.py:88-89` — `if system_text:`
+- All three concrete providers declare `tool_calls=False` in their capabilities — `anthropic.py:37` — `return ProviderCapabilities(streaming=True, vision=True, tool_calls=False)`
+- `TGenieProvider` on HTTP 401 calls `_refresh_token()` and retries exactly once — `tgenie.py:129-133` — `if resp.status_code == 401:`
+- TGenie disables SSL verification unconditionally — `tgenie.py:120` — `verify=False,`
+- `urllib3` InsecureRequestWarning is suppressed globally at module import — `tgenie.py:12` — `urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)`
+- `_history_to_openai` silently drops messages whose role is not `user`, `assistant`, or `system` — `openai.py:30` — `if role not in ("user", "assistant", "system"):`
 
 ## Change log
 
-- 572f7ff30399bed1a1a3c230918ba037ae874272: fix Invariant 7 — HTTP 401 retry claim
-  corrected: RuntimeError fires only when _refresh_token() returns False, not on a
-  second 401; unbounded recursion risk on repeated 401s documented. (tgenie.py:128–134)
-- 572f7ff30399bed1a1a3c230918ba037ae874272: initial card generated by doc-bootstrap
+- dfeabc1a64fb3dcf297942cf39e4cf5ba55f334b: initial card created for doc-bootstrap run
