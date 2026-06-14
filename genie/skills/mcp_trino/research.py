@@ -104,6 +104,7 @@ class EnhancementReport:
     had_qualified_tables: bool = False
     original_explain: ExplainAnalyzeResult | None = None
     enhanced_explain: ExplainAnalyzeResult | None = None
+    step_trace: list = field(default_factory=list)  # v48: StepTrace (typed loosely to avoid circular)
 
 
 @dataclass
@@ -1184,6 +1185,149 @@ def _results_equivalent(rows_a: list, rows_b: list) -> tuple[bool, str]:
 
 
 # ---------------------------------------------------------------------------
+# §3.1 Seed-candidate evaluation — pure decision, no I/O
+# ---------------------------------------------------------------------------
+
+class _SeedVerdict:
+    """Return value from _evaluate_seed_candidate."""
+    __slots__ = ("accepted", "winner_sql", "winner_metric", "winner_rows", "reason")
+
+    def __init__(
+        self,
+        accepted: bool,
+        winner_sql: str,
+        winner_metric: float,
+        winner_rows: list,
+        reason: str,
+    ) -> None:
+        self.accepted = accepted
+        self.winner_sql = winner_sql
+        self.winner_metric = winner_metric
+        self.winner_rows = winner_rows
+        self.reason = reason
+
+
+def _evaluate_seed_candidate(
+    original_sql: str,
+    recomposed_sql: str,
+    baseline_metric: float,
+    baseline_rows: list,
+    seed_metric: float,
+    seed_rows: list,
+) -> "_SeedVerdict":
+    """Pure §3.1 seed-validation decision — no I/O, no side effects.
+
+    Rules (§3.1 NORMATIVE):
+      - winner_sql and winner_metric are ALWAYS updated together.
+      - A seed is accepted iff rows are equivalent AND seed is strictly faster.
+      - An equivalent-but-slower seed is explicitly rejected (SCR-1).
+      - A row-divergent seed is rejected (SEED_REJECTED).
+
+    Returns a _SeedVerdict whose ``accepted`` flag signals the branch taken.
+    Both the MCP standard loop and the --direct standard loop call this helper
+    so the invariant is pinned in one place and covered by a single test suite.
+    """
+    equiv, equiv_reason = _results_equivalent(baseline_rows, seed_rows)
+    if equiv and seed_metric < baseline_metric:
+        return _SeedVerdict(
+            accepted=True,
+            winner_sql=recomposed_sql,
+            winner_metric=seed_metric,
+            winner_rows=seed_rows,
+            reason="accepted",
+        )
+    reason = (
+        f"row-equiv failed: {equiv_reason}"
+        if not equiv
+        else f"not faster: {seed_metric:.1f} >= {baseline_metric:.1f}"
+    )
+    return _SeedVerdict(
+        accepted=False,
+        winner_sql=original_sql,
+        winner_metric=baseline_metric,
+        winner_rows=baseline_rows,
+        reason=reason,
+    )
+
+
+# ---------------------------------------------------------------------------
+# §3.1 Single-call-site seed orchestrator — produce + measure + decide
+# ---------------------------------------------------------------------------
+
+def _seed_decompose_and_select(
+    original_sql: str,
+    baseline_measure: "MeasureResult",
+    *,
+    produce_fn: "Callable[[str], tuple[str, list, list, object]]",
+    measure_fn: "Callable[[str], MeasureResult]",
+    flag_enabled: bool,
+    output=None,
+    trace: "Optional[list]" = None,
+) -> "tuple[str, MeasureResult, list]":
+    """§3.1 NORMATIVE single locus: decompose → measure → decide, coupled.
+
+    Returns ``(winner_sql, winner_measure, step_events)`` as a coupled triple.
+    ``winner_sql`` and ``winner_measure`` are ALWAYS from the same decision arm —
+    they can NEVER be decoupled by an in-between assignment.
+
+    Args:
+        original_sql: the unmodified query.
+        baseline_measure: the already-measured baseline ``MeasureResult``.
+        produce_fn: ``(sql) -> (recomposed_sql, frags, cands, rr)`` —
+            wraps ``_produce_decompose_candidate`` with bound LLM/cost args.
+        measure_fn: ``(sql) -> MeasureResult`` — wraps ``_measure_mcp`` or a
+            dict→MeasureResult adapter for the --direct path.
+        flag_enabled: ``GENIE_V48_SEED_DECOMPOSE`` guard — when False, returns
+            ``(original_sql, baseline_measure, [])`` immediately without calling
+            produce_fn or measure_fn (no LLM calls, no Trino round-trips).
+        output: progress sink (optional).
+        trace: ``StepTrace`` list to append events into (optional).
+
+    T-SYM: both the MCP STANDARD site and the --direct STANDARD site call this
+    function; it is the only place where the §3.1 coupled assignment lives.
+    """
+    if not flag_enabled:
+        return original_sql, baseline_measure, []
+
+    events: list = [] if trace is None else trace
+
+    try:
+        recomposed_sql, _frags, _cands, _rr = produce_fn(original_sql)
+        if recomposed_sql == original_sql:
+            # Decompose produced no change — skip measure, keep original.
+            return original_sql, baseline_measure, events
+
+        seed_measure = measure_fn(recomposed_sql)
+
+        verdict = _evaluate_seed_candidate(
+            original_sql, recomposed_sql,
+            baseline_measure.median_metric, baseline_measure.rows,
+            seed_measure.median_metric, seed_measure.rows,
+        )
+
+        if verdict.accepted:
+            if output:
+                output.progress(
+                    f"  [seed] decompose→recompose accepted: "
+                    f"{baseline_measure.median_metric:.1f} → {seed_measure.median_metric:.1f}"
+                )
+            # §3.1 COUPLED return: winner_sql and winner_measure move together.
+            return recomposed_sql, seed_measure, events
+        else:
+            if output:
+                output.progress(
+                    f"  [seed] decompose→recompose not accepted ({verdict.reason})"
+                )
+            # §3.1 COUPLED return: original SQL with its baseline measure.
+            return original_sql, baseline_measure, events
+
+    except Exception as exc:
+        if output:
+            output.progress(f"  [seed] decompose failed (degraded): {exc}")
+        return original_sql, baseline_measure, events
+
+
+# ---------------------------------------------------------------------------
 # Long-query plan-cost loop (MCP parity)
 # ---------------------------------------------------------------------------
 
@@ -1308,12 +1452,52 @@ def _run_mcp_plan_cost_loop(
         else _results_equivalent(baseline.rows, measured.rows)
     )
 
+    # ── v48 T6: Decompose-seed validation for MCP plan-cost loop ──
+    # Guard: disabled by GENIE_V48_SEED_DECOMPOSE=0 for test/debugging isolation.
+    import os as _os_v48_pcl
+    _v48_pcl_seed_enabled = _os_v48_pcl.environ.get("GENIE_V48_SEED_DECOMPOSE", "1") != "0"
+
+    from genie.output.step_trace import StepTrace as _PCL_StepTrace
+    _pcl_step_trace: _PCL_StepTrace = []
+    _pcl_seed_sql = original_sql
+    _pcl_seed_baseline = baseline
+    if _v48_pcl_seed_enabled:
+        try:
+            from genie.skills.mcp_trino.write_analysis import _make_advisory_llm_fn as _pcl_llm_fn_factory
+            from genie.skills.mcp_trino.write_analysis import _advisory_cost_reader as _pcl_cost_reader
+            if provider is not None:
+                _pcl_llm_fn = _pcl_llm_fn_factory(provider, model, reasoning)
+                _pcl_recomposed, _pcl_frags, _pcl_cands, _pcl_rr = _produce_decompose_candidate(
+                    original_sql, _pcl_llm_fn, _pcl_cost_reader,
+                    run_static_gates=False, step_trace=_pcl_step_trace,
+                )
+                if _pcl_recomposed != original_sql:
+                    _pcl_seed_meas = _measure_mcp(
+                        client, _pcl_recomposed, metric_key, verify_runs,
+                        capture_rows=True, output=output, label="seed",
+                        timeout_ms=candidate_timeout_ms,
+                    )
+                    _pcl_seed_equiv, _pcl_seed_reason = _results_equivalent(baseline.rows, _pcl_seed_meas.rows)
+                    if _pcl_seed_equiv and _pcl_seed_meas.median_metric < baseline_metric:
+                        _pcl_seed_sql = _pcl_recomposed
+                        _pcl_seed_baseline = _pcl_seed_meas
+                        if output:
+                            output.progress(
+                                f"  [seed] decompose→recompose accepted (plan-cost loop): "
+                                f"{baseline_metric:.1f} → {_pcl_seed_meas.median_metric:.1f}"
+                            )
+                    else:
+                        _pcl_seed_sql = original_sql
+        except Exception as _pcl_seed_exc:
+            if output:
+                output.progress(f"  [seed] decompose failed in plan-cost loop (degraded): {_pcl_seed_exc}")
+
     result = _plan_cost_loop_core(
         provider=provider,
         model=model,
         reasoning=reasoning,
         sys_prompt=sys_prompt,
-        original_sql=original_sql,
+        original_sql=_pcl_seed_sql,
         metric_key=metric_key,
         max_iterations=max_iterations,
         max_fallbacks=max_fallbacks,
@@ -1390,6 +1574,7 @@ def _run_mcp_plan_cost_loop(
         had_qualified_tables=bool(qualified_refs),
         original_explain=None,
         enhanced_explain=None,
+        step_trace=_pcl_step_trace,
     )
 
     _render_summary_card(
@@ -1530,7 +1715,7 @@ _LABELS_ZH = {
 }
 
 
-def generate_report(report: EnhancementReport, locale: str = "en") -> str:
+def generate_report(report: EnhancementReport, locale: str = "en", step_trace=None) -> str:
     """Generate a fixed-format markdown report.
 
     This template is ALWAYS the same structure — sections, headers, and table
@@ -1540,6 +1725,7 @@ def generate_report(report: EnhancementReport, locale: str = "en") -> str:
         report: The enhancement report data.
         locale: "en" for English, "zh" for Traditional Chinese.
                 SQL, metrics, and column names always stay English.
+        step_trace: Optional StepTrace from v48 — appended as a step-level section.
     """
     L = _LABELS_ZH if locale == "zh" else _LABELS_EN
     lines = []
@@ -1747,12 +1933,253 @@ def generate_report(report: EnhancementReport, locale: str = "en") -> str:
     _render_explain(report.original_explain, L["explain_original"])
     _render_explain(report.enhanced_explain, L["explain_enhanced"])
 
+    # ── v48 Step Trace ──
+    if step_trace:
+        from genie.output.step_trace import render_report as _render_step_report
+        step_section = _render_step_report(step_trace)
+        if step_section.strip():
+            lines.append("## Step Trace")
+            lines.append("")
+            lines.append(step_section)
+            lines.append("")
+
     # ── Footer ──
     lines.append("---")
     lines.append(f"_{L['generated_by']} {report.timestamp}_")
     lines.append("")
 
     return "\n".join(lines)
+
+
+# ---------------------------------------------------------------------------
+# Decompose-seed helper (v48 T3)
+# ---------------------------------------------------------------------------
+
+def _produce_decompose_candidate(
+    sql: str,
+    llm_fn,
+    cost_reader_fn,
+    run_static_gates: bool,
+    step_trace=None,
+):
+    """Run decompose→per-fragment-optimize(cap=5)→recompose to produce a starting candidate.
+
+    run_static_gates=False for executing read paths (row-equiv measured empirically).
+    run_static_gates=True for advisory no-data/can't-connect paths.
+    Never raises — degrades to returning (sql, [], [], rr) on any failure.
+    Returns (recomposed_sql, fragments, candidates, rr).
+    """
+    from genie.skills.mcp_trino.trino_optimize import (
+        decompose as _decompose,
+        optimize as _optimize,
+        recompose as _recompose,
+        RecomposeStatus,
+        RewriteCandidate,
+    )
+    from genie.skills.trino_query.detection_scan import scan_sql as _scan_sql
+    from genie.skills.mcp_trino.write_analysis import (
+        _column_safe_candidates,
+        _semantic_safe_candidates,
+    )
+    from genie.output.step_trace import StepEvent, StepStatus, CANONICAL_COPY
+
+    try:
+        # 1. Decompose
+        fragments = _decompose(sql, llm_fn, cost_reader_fn)
+        n = len(fragments)
+        monster_ids = [f.fragment_id for f in fragments if f.is_monster]
+        fragment_ids = [f.fragment_id for f in fragments]
+
+        if n == 1 and not fragments[0].is_monster:
+            decompose_headline = "1 fragment (whole query)"
+        else:
+            decompose_headline = f"{n} fragment(s) identified ({', '.join(fragment_ids)})"
+            if monster_ids:
+                decompose_headline += f" — monster(s): {', '.join(monster_ids)}"
+
+        if step_trace is not None:
+            step_trace.append(StepEvent(
+                step_id="decompose",
+                stage="Decompose",
+                status=StepStatus.RAN,
+                applicable=True,
+                tui_headline=decompose_headline,
+                detail={
+                    "fragment_count": n,
+                    "fragment_ids": fragment_ids,
+                    "monster_ids": monster_ids,
+                    "seed_changed": False,  # will update below
+                },
+            ))
+
+        # 2. Fragment optimize with cap=5 monsters
+        monsters = [fr for fr in fragments if fr.is_monster][:5]
+        over_cap_list = [fr for fr in fragments if fr.is_monster][5:]
+        over_cap_set = set(id(fr) for fr in over_cap_list)
+
+        candidates = []
+        frag_idx = 0
+        for fr in fragments:
+            frag_idx += 1
+            is_over_cap = id(fr) in over_cap_set
+            if fr in monsters:
+                cand = _optimize(fr, llm_fn)
+            else:
+                # Non-monster or over-cap: passthrough
+                cand = RewriteCandidate(
+                    fragment_id=fr.fragment_id,
+                    original_sql=fr.sql,
+                    rewritten_sql=fr.sql,
+                    action="unchanged",
+                    changed=False,
+                    admitted=True,
+                    rationale="passthrough (non-monster or over-cap)",
+                )
+            candidates.append(cand)
+
+            if is_over_cap:
+                ev_status = StepStatus.SKIPPED
+                ev_detail = {
+                    "fragment_id": fr.fragment_id,
+                    "role": getattr(fr, "role", ""),
+                    "is_monster": fr.is_monster,
+                    "rank": getattr(fr, "monster_rank", None),
+                    "action": "over_cap",
+                    "changed": False,
+                    "col_gate_verdict": "off" if not run_static_gates else "n/a",
+                    "sem_gate_verdict": "off" if not run_static_gates else "n/a",
+                }
+                ev_headline = f"{fr.fragment_id}: over-cap (not optimized)"
+            else:
+                if cand.changed and cand.admitted:
+                    ev_status = StepStatus.RAN
+                    ev_action = "optimized"
+                else:
+                    ev_status = StepStatus.SKIPPED
+                    ev_action = "unchanged"
+                ev_detail = {
+                    "fragment_id": fr.fragment_id,
+                    "role": getattr(fr, "role", ""),
+                    "is_monster": fr.is_monster,
+                    "rank": getattr(fr, "monster_rank", None),
+                    "action": ev_action,
+                    "changed": cand.changed,
+                    "rationale": cand.rationale,
+                    "col_gate_verdict": "off" if not run_static_gates else "n/a",
+                    "sem_gate_verdict": "off" if not run_static_gates else "n/a",
+                }
+                ev_headline = f"{fr.fragment_id}: {ev_action}"
+
+            if step_trace is not None:
+                step_trace.append(StepEvent(
+                    step_id=f"fragment_{frag_idx}",
+                    stage=f"Fragment {frag_idx}/{n}",
+                    status=ev_status,
+                    applicable=True,
+                    tui_headline=ev_headline,
+                    detail=ev_detail,
+                ))
+
+        # 3. Gate toggle (CRUX)
+        col_reverted = []
+        sem_reverted = []
+        if run_static_gates:
+            candidates, col_reverted = _column_safe_candidates(candidates)
+            candidates, sem_reverted = _semantic_safe_candidates(candidates)
+            # Update fragment StepEvents with gate verdicts
+            if step_trace is not None:
+                frag_events = [ev for ev in step_trace if ev.step_id.startswith("fragment_")]
+                for ev in frag_events:
+                    fid = ev.detail.get("fragment_id", "")
+                    if fid in col_reverted:
+                        ev.detail["col_gate_verdict"] = "reverted"
+                        ev.detail["sem_gate_verdict"] = "n/a"
+                        ev.detail["action"] = "reverted_by_col_gate"
+                        ev.tui_headline = f"{fid}: reverted_by_col_gate"
+                    elif fid in sem_reverted:
+                        ev.detail["col_gate_verdict"] = "pass"
+                        ev.detail["sem_gate_verdict"] = "reverted"
+                        ev.detail["action"] = "reverted_by_sem_gate"
+                        ev.tui_headline = f"{fid}: reverted_by_sem_gate"
+                    elif (
+                        ev.detail.get("col_gate_verdict") == "n/a"
+                        and ev.detail.get("action") not in ("over_cap", "unchanged")
+                    ):
+                        ev.detail["col_gate_verdict"] = "pass"
+                        ev.detail["sem_gate_verdict"] = "pass"
+
+        # 4. Recompose
+        rr = _recompose(sql, candidates, scan_fn=_scan_sql)
+
+        applied_count = sum(1 for c in candidates if c.admitted and c.changed)
+        status_val = rr.status.value if hasattr(rr.status, "value") else str(rr.status)
+
+        recompose_parts = [f"{status_val} — {applied_count}/{n} fragments applied"]
+        if col_reverted:
+            recompose_parts.append(
+                f"(col-gate reverted: {', '.join(col_reverted)}; "
+                f"sem-gate reverted: {', '.join(sem_reverted)})"
+            )
+        elif sem_reverted:
+            recompose_parts.append(
+                f"(col-gate reverted: none; sem-gate reverted: {', '.join(sem_reverted)})"
+            )
+
+        if not rr.scan_ok_confident:
+            recompose_headline = CANONICAL_COPY["RECOMPOSE_SCAN_INCONCLUSIVE"]
+        else:
+            recompose_headline = " ".join(recompose_parts)
+
+        recompose_detail = {
+            "status": status_val,
+            "reverted_fragments": list(rr.reverted_fragments) if rr.reverted_fragments else [],
+            "col_gate_reverted": col_reverted,
+            "sem_gate_reverted": sem_reverted,
+            "recomposed_sql": rr.sql if rr.sql != sql else None,
+            "sql_changed": rr.sql != sql,
+            "scan_ok_confident": rr.scan_ok_confident,
+            "seed_changed": rr.sql != sql,
+        }
+
+        if step_trace is not None:
+            step_trace.append(StepEvent(
+                step_id="recompose",
+                stage="Recompose",
+                status=StepStatus.RAN,
+                applicable=True,
+                tui_headline=recompose_headline,
+                detail=recompose_detail,
+            ))
+            # Update decompose event with seed_changed
+            for ev in step_trace:
+                if ev.step_id == "decompose":
+                    ev.detail["seed_changed"] = rr.sql != sql
+                    break
+
+        return rr.sql, fragments, candidates, rr
+
+    except Exception as exc:
+        # Safe degrade: return original sql
+        if step_trace is not None:
+            step_trace.append(StepEvent(
+                step_id="decompose",
+                stage="Decompose",
+                status=StepStatus.DEGRADED,
+                applicable=True,
+                tui_headline=f"decompose failed: {exc}",
+                detail={"error": str(exc)},
+            ))
+
+        _fallback_sql = sql  # capture before class body (class scope doesn't close over locals)
+
+        class _FallbackRR:
+            sql = _fallback_sql
+            reverted_fragments: tuple = ()
+            scan_ok_confident = True
+            class status:  # type: ignore[misc]
+                value = "degraded"
+
+        return sql, [], [], _FallbackRR()
 
 
 # ---------------------------------------------------------------------------
@@ -1795,6 +2222,10 @@ def run_mcp_enhancement(
     """
     from genie.core.provider import CompletionRequest
     from genie.session.manager import new_msg, new_session
+    from genie.output.step_trace import StepTrace, render_report as _render_step_report
+
+    # v48: step-level trace — populated as the loop runs; spliced into report at end
+    _step_trace: StepTrace = []
 
     if output:
         output.print("\n  [yellow]== MCP Trino Query Enhancement ==[/yellow]")
@@ -2101,9 +2532,48 @@ def run_mcp_enhancement(
     sys_prompt += skill_prompt
     session = new_session(sys_prompt)
 
-    best_sql = sql
-    best_metric = baseline.median_metric
-    best_measure = baseline
+    # ── v48 T4: Decompose-seed validation (§3.1 NORMATIVE) ──
+    # Single call to _seed_decompose_and_select; winner_sql+winner_measure
+    # are returned as a coupled tuple — cannot be decoupled by intermediate
+    # assignments.  Guard: GENIE_V48_SEED_DECOMPOSE=0 → immediate passthrough.
+    import os as _os_v48
+    _v48_seed_enabled = _os_v48.environ.get("GENIE_V48_SEED_DECOMPOSE", "1") != "0"
+
+    _read_llm_fn = None
+    _mcp_cost_reader_fn = None
+    if _v48_seed_enabled:
+        try:
+            from genie.skills.mcp_trino.write_analysis import _make_advisory_llm_fn as _wa_llm_fn
+            from genie.skills.mcp_trino.write_analysis import _advisory_cost_reader as _mcp_cost_reader_fn
+            if provider is not None:
+                _read_llm_fn = _wa_llm_fn(provider, model, reasoning)
+        except Exception:
+            pass
+
+    def _mcp_produce_fn(_sql: str):
+        return _produce_decompose_candidate(
+            _sql, _read_llm_fn, _mcp_cost_reader_fn,
+            run_static_gates=False, step_trace=_step_trace,
+        )
+
+    def _mcp_measure_fn(_sql: str) -> "MeasureResult":
+        return _measure_mcp(
+            client, _sql, metric_key, verify_runs,
+            capture_rows=True, output=output, label="seed",
+        )
+
+    # §3.1 NORMATIVE: best_sql and best_measure come from the SAME tuple arm.
+    # _seed_decompose_and_select is the single call-site locus — it cannot drift.
+    # Flag-off path: produce_fn/measure_fn are never called (FLAG-OFF spy test verifies this).
+    best_sql, best_measure, _ = _seed_decompose_and_select(
+        sql, baseline,
+        produce_fn=_mcp_produce_fn if (_read_llm_fn and _mcp_cost_reader_fn) else (lambda s: (s, [], [], None)),
+        measure_fn=_mcp_measure_fn,
+        flag_enabled=_v48_seed_enabled,
+        output=output,
+        trace=_step_trace,
+    )
+    best_metric = best_measure.median_metric
     iterations: list[IterationRecord] = []
     # v32 T1: cache of rendered direction blocks keyed by SQL. Seeded with the
     # original (already in the system prompt) so a stable best_sql is never
@@ -2409,6 +2879,7 @@ def run_mcp_enhancement(
         had_qualified_tables=had_qualified_tables,
         original_explain=original_explain,
         enhanced_explain=enhanced_explain,
+        step_trace=_step_trace,
     )
 
     # Final visual summary
@@ -2847,7 +3318,7 @@ def run_trino_research_via_mcp(
 
     # Save report markdown (same pattern as direct path)
     try:
-        report_md = generate_report(report)
+        report_md = generate_report(report, step_trace=getattr(report, "step_trace", None) or None)
         report_name = f"trino-research-mcp-{datetime.now().strftime('%Y%m%d-%H%M%S')}.md"
         report_path = Path.cwd() / report_name
         report_path.write_text(report_md)

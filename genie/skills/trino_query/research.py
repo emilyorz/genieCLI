@@ -372,6 +372,7 @@ def _run_no_data_path(
     static_report,
     baseline_exc: Optional[BaseException],
     output,
+    step_trace=None,
 ) -> dict:
     """Single-call static analysis + optional LLM finishing — no iteration loop.
 
@@ -396,6 +397,32 @@ def _run_no_data_path(
         output.progress(f"  Static analysis: {static_report.summary}")
         for f in static_report.findings:
             output.print(f"    [{f.severity[0].upper()}] {f.rule_id}: {f.message}")
+
+    # ── v48 T7: Advisory decompose (run_static_gates=True, no live execution) ──
+    # Guard: disabled by GENIE_V48_SEED_DECOMPOSE=0 for test/debugging isolation.
+    import os as _os_v48_nd
+    _v48_nd_seed_enabled = _os_v48_nd.environ.get("GENIE_V48_SEED_DECOMPOSE", "1") != "0"
+
+    from genie.output.step_trace import StepTrace as _ND_StepTrace
+    _nd_trace: _ND_StepTrace = step_trace if step_trace is not None else []
+    _nd_advisory_sql = original_sql
+    if _v48_nd_seed_enabled and provider is not None:
+        try:
+            from genie.skills.mcp_trino.write_analysis import _make_advisory_llm_fn as _nd_llm_fn_factory
+            from genie.skills.mcp_trino.write_analysis import _advisory_cost_reader as _nd_cost_reader
+            from genie.skills.mcp_trino.research import _produce_decompose_candidate as _nd_decompose
+            _nd_llm_fn = _nd_llm_fn_factory(provider, model, reasoning)
+            _nd_recomposed, _nd_frags, _nd_cands, _nd_rr = _nd_decompose(
+                original_sql, _nd_llm_fn, _nd_cost_reader,
+                run_static_gates=True, step_trace=_nd_trace,
+            )
+            if _nd_recomposed != original_sql:
+                _nd_advisory_sql = _nd_recomposed
+                if output:
+                    output.progress("  Advisory decompose→recompose produced candidate (ADVISORY — UNVERIFIED)")
+        except Exception as _nd_exc:
+            if output:
+                output.progress(f"  [warn] advisory decompose failed (degraded): {_nd_exc}")
 
     # Finishing pass: ask the model to synthesise an optimized rewrite. Single
     # call — no iteration, no measurement. In the no-data path genieCLI acts as a
@@ -466,6 +493,10 @@ def _run_no_data_path(
             optimized_sql = extracted
             output.progress("  Advisory optimized SQL extracted (unverified — no data)")
 
+    # v48 T7: prefer advisory decompose SQL if LLM finishing pass didn't produce one
+    if optimized_sql is None and _nd_advisory_sql != original_sql:
+        optimized_sql = _nd_advisory_sql
+
     report_md = _no_data_report(
         sql=original_sql,
         reason=no_data_reason,
@@ -474,6 +505,13 @@ def _run_no_data_path(
         model=model,
         optimized_sql=optimized_sql,
     )
+
+    # v48 T8: splice step trace into no-data report
+    if _nd_trace:
+        from genie.output.step_trace import render_report as _render_step_report
+        step_section = _render_step_report(_nd_trace)
+        if step_section.strip():
+            report_md = report_md + "\n\n## Step Trace\n\n" + step_section + "\n"
 
     return {
         "status": "no_data",
@@ -497,6 +535,7 @@ def _run_no_data_path(
         ),
         "llm_finishing": llm_finishing,
         "report_markdown": report_md,
+        "step_trace": _nd_trace,  # v48
     }
 
 
@@ -613,12 +652,49 @@ def _run_plan_cost_loop(
     # Single-emission empty-branch message; core emits this via empty_message param.
     _DIRECT_EMPTY_MSG = "  [verify] No candidate beats baseline plan cost — emitting no_verifiable_improvement"
 
+    # ── v48 T6: Decompose-seed validation for --direct plan-cost loop ──
+    # Guard: disabled by GENIE_V48_SEED_DECOMPOSE=0 for test/debugging isolation.
+    import os as _os_v48_dpcl
+    _v48_dpcl_seed_enabled = _os_v48_dpcl.environ.get("GENIE_V48_SEED_DECOMPOSE", "1") != "0"
+
+    from genie.output.step_trace import StepTrace as _DPCL_StepTrace
+    _dpcl_step_trace: _DPCL_StepTrace = []
+    _dpcl_seed_sql = original_sql
+    if _v48_dpcl_seed_enabled:
+        try:
+            from genie.skills.mcp_trino.write_analysis import _make_advisory_llm_fn as _dpcl_llm_fn_factory
+            from genie.skills.mcp_trino.write_analysis import _advisory_cost_reader as _dpcl_cost_reader
+            from genie.skills.mcp_trino.research import _produce_decompose_candidate as _dpcl_decompose
+            if provider is not None:
+                _dpcl_llm_fn = _dpcl_llm_fn_factory(provider, model, reasoning)
+                _dpcl_recomposed, _dpcl_frags, _dpcl_cands, _dpcl_rr = _dpcl_decompose(
+                    original_sql, _dpcl_llm_fn, _dpcl_cost_reader,
+                    run_static_gates=False, step_trace=_dpcl_step_trace,
+                )
+                if _dpcl_recomposed != original_sql:
+                    _dpcl_seed_meas = _measure(
+                        _dpcl_recomposed, metric_key, verify_runs,
+                        capture_rows=True, output=output, label="seed",
+                        timeout_ms=candidate_timeout_ms,
+                    )
+                    _dpcl_seed_equiv = _dpcl_seed_meas["row_count"] == baseline_rows
+                    if _dpcl_seed_equiv and _dpcl_seed_meas["median"] < baseline_metric:
+                        _dpcl_seed_sql = _dpcl_recomposed
+                        if output:
+                            output.progress(
+                                f"  [seed] decompose→recompose accepted (plan-cost loop): "
+                                f"{baseline_metric:.1f} → {_dpcl_seed_meas['median']:.1f}"
+                            )
+        except Exception as _dpcl_seed_exc:
+            if output:
+                output.progress(f"  [seed] decompose failed in direct plan-cost loop (degraded): {_dpcl_seed_exc}")
+
     result = _plan_cost_loop_core(
         provider=provider,
         model=model,
         reasoning=reasoning,
         sys_prompt=sys_prompt,
-        original_sql=original_sql,
+        original_sql=_dpcl_seed_sql,
         metric_key=metric_key,
         max_iterations=max_iterations,
         max_fallbacks=max_fallbacks,
@@ -895,6 +971,10 @@ def _run_optimization_loop(
     )
     from genie.skills.trino_query.sql_static import analyze as static_analyze
     from genie.skills.trino_query.sql_static import summary_line as _static_summary_line
+    from genie.output.step_trace import StepTrace
+
+    # v48: step-level trace — populated as the loop runs; spliced into report at end
+    _step_trace: StepTrace = []
 
     # ── Static analysis (cheap; runs in both paths) ──
     try:
@@ -1094,9 +1174,71 @@ def _run_optimization_loop(
     )
     session = new_session(sys_prompt)
 
-    best_sql = original_sql
-    best_metric = baseline_metric
-    best_metrics_obj = baseline["metrics"]  # v32 T2: track best candidate's full metrics
+    # ── v48 T5: Decompose-seed validation (§3.1 NORMATIVE, --direct mirror) ──
+    # Single call to _seed_decompose_and_select (T-SYM: same locus as MCP path).
+    # Guard: GENIE_V48_SEED_DECOMPOSE=0 → immediate passthrough, no LLM calls.
+    import os as _os_v48_direct
+    _v48_direct_seed_enabled = _os_v48_direct.environ.get("GENIE_V48_SEED_DECOMPOSE", "1") != "0"
+
+    _direct_llm_fn = None
+    _dir_cost_reader_fn = None
+    if _v48_direct_seed_enabled:
+        try:
+            from genie.skills.mcp_trino.write_analysis import _make_advisory_llm_fn as _wa_llm_fn
+            from genie.skills.mcp_trino.write_analysis import _advisory_cost_reader as _dir_cost_reader_fn
+            if provider is not None:
+                _direct_llm_fn = _wa_llm_fn(provider, model, reasoning)
+        except Exception:
+            pass
+
+    # Wrap dict-based baseline into MeasureResult so _seed_decompose_and_select
+    # operates uniformly across both paths.
+    from genie.skills.mcp_trino.research import (
+        MeasureResult as _MeasureResult,
+        _produce_decompose_candidate,
+        _seed_decompose_and_select,
+    )
+    _dir_baseline_mr = _MeasureResult(
+        median_metric=baseline_metric,
+        samples=baseline.get("samples", [baseline_metric]),
+        row_count=baseline["row_count"],
+        rows=baseline_data,
+        columns=baseline.get("columns", []),
+        metrics=baseline["metrics"],
+    )
+
+    def _dir_produce_fn(_sql: str):
+        return _produce_decompose_candidate(
+            _sql, _direct_llm_fn, _dir_cost_reader_fn,
+            run_static_gates=False, step_trace=_step_trace,
+        )
+
+    def _dir_measure_fn(_sql: str) -> "_MeasureResult":
+        _d = _measure(
+            _sql, metric_key, verify_runs, capture_rows=True,
+            output=output, label="seed",
+        )
+        return _MeasureResult(
+            median_metric=_d["median"],
+            samples=_d.get("samples", [_d["median"]]),
+            row_count=_d["row_count"],
+            rows=_d["rows"],
+            columns=_d.get("columns", []),
+            metrics=_d["metrics"],
+        )
+
+    # §3.1 NORMATIVE: best_sql and best_measure come from the SAME tuple arm.
+    _dir_winner_sql, _dir_winner_mr, _ = _seed_decompose_and_select(
+        original_sql, _dir_baseline_mr,
+        produce_fn=_dir_produce_fn if (_direct_llm_fn and _dir_cost_reader_fn) else (lambda s: (s, [], [], None)),
+        measure_fn=_dir_measure_fn,
+        flag_enabled=_v48_direct_seed_enabled,
+        output=output,
+        trace=_step_trace,
+    )
+    best_sql = _dir_winner_sql
+    best_metric = _dir_winner_mr.median_metric
+    best_metrics_obj = _dir_winner_mr.metrics
     history = []
     # v32 T1: per-iteration re-diagnosis cache keyed by SQL (mirrors the MCP
     # path). Seeded with the original block (already in the system prompt) so a
@@ -1360,6 +1502,7 @@ def _run_optimization_loop(
         "original_sql": original_sql,
         "best_sql": best_sql,
         "history": history,
+        "step_trace": _step_trace,  # v48
     }
 
 
@@ -1464,6 +1607,18 @@ def _generate_report(result: dict, metric_key: str, model: str, verify_runs: int
         lines.append("```")
 
     lines.append("")
+
+    # v48: splice step trace into report
+    step_trace = result.get("step_trace")
+    if step_trace:
+        from genie.output.step_trace import render_report as _render_step_report
+        step_section = _render_step_report(step_trace)
+        if step_section.strip():
+            lines.append("## Step Trace")
+            lines.append("")
+            lines.append(step_section)
+            lines.append("")
+
     return "\n".join(lines)
 
 

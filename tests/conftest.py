@@ -1,11 +1,24 @@
 """Shared test fixtures and helpers for genieCLI tests."""
 from __future__ import annotations
 
+import os
 from typing import Any, Iterator
 
 import pytest
 
 from genie.core.provider import CompletionRequest, Delta, ProviderCapabilities
+
+
+@pytest.fixture(autouse=True)
+def _disable_v48_seed_decompose(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Disable the v48 decompose-seed path for all pre-existing tests.
+
+    Tests that exercise the seed path explicitly (test_decompose_then_iterate.py)
+    override this env var in their own setup.  Without this guard, the new seed
+    calls consume LLM mock side_effects that pre-existing tests didn't account
+    for, causing StopIteration failures.
+    """
+    monkeypatch.setenv("GENIE_V48_SEED_DECOMPOSE", "0")
 
 
 def _msg(role: str, text: str) -> dict:
