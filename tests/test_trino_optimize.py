@@ -21,6 +21,8 @@ from genie.skills.mcp_trino.trino_optimize import (
     ScanOutcome,
     VerifyResult,
     VerifyVerdict,
+    _apply_rewrites,
+    _extract_fragments,
     _normalize_rows_by_column_name,
     baseline,
     decompose,
@@ -219,19 +221,240 @@ class TestDecompose:
             assert max(monster_indices) < min(clean_indices)
 
     def test_t2_5_correlated_subquery(self):
-        """Correlated subquery → is_independently_runnable=False."""
-        # For this test, we verify the Fragment dataclass supports the field
-        frag = _make_fragment(is_independently_runnable=False)
-        assert frag.is_independently_runnable is False
-        assert frag.cost is not None
+        """TR-CORR: correlated EXISTS → is_independently_runnable=False, zero cost reads.
+        Paired with uncorrelated twin to pin the class boundary.
+        ANTI-FAKE-GREEN (counting spy): if is_independently_runnable defaulted True,
+        the cost stub would be called → count > 0 fails.
+        Uses from_ accessor (not 'from') and col.table (str property, not Identifier)."""
+        cost_calls: list[str] = []
+        def cost_stub(sql_arg):
+            cost_calls.append(sql_arg)
+            return CostReading(None, None, None, None, False, "no_runner")
+
+        # CORRELATED: xxx.aa references outer table via qualified col not in inner FROM
+        corr_sql = (
+            "SELECT * FROM t WHERE EXISTS (SELECT 1 FROM xxx WHERE xxx.aa = t.id)"
+        )
+        llm_stub = lambda prompt: "[]"
+        frags = decompose(corr_sql, llm_stub, cost_stub)
+        subq_frags = [f for f in frags if f.role == "subquery"]
+        assert len(subq_frags) >= 1, "Expected at least one subquery fragment"
+        corr_frag = next(f for f in subq_frags if f.fragment_id == "__subquery_0__")
+        assert corr_frag.is_independently_runnable is False, (
+            "Correlated EXISTS must have is_independently_runnable=False"
+        )
+        # Cost reader must NOT be called for the correlated fragment's sql
+        assert corr_frag.sql not in cost_calls, (
+            f"Cost reader was called for correlated subquery: {cost_calls}"
+        )
+
+        # UNCORRELATED twin: pins the class boundary (both col refs qualify inner table)
+        cost_calls.clear()
+        uncorr_sql = (
+            "SELECT * FROM t WHERE EXISTS (SELECT 1 FROM xxx WHERE xxx.aa = xxx.k)"
+        )
+        frags2 = decompose(uncorr_sql, llm_stub, cost_stub)
+        subq_frags2 = [f for f in frags2 if f.role == "subquery"]
+        assert len(subq_frags2) >= 1, "Expected at least one subquery fragment for uncorrelated"
+        uncorr_frag = next(f for f in subq_frags2 if f.fragment_id == "__subquery_0__")
+        assert uncorr_frag.is_independently_runnable is True, (
+            "Uncorrelated EXISTS must have is_independently_runnable=True"
+        )
+        # Cost reader MUST be called for the uncorrelated fragment (is_independently_runnable=True)
+        assert len(cost_calls) > 0, "Cost reader must be called for uncorrelated fragment"
 
     def test_t2_6_sibling_unnamed_subqueries(self):
-        """Two sibling unnamed subqueries → distinct fragment_ids."""
-        sql = "SELECT (SELECT 1) AS a, (SELECT 2) AS b FROM dual"
+        """TR-T26: WHERE EXISTS + WHERE IN (subquery) → 2 distinct __subquery_N__ fragments.
+        The old SQL 'SELECT (SELECT 1) AS a, (SELECT 2) AS b FROM dual' is DELETED — it
+        produced exactly 1 root fragment and was FAKE-GREEN (the distinct-ids assert was
+        trivially satisfied on 1 element).
+        ANTI-FAKE-GREEN: remove the Exists/In branch from _extract_fragments → subq_ids == []
+        → len==2 assertion fails red."""
+        sql = (
+            "SELECT * FROM t "
+            "WHERE EXISTS (SELECT 1 FROM a WHERE a1 = 1) "
+            "AND b IN (SELECT id FROM c WHERE c2 = 2)"
+        )
         llm_stub = lambda prompt: "[]"
-        frags = decompose(sql, llm_stub, lambda s: CostReading(None, None, None, None, False, "no_runner"))
-        ids = [f.fragment_id for f in frags]
-        assert len(ids) == len(set(ids)), f"Duplicate fragment_ids: {ids}"
+        cost_stub = lambda s: CostReading(None, None, None, None, False, "no_runner")
+        frags = decompose(sql, llm_stub, cost_stub)
+        subq_ids = {f.fragment_id for f in frags if f.role == "subquery"}
+        assert subq_ids == {"__subquery_0__", "__subquery_1__"}, (
+            f"Expected 2 distinct subquery fragment ids, got: {subq_ids}"
+        )
+        assert len(subq_ids) == 2
+
+
+# ---------------------------------------------------------------------------
+# TestSubqueryDecompose — v49 predicate-subquery extraction + apply_rewrites
+# ---------------------------------------------------------------------------
+
+class TestSubqueryDecompose:
+    """Tests for v49 subquery decomposition: _extract_fragments, _apply_rewrites,
+    _should_skip symmetry, and correlation detection."""
+
+    def test_should_extract_exists_body_as_subquery_when_where_exists(self):
+        """TR-EXISTS: a buried WHERE EXISTS is extracted as its own 'subquery' fragment.
+        ANTI-FAKE-GREEN: revert the Exists branch from _extract_fragments → no subquery
+        fragment → role/sql assertion fails red."""
+        sql = "SELECT * FROM t WHERE x > 0 AND EXISTS (SELECT 1 FROM xxx WHERE aa = bb)"
+        frags = _extract_fragments(sql)
+        subq_frags = [f for f in frags if f["role"] == "subquery"]
+        assert len(subq_frags) == 1, f"Expected 1 subquery fragment, got: {subq_frags}"
+        frag = subq_frags[0]
+        assert frag["role"] == "subquery"
+        # sql is the EXISTS body (bare Select), not the outer query
+        assert "SELECT 1" in frag["sql"] or "1" in frag["sql"]
+        assert "xxx" in frag["sql"]
+        assert frag["fragment_id"] == "__subquery_0__"
+        assert frag["subq_ordinal"] == 0
+
+    def test_should_extract_in_subquery_body_when_where_in_subquery(self):
+        """TR-IN: WHERE IN (subquery) is extracted as its own 'subquery' fragment.
+        ANTI-FAKE-GREEN: revert the In branch from _extract_fragments → no subquery
+        fragment → assertion fails red."""
+        sql = "SELECT * FROM t WHERE b IN (SELECT id FROM c WHERE c2 = 2)"
+        frags = _extract_fragments(sql)
+        subq_frags = [f for f in frags if f["role"] == "subquery"]
+        assert len(subq_frags) == 1, f"Expected 1 subquery fragment, got: {subq_frags}"
+        frag = subq_frags[0]
+        assert frag["role"] == "subquery"
+        assert "SELECT id" in frag["sql"] or "id" in frag["sql"]
+        assert "c" in frag["sql"]
+        assert frag["fragment_id"] == "__subquery_0__"
+
+    def test_should_extract_only_subquery_in_and_skip_value_list_in_when_mixed(self):
+        """TR-MIX: value-list IN (1,2,3) produces NO fragment and does NOT consume ordinal 0.
+        The subquery IN (SELECT ...) gets __subquery_0__.
+        ANTI-FAKE-GREEN: remove the 'q is not None and query-is-Subquery' guard → value-list
+        IN ticks → subquery fragment becomes __subquery_1__ → the {__subquery_0__}-only
+        assertion fails red. Directly pins the TICK-CONDITION class (I3, runtime-testable half)."""
+        sql = "SELECT * FROM t WHERE b IN (1, 2, 3) AND c IN (SELECT id FROM d)"
+        frags = _extract_fragments(sql)
+        subq_ids = {f["fragment_id"] for f in frags if f["role"] == "subquery"}
+        # Only the subquery IN is extracted; the value-list IN produces nothing
+        assert subq_ids == {"__subquery_0__"}, (
+            f"Expected only __subquery_0__ (value-list IN must not tick), got: {subq_ids}"
+        )
+        # Verify the extracted fragment is from the subquery IN, not the value-list IN
+        subq_frag = next(f for f in frags if f.get("fragment_id") == "__subquery_0__")
+        assert "SELECT id" in subq_frag["sql"] or "id" in subq_frag["sql"]
+
+    def test_should_assign_distinct_ordinals_when_sibling_subqueries(self):
+        """TR-SIB: 3 sibling predicates (EXISTS, EXISTS, IN subquery) → 3 distinct ordinals.
+        Uses SET/COUNT assertions — NOT text order (spec §2.2: walk order is non-text-order).
+        Also asserts no scalar/derived/UNION fragment leaks in (out-of-scope, §1.3).
+        ANTI-FAKE-GREEN: revert ordinal tick → collision → distinct-count fails red."""
+        sql = (
+            "SELECT * FROM t "
+            "WHERE EXISTS (SELECT 1 FROM a) "
+            "AND EXISTS (SELECT 2 FROM b) "
+            "AND b IN (SELECT id FROM c)"
+        )
+        frags = _extract_fragments(sql)
+        subq_ids = {f["fragment_id"] for f in frags if f["role"] == "subquery"}
+        assert subq_ids == {"__subquery_0__", "__subquery_1__", "__subquery_2__"}, (
+            f"Expected 3 distinct __subquery_N__ ids, got: {subq_ids}"
+        )
+        assert len(subq_ids) == 3
+        # Out-of-scope forms must not leak in
+        roles = {f["role"] for f in frags}
+        assert roles <= {"cte", "root", "subquery"}, (
+            f"Unexpected fragment roles (scalar/derived/UNION must not appear): {roles}"
+        )
+
+    def test_should_extract_only_root_exists_and_skip_cte_internal_when_cte_has_exists(self):
+        """TR-SYM: CTE-internal EXISTS is skipped; only root-level EXISTS is extracted.
+        AND: _apply_rewrites correctly rewrites the root EXISTS body (not the CTE-internal one).
+
+        ANTI-FAKE-GREEN — EXTRACT-SIDE ONLY (the sole runtime revert for this row):
+        Remove _should_skip from _extract_fragments → CTE-internal EXISTS is counted →
+        TWO __subquery_ fragments → assertion (a) len==1 / =={__subquery_0__} fails RED.
+        (Re-verified live: non-skipped count goes 1→2 when _should_skip is removed.)
+
+        Apply-side _should_skip is NOT pinned by a runtime revert here — root predicates
+        always precede CTE-internal predicates in tree.walk() (spec §0.1/§2.2), so removing
+        the apply-side skip never shifts ordinal 0 onto the CTE node. Apply-side symmetry
+        is pinned by I3-GATE (code review), stated honestly — not asserted as a vacuous revert.
+        Assertion (b) below locks the positive behavior, not a revert."""
+        sql = (
+            "WITH cte AS (SELECT 1 FROM a WHERE EXISTS (SELECT 2 FROM b)) "
+            "SELECT * FROM t WHERE EXISTS (SELECT 3 FROM c)"
+        )
+        # (a) Extraction: only the ROOT EXISTS is non-skipped
+        frags = _extract_fragments(sql)
+        subq_ids = {f["fragment_id"] for f in frags if f["role"] == "subquery"}
+        assert subq_ids == {"__subquery_0__"}, (
+            f"Expected exactly 1 subquery fragment (root EXISTS only; "
+            f"CTE-internal must be skipped), got: {subq_ids}"
+        )
+        assert len(subq_ids) == 1
+        # (b) Apply: rewriting __subquery_0__ rewrites the ROOT EXISTS body
+        original = sql
+        active = {"__subquery_0__": "SELECT 33 FROM c"}
+        result = _apply_rewrites(original, active)
+        assert "33" in result, (
+            f"Expected root EXISTS body to be rewritten to 'SELECT 33 FROM c', got: {result!r}"
+        )
+        # CTE-internal EXISTS body must be unchanged
+        assert "SELECT 2 FROM b" in result or "SELECT\n  2\nFROM b" in result, (
+            f"CTE-internal EXISTS body must be unchanged, got: {result!r}"
+        )
+
+    def test_should_round_trip_subquery_rewrite_in_original_position_when_recompose(self):
+        """TR-RT: _apply_rewrites stitches the rewrite into the correct WHERE position.
+        ANTI-FAKE-GREEN: revert the _apply_rewrites subquery branch → body unchanged →
+        '1 = 1' absent → fails red (apply-branch removal IS observable).
+
+        Never-raise proof: use a NON-MATCHING key (not an empty map — empty hits the
+        line-189 early return and proves nothing). The non-matching key exercises the
+        walk past the early return and returns the original SQL unchanged."""
+        original = "SELECT * FROM t WHERE x > 0 AND EXISTS (SELECT 1 FROM xxx WHERE aa = bb)"
+        active = {"__subquery_0__": "SELECT 1 FROM xxx WHERE aa = bb AND 1 = 1"}
+
+        result = _apply_rewrites(original, active)
+
+        # 1=1 must appear in the rewritten EXISTS body
+        assert "1 = 1" in result or "1=1" in result, (
+            f"Expected '1=1' in rewritten EXISTS body, got: {result!r}"
+        )
+        # Outer predicate (x > 0) must still be present at original position
+        assert "x > 0" in result or "x> 0" in result or "x >0" in result, (
+            f"Expected outer predicate preserved, got: {result!r}"
+        )
+        # EXISTS keyword must remain
+        assert "EXISTS" in result.upper()
+
+        # Never-raise proof: non-matching key → SQL returned unchanged (walks past early return)
+        non_match = {"__subquery_9__": "SELECT 1"}
+        no_change = _apply_rewrites(original, non_match)
+        # The EXISTS body must NOT contain the non-matching replacement
+        assert "SELECT 1 FROM xxx" in no_change, (
+            f"Non-matching key must leave EXISTS body untouched, got: {no_change!r}"
+        )
+
+    def test_should_skip_subquery_pass_and_apply_root_only_when_both_root_and_subquery_keys(self):
+        """TR-COLL: when active_rewrites has both __root__ and __subquery_N__, the subquery
+        pass is skipped (safe-degrade); the root rewrite still applies.
+        ANTI-FAKE-GREEN: remove the _skip_subq_pass guard → subquery pass runs against the
+        root-rebased tree → EXISTS body becomes 'SELECT 999 ...' → the 'body unchanged'
+        assertion fails red (observable, directly pins I5).
+        Note: TR-COLL pins I5 at the _apply_rewrites unit boundary; end-to-end recompose
+        integration path is covered by TR-RT (position) + I4 (never-raise)."""
+        original = "SELECT * FROM t WHERE EXISTS (SELECT 1 FROM xxx WHERE aa = bb)"
+        active = {
+            "__root__": "SELECT col FROM t WHERE EXISTS (SELECT 1 FROM xxx WHERE aa = bb)",
+            "__subquery_0__": "SELECT 999 FROM xxx",
+        }
+        result = _apply_rewrites(original, active)
+        # Root rewrite applied: projection changes to 'col'
+        assert "col" in result, f"Root rewrite not applied, got: {result!r}"
+        # Subquery pass skipped: EXISTS body must NOT be 'SELECT 999 ...'
+        assert "999" not in result, (
+            f"Subquery pass must be skipped when __root__ is present, got: {result!r}"
+        )
+        # EXISTS keyword preserved
+        assert "EXISTS" in result.upper()
 
 
 # ---------------------------------------------------------------------------

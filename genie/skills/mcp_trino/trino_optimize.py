@@ -184,6 +184,52 @@ def _fragment_key(fragment: Fragment) -> str:
     return f"__{fragment.role}_{fragment.subq_ordinal}__"
 
 
+def _should_skip(node) -> bool:
+    """Return True if node is nested inside a CTE body, UNION arm, With clause,
+    or inside another Exists/In. Used by BOTH _extract_fragments and _apply_rewrites
+    to maintain ordinal symmetry (I3). Never raises."""
+    _SKIP_CLASSES = {"Exists", "In", "CTE", "Union", "With"}
+    parent = getattr(node, "parent", None)
+    while parent is not None:
+        if type(parent).__name__ in _SKIP_CLASSES:
+            return True
+        parent = getattr(parent, "parent", None)
+    return False
+
+
+def _is_correlated_exists(inner_select, cte_names: set) -> bool:
+    """Return True iff the subquery is correlated (references an outer-scope table via
+    a qualifier not defined in its own FROM/JOIN) OR references a CTE alias (cannot run
+    standalone without the WITH context). Uses qualifier-based Method A (spec §5.2).
+    Never raises."""
+    import sqlglot.expressions as exp
+    try:
+        # Collect inner FROM tables (arg key is "from_" with underscore — NOT "from")
+        # "from" returns None; "from_" returns the FROM clause.
+        from_node = inner_select.args.get("from_")
+        inner_tables: set[str] = set()
+        if from_node is not None:
+            for tbl in from_node.find_all(exp.Table):
+                inner_tables.add(str(tbl.name).lower())
+        # Add JOIN tables
+        for join in (inner_select.args.get("joins") or []):
+            for tbl in join.find_all(exp.Table):
+                inner_tables.add(str(tbl.name).lower())
+        # Check CTE-alias reference: if any inner body table is a CTE alias,
+        # the subquery cannot run standalone.
+        if inner_tables & {n.lower() for n in cte_names}:
+            return True
+        # Check qualified column references: col.table is the str property (not Identifier)
+        # col.table == "" when unqualified; non-empty and not in inner_tables → outer ref
+        for col in inner_select.find_all(exp.Column):
+            if col.table and col.table.lower() not in inner_tables:
+                return True
+        return False
+    except Exception:
+        # Conservative: treat as correlated on any failure
+        return True
+
+
 def _apply_rewrites(original_sql: str, active_rewrites: dict[str, str]) -> str:
     """Pure AST substitution. Never raises — returns original_sql on any failure."""
     if not active_rewrites:
@@ -201,6 +247,14 @@ def _apply_rewrites(original_sql: str, active_rewrites: dict[str, str]) -> str:
         if tree is None:
             return original_sql
 
+        # Guard: when both __root__ and __subquery_N__ are present, the tree was
+        # re-based on the root rewrite (base_sql above), so original ordinals are
+        # stale; skip the subquery pass entirely (safe-degrade, I5 / TR-COLL).
+        has_root_rewrite = "__root__" in active_rewrites
+        has_subq_rewrite = any(k.startswith("__subquery_") for k in active_rewrites)
+        _skip_subq_pass = has_root_rewrite and has_subq_rewrite
+        _subq_ordinal = 0
+
         # Replace CTE bodies and subquery bodies whose fragment key matches
         for node in tree.walk():
             # Named CTEs: node is a CTE with alias matching a key
@@ -216,10 +270,35 @@ def _apply_rewrites(original_sql: str, active_rewrites: dict[str, str]) -> str:
                             node.set("this", new_body)
                     except Exception:
                         return original_sql
-            # Unnamed subqueries: key pattern is __role_ordinal__
-            # We rely on the key being injected as a comment or matched via ordinal
-            # For unnamed subqueries, we use a position-based approach:
-            # The key must be present literally in active_rewrites — skip if not matched above.
+            elif node_class in ("Exists", "In") and not _skip_subq_pass:
+                # ---- NEW: unnamed predicate-subquery branch ----
+                if _should_skip(node):
+                    continue  # SKIP-FILTER: symmetric with _extract_fragments (I3)
+                # TICK-CONDITION (§4.3.1): byte-identical to extract
+                if node_class == "In":
+                    q = node.args.get("query")
+                    if q is None or type(q).__name__ != "Subquery" or q.this is None:
+                        continue  # value-list IN → no tick, mirrors extract
+                else:  # Exists
+                    if node.this is None:
+                        continue
+                key = f"__subquery_{_subq_ordinal}__"
+                if key in active_rewrites:
+                    try:
+                        repl = sqlglot.parse_one(active_rewrites[key], read="trino")
+                    except Exception:
+                        repl = None
+                    if repl is not None:
+                        if type(repl).__name__ == "Subquery":  # unwrap guard
+                            repl = repl.this
+                        if repl is not None and type(repl).__name__ == "Select":
+                            if node_class == "Exists":
+                                node.set("this", repl)
+                            else:  # In: mutate the Subquery wrapper's body
+                                q = node.args.get("query")
+                                if q is not None:  # guard: q may be None for value-list IN
+                                    q.set("this", repl)
+                _subq_ordinal += 1  # tick ONLY for non-skipped, TICK-CONDITION-matching nodes
 
         serialized = tree.sql(dialect="trino")
         if not serialized:
@@ -571,16 +650,51 @@ def _extract_fragments(sql: str) -> list[dict]:
                  "position_hint": 0, "subq_ordinal": 0,
                  "is_independently_runnable": True}]
 
-    # Assign subq_ordinals to unnamed fragments (CTEs are named, root gets None)
-    # For test T2.6: unnamed sibling subqueries need distinct ordinals
-    # We handle this by scanning for subqueries in the tree
+    # Extract predicate subqueries (WHERE EXISTS / WHERE IN with subquery)
+    # Uses ordinal-indexed monotonic counter; must be symmetric with _apply_rewrites (I3).
+    # cte_names is fully populated above (after the WITH-clause extraction loop).
+    _pred_ordinal = 0
+    for node in tree.walk():
+        if _should_skip(node):
+            continue  # SKIP-FILTER: CTE-internal / nested / UNION / With
+        node_class = type(node).__name__
+        if node_class == "Exists":
+            # inner is a bare Select (Exists.this type = Select)
+            inner = node.this
+            if inner is None:
+                continue
+        elif node_class == "In":
+            q = node.args.get("query")
+            # Value-list IN has q=None; subquery IN has q=Subquery; guard both
+            if q is None or type(q).__name__ != "Subquery" or q.this is None:
+                continue  # value-list IN → no fragment, no tick (mirrors apply TICK-CONDITION)
+            inner = q.this  # the bare Select inside the Subquery wrapper
+        else:
+            continue  # scalar projection / derived table / other → out of scope (§1.3)
+        _is_corr = _is_correlated_exists(inner, cte_names)
+        fragments.append({
+            "fragment_id": f"__subquery_{_pred_ordinal}__",
+            "sql": inner.sql(dialect="trino"),
+            "role": "subquery",
+            "position_hint": len(fragments),
+            "subq_ordinal": _pred_ordinal,
+            "is_independently_runnable": not _is_corr,
+        })
+        _pred_ordinal += 1  # tick: non-skipped predicate subquery
+
+    # _assign_subq_ordinals stays a no-op (ordinals assigned inline above, spec §3.4)
     _assign_subq_ordinals(fragments, subq_ordinal_counter)
 
     return fragments
 
 
 def _assign_subq_ordinals(fragments: list[dict], counter: list[int]) -> None:
-    """Assign monotonic subq_ordinals to unnamed fragments."""
+    """Assign monotonic subq_ordinals to unnamed fragments.
+
+    Ordinals for predicate subqueries (role=='subquery') are assigned inline
+    in _extract_fragments during the walk. This post-pass is retained for
+    API stability but is intentionally a no-op (spec §3.4).
+    """
     for frag in fragments:
         if frag["subq_ordinal"] is None and frag["role"] != "root":
             # Named CTE — leave None
