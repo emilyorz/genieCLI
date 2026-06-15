@@ -52,3 +52,10 @@
 - Subquery kinds shipped in v49: WHERE EXISTS, WHERE IN (subquery). Out of scope and not extracted: derived tables (FROM subquery), UNION arms, scalar subqueries (SELECT-list), correlated subqueries are extracted but not cost-read (`is_independently_runnable=False`).
 - `_apply_rewrites` recompose for Exists: `node.set("this", repl)` where `node` is the `Exists` AST node and `repl` is a bare `Select` (unwrap any `Subquery` wrapper first); for In: `q.set("this", repl)` where `q = node.args.get("query")` is the `Subquery` wrapper.
 - The `continue  # NEUTERED` anti-pattern (early continue that kills an entire if-branch body without executing the intended work) was the root cause of the v49 deliverable gap; grep for bare `continue` lines inside `if node_class == "<type>":` branches when auditing future extract/apply loops.
+
+## run .tlv4-v50-decompose-visibility (run: 2026-06-15)
+
+- `genie/output/step_trace.py` has TWO renderers: `render_report` (full markdown, written into the saved `.md` report) and `render_tui` (compact live breadcrumb). The live decompose breadcrumb is emitted from the SHARED `_seed_decompose_and_select` locus (`mcp_trino/research.py:1257`), which BOTH standard loops call (MCP `:2568`, --direct `trino_query/research.py:1231`) — one emit covers both paths; `trino_query/research.py` needs no separate wiring.
+- `render_report` renders per-fragment detail (incl. each fragment's SQL via `_fmt_detail_fragment`) for `fragment_*` events REGARDLESS of RAN/SKIPPED status (v50) — so unchanged/over-cap decomposed fragments still show their SQL. The `### Decompose` section (`_fmt_detail_decompose`) shows aggregate fragment ids only, never per-fragment SQL.
+- Per-fragment StepEvent detail carries `sql` (= `fr.sql`) on every fragment event; optimized fragments additionally carry `original_sql`/`rewritten_sql` from the `RewriteCandidate`.
+- Plan-cost loop (`mcp_trino/research.py:1470`) + no-data advisory path call `_produce_decompose_candidate` directly (NOT via `_seed_decompose_and_select`), so they have NO live breadcrumb yet (v51 follow-up); their report SQL IS covered because `render_report` is shared by all paths.
