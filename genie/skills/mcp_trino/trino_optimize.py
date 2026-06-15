@@ -8,6 +8,7 @@ No public function raises; all degrade to typed unavailable/unverified outcomes.
 """
 from __future__ import annotations
 
+import copy
 import hashlib
 import json
 from dataclasses import dataclass
@@ -250,6 +251,271 @@ def _is_correlated_exists(inner_select, cte_names: set) -> bool:
     except Exception:
         # Conservative: treat as correlated on any failure
         return True
+
+
+# ---------------------------------------------------------------------------
+# v51b: Safe-class predicate helpers + deterministic EXISTS→IN transform
+# ---------------------------------------------------------------------------
+
+def _collect_and_leaves(node):
+    """Walk the shallow AND-chain of *node*, returning individual predicate leaves.
+
+    Does NOT recurse into nested subqueries (mitigates FP-2 for EQ classification;
+    OR/AggFunc deep-checks in _sound_equi_corr_pairs remain deep on purpose — bail direction).
+    """
+    import sqlglot.expressions as exp
+    leaves = []
+    # Walk direct children that are AND nodes; anything else is a leaf
+    stack = [node]
+    while stack:
+        cur = stack.pop()
+        if isinstance(cur, exp.And):
+            stack.extend(cur.args.values())
+        else:
+            leaves.append(cur)
+    return leaves
+
+
+def _collect_inner_tables(inner_select) -> set:
+    """Return the set of real table names (NAME-ONLY, not aliases) from the inner SELECT.
+
+    Mirrors _is_correlated_exists logic at trino_optimize.py:231-239. Aliased inner
+    tables (FROM xxx t) are NOT collected under the alias — aliased correlation bails to ADVISE
+    via the both-outer branch in _sound_equi_corr_pairs (safe; documented non-goal).
+    Never raises.
+    """
+    import sqlglot.expressions as exp
+    inner_tables: set[str] = set()
+    try:
+        from_node = inner_select.args.get("from_")
+        if from_node is not None:
+            for tbl in from_node.find_all(exp.Table):
+                inner_tables.add(str(tbl.name).lower())
+        for join in (inner_select.args.get("joins") or []):
+            for tbl in join.find_all(exp.Table):
+                inner_tables.add(str(tbl.name).lower())
+    except Exception:
+        pass
+    return inner_tables
+
+
+def _sound_equi_corr_pairs(exists_node):
+    """Classification predicate for the proven-safe rewrite class (C0–C6c).
+
+    Returns (inner_col, outer_col, non_corr_preds) when the EXISTS satisfies all
+    conditions; returns None to bail to ADVISE.
+
+    Conditions checked (C0 verified by caller before entering):
+    C1: positive EXISTS (not NOT EXISTS)
+    C2: EXISTS is NOT inside an OR predicate
+    C2b: EXISTS body WHERE has no OR anywhere (conservative; safe bail direction)
+    C3: exactly one eq-predicate pair is correlated
+    C4: no aggregates in body
+    C5: no DISTINCT / GROUP BY / HAVING / ORDER BY / LIMIT in body
+    C6: both correlation columns are qualified (col.table != ""), exactly one pair,
+        and one side is inner-only while the other is outer-only
+    C6c: every column reference in non-correlation WHERE leaves must be qualified
+         AND reference an inner-scope table (col.table in inner_tables)
+    Never raises — any exception returns None.
+    """
+    import sqlglot.expressions as exp
+    try:
+        # C0: caller ensures this is an exp.Exists — skip; verified by iteration in caller.
+
+        # C1: positive EXISTS only (NOT EXISTS has different semantics → anti-join)
+        parent = getattr(exists_node, "parent", None)
+        if isinstance(parent, exp.Not):
+            return None
+
+        # C2: EXISTS must NOT be inside an OR predicate (row-filter semantics change)
+        p = parent
+        while p is not None:
+            if isinstance(p, exp.Or):
+                return None
+            p = getattr(p, "parent", None)
+
+        inner_select = exists_node.this
+        if inner_select is None:
+            return None
+
+        # C2b: no OR anywhere in inner WHERE (over-conservative, safe bail direction — FP-2)
+        inner_where = inner_select.args.get("where")
+        if inner_where is not None:
+            if inner_where.find(exp.Or):
+                return None
+
+        # C4: no aggregates in body
+        if inner_select.find(exp.AggFunc):
+            return None
+
+        # C5: no DISTINCT / GROUP BY / HAVING / ORDER BY / LIMIT
+        if (
+            inner_select.args.get("distinct")
+            or inner_select.args.get("group")
+            or inner_select.args.get("having")
+            or inner_select.args.get("order")
+            or inner_select.args.get("limit")
+        ):
+            return None
+
+        # C6: classify correlation pairs
+        inner_tables = _collect_inner_tables(inner_select)
+
+        if inner_where is None:
+            return None
+
+        where_leaves = _collect_and_leaves(inner_where.this if hasattr(inner_where, "this") else inner_where)
+
+        corr_pairs = []
+        non_corr_preds = []
+
+        for leaf in where_leaves:
+            if not isinstance(leaf, exp.EQ):
+                # Non-EQ leaf: check all column refs are inner-scoped (C6c)
+                for col in leaf.find_all(exp.Column):
+                    tbl = (col.table or "").lower()
+                    if not tbl or tbl not in inner_tables:
+                        return None
+                non_corr_preds.append(leaf)
+                continue
+
+            # EQ leaf: classify as correlation pair or non-corr pred
+            lhs, rhs = leaf.left, leaf.right
+            lhs_tbl = (lhs.table if isinstance(lhs, exp.Column) else "").lower()
+            rhs_tbl = (rhs.table if isinstance(rhs, exp.Column) else "").lower()
+
+            lhs_is_col = isinstance(lhs, exp.Column)
+            rhs_is_col = isinstance(rhs, exp.Column)
+
+            lhs_inner = lhs_is_col and lhs_tbl and lhs_tbl in inner_tables
+            rhs_inner = rhs_is_col and rhs_tbl and rhs_tbl in inner_tables
+            lhs_outer = lhs_is_col and lhs_tbl and lhs_tbl not in inner_tables
+            rhs_outer = rhs_is_col and rhs_tbl and rhs_tbl not in inner_tables
+
+            # One side non-Column (literal, expression, etc.): treat as non-corr pred
+            # if the Column side is inner-scoped (C6c: must be qualified + inner)
+            if not lhs_is_col and rhs_inner:
+                non_corr_preds.append(leaf)
+            elif not rhs_is_col and lhs_inner:
+                non_corr_preds.append(leaf)
+            elif not lhs_is_col and not rhs_is_col:
+                # Neither side is a column — treat as non-corr (constant pred)
+                non_corr_preds.append(leaf)
+            elif not lhs_is_col and rhs_is_col and not rhs_inner:
+                # Non-col = outer-col: bail (C6c)
+                return None
+            elif not rhs_is_col and lhs_is_col and not lhs_inner:
+                # Non-col = outer-col: bail (C6c)
+                return None
+            # Both unqualified → C6 fails
+            elif lhs_is_col and rhs_is_col and not lhs_tbl and not rhs_tbl:
+                return None
+            # Correlation pair: exactly one side inner, one side outer, both qualified
+            elif lhs_inner and rhs_outer:
+                corr_pairs.append((lhs, rhs))  # (inner_col, outer_col)
+            elif rhs_inner and lhs_outer:
+                corr_pairs.append((rhs, lhs))  # (inner_col, outer_col)
+            elif lhs_inner and rhs_inner:
+                # Both inner: treat as non-corr pred (inner-scoped EQ)
+                non_corr_preds.append(leaf)
+            else:
+                # Both unqualified, both outer, or mixed unqualified → bail (C6 / C6c)
+                return None
+
+        # Exactly one correlation pair required (C6)
+        if len(corr_pairs) != 1:
+            return None
+
+        inner_col, outer_col = corr_pairs[0]
+
+        # C6c: validate non-corr preds — every column ref must be inner-scoped
+        for leaf in non_corr_preds:
+            for col in leaf.find_all(exp.Column):
+                tbl = (col.table or "").lower()
+                if not tbl or tbl not in inner_tables:
+                    return None
+
+        return (inner_col, outer_col, non_corr_preds)
+
+    except Exception:
+        return None
+
+
+def _try_decorrelate_exists(sql: str):
+    """Deterministic EXISTS→IN transform for the proven-safe class.
+
+    Parses *sql* (full query), deep-copies the AST, iterates all exp.Exists nodes, applies
+    _sound_equi_corr_pairs, and for each safe node replaces the EXISTS in-place with an
+    exp.In(this=outer_col.copy(), query=exp.Subquery(this=new_inner_select)).
+    Returns the re-serialized full query (dialect="trino") if ≥1 rewrite occurred, else None.
+    Any exception → returns None (fail-safe to ADVISE, never raises).
+    """
+    try:
+        import sqlglot
+        import sqlglot.expressions as exp
+
+        tree = sqlglot.parse_one(sql, read="trino")
+        if tree is None:
+            return None
+
+        tree = copy.deepcopy(tree)
+        rewrites = 0
+
+        # Snapshot list() so in-place node.replace() during iteration is safe
+        for exists_node in list(tree.find_all(exp.Exists)):
+            result = _sound_equi_corr_pairs(exists_node)
+            if result is None:
+                continue
+
+            inner_col, outer_col, non_corr_preds = result
+
+            # Build the IN subquery: SELECT inner_col FROM inner_table [WHERE non_corr_preds]
+            inner_select = exists_node.this  # the original SELECT inside EXISTS
+            if inner_select is None:
+                continue
+
+            # Collect FROM tables from inner_select to build a minimal inner FROM
+            inner_from = inner_select.args.get("from_")
+            inner_joins = inner_select.args.get("joins") or []
+            if inner_from is None:
+                continue
+
+            # Build new inner SELECT: SELECT inner_col FROM ... [WHERE non_corr_preds]
+            new_selections = [inner_col.copy()]
+            new_where = None
+            if non_corr_preds:
+                # Rebuild the AND-chain from non-corr predicates
+                combined = non_corr_preds[0].copy()
+                for pred in non_corr_preds[1:]:
+                    combined = exp.And(this=combined, expression=pred.copy())
+                new_where = exp.Where(this=combined)
+
+            new_inner_select = exp.Select(
+                expressions=new_selections,
+            )
+            new_inner_select.set("from_", inner_from.copy())
+            if inner_joins:
+                new_inner_select.set("joins", [j.copy() for j in inner_joins])
+            if new_where is not None:
+                new_inner_select.set("where", new_where)
+
+            # Build: outer_col IN (SELECT inner_col FROM ...)
+            in_node = exp.In(
+                this=outer_col.copy(),
+                query=exp.Subquery(this=new_inner_select),
+            )
+
+            # Replace the EXISTS node in the parent with the IN node
+            exists_node.replace(in_node)
+            rewrites += 1
+
+        if rewrites == 0:
+            return None
+
+        return tree.sql(dialect="trino")
+
+    except Exception:
+        return None
 
 
 def _apply_rewrites(original_sql: str, active_rewrites: dict[str, str]) -> str:
@@ -541,7 +807,13 @@ def decompose(sql: str, llm: LlmFn, cost_reader_fn: CostReaderFn) -> list[Fragme
                     f"correlated EXISTS/IN evaluated per-row inside {_label}; "
                     f"cost is positional (inner_cost x enclosing row count)"
                 ),
-                suggestion="candidate for decorrelation to semi-join (v51b); not rewritten in v51a",
+                suggestion=(
+                    "candidate for decorrelation to semi-join; "
+                    "rewritten automatically to a semi-join IN on the executing path "
+                    "when the correlation is soundly resolvable "
+                    "(qualified equi-correlation, single outer table, inner-only residual predicates); "
+                    "advisory-only here because no live cluster is available to verify row-equivalence"
+                ),
                 line=0,
             ))
         frag_findings = tuple(frag_findings_list)

@@ -184,6 +184,7 @@ _DETAIL_FORMATTERS: dict[str, Any] = {
     "decompose":        _fmt_detail_decompose,
     "recompose":        _fmt_detail_recompose,
     "verify":           _fmt_detail_verify,
+    "decorrelate":      _fmt_detail_fragment,   # v51b: EXISTS→IN pre-pass report section (U1)
 }
 
 

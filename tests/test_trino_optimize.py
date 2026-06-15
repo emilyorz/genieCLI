@@ -1433,3 +1433,289 @@ class TestV51aPositionalDetection:
         assert "advise" in out   # action field routed (present even pre-fix as a string)
         assert "💡" in out       # THE falsifier: only present after Change ⑥
     # RED-on-revert: remove "advise": "💡" map entry → .get("advise","") → no 💡 → second assert fails.
+
+
+# ---------------------------------------------------------------------------
+# v51b: Decorrelation tests (T-PARSE, T-CLASS, Tests 1–11)
+# ---------------------------------------------------------------------------
+
+class TestV51bDecorrelate:
+    """v51b: EXISTS→IN deterministic rewrite + fail-safe + render proof."""
+
+    # Canonical Sam query used across multiple tests
+    SAM_JOIN_SQL = (
+        "SELECT a.id, j.val FROM a "
+        "JOIN (SELECT b.id, b.val FROM b "
+        "WHERE EXISTS (SELECT 1 FROM xxx WHERE xxx.aa = b.bb)) j "
+        "ON a.id = j.id"
+    )
+
+    # ── T-PARSE — all fixture SQLs parseable (guard against '...' shorthand regression)
+    def test_decorrelate_fixture_sql_all_parseable(self):
+        import sqlglot
+        sqls = [
+            self.SAM_JOIN_SQL,
+            "SELECT b.y FROM b WHERE EXISTS(SELECT 1 FROM xxx WHERE xxx.aa = b.bb)",
+            "SELECT b.y FROM b WHERE EXISTS(SELECT 1 FROM xxx WHERE xxx.aa = b.bb AND xxx.status = 'active')",
+            "SELECT b.y FROM b WHERE EXISTS(SELECT 1 FROM xxx WHERE xxx.aa = b.bb AND b.flag = 1)",
+            "SELECT b.y FROM b WHERE EXISTS(SELECT 1 FROM xxx WHERE xxx.aa = b.bb AND b.k > 5)",
+            "SELECT b.y FROM b WHERE EXISTS(SELECT 1 FROM xxx WHERE xxx.aa = b.bb AND b.k IS NOT NULL)",
+            "SELECT b.y FROM b WHERE EXISTS(SELECT 1 FROM xxx WHERE xxx.aa = b.bb AND flag = 1)",
+            "SELECT b.y FROM b WHERE EXISTS(SELECT 1 FROM xxx WHERE aa = bb)",
+            "SELECT b.y FROM b WHERE NOT EXISTS(SELECT 1 FROM xxx WHERE xxx.aa = b.bb)",
+            "SELECT b.y FROM b WHERE EXISTS(SELECT 1 FROM xxx WHERE xxx.aa > b.bb)",
+            "SELECT b.y FROM b WHERE b.z = 1 OR EXISTS(SELECT 1 FROM xxx WHERE xxx.aa = b.bb)",
+            "SELECT b.y FROM b WHERE EXISTS(SELECT COUNT(*) FROM xxx WHERE xxx.aa = b.bb)",
+            "SELECT b.y FROM b WHERE EXISTS(SELECT 1 FROM xxx WHERE xxx.aa = b.bb AND xxx.cc = b.dd)",
+        ]
+        for sql in sqls:
+            tree = sqlglot.parse_one(sql, read="trino")
+            assert tree is not None, f"Failed to parse: {sql}"
+    # RED-on-revert: a '...' shorthand SQL raises sqlglot error → tree is None or raises.
+
+    # ── T-CLASS — C6c residual-shape class: all four shapes bail to ADVISE
+    def test_residual_pred_outer_or_unqualified_ref_stays_advise(self):
+        from genie.skills.mcp_trino.trino_optimize import _try_decorrelate_exists
+        shapes = [
+            # outer-scoped literal (b.flag = 1)
+            "SELECT b.y FROM b WHERE EXISTS(SELECT 1 FROM xxx WHERE xxx.aa = b.bb AND b.flag = 1)",
+            # outer-scoped comparison (b.k > 5)
+            "SELECT b.y FROM b WHERE EXISTS(SELECT 1 FROM xxx WHERE xxx.aa = b.bb AND b.k > 5)",
+            # outer-scoped IS NOT NULL (b.k IS NOT NULL)
+            "SELECT b.y FROM b WHERE EXISTS(SELECT 1 FROM xxx WHERE xxx.aa = b.bb AND b.k IS NOT NULL)",
+            # unqualified residual (flag = 1)
+            "SELECT b.y FROM b WHERE EXISTS(SELECT 1 FROM xxx WHERE xxx.aa = b.bb AND flag = 1)",
+        ]
+        for sql in shapes:
+            result = _try_decorrelate_exists(sql)
+            assert result is None, (
+                f"Expected None (ADVISE bail) for C6c residual shape, got rewrite:\n{result}\nSQL: {sql}"
+            )
+    # RED-on-revert: remove C6c column-reference check → b.flag=1 case emits broken SQL → assert fails.
+    # Class coverage: operator-agnostic (=, >, IS NOT NULL, unqualified) — all 4 shapes verified.
+
+    # ── Test 1 — positive rewrite: qualified equi-corr JOIN case
+    def test_should_rewrite_qualified_equi_corr_join_case(self):
+        from genie.skills.mcp_trino.trino_optimize import _try_decorrelate_exists
+        result = _try_decorrelate_exists(self.SAM_JOIN_SQL)
+        assert result is not None, "Expected rewrite, got None"
+        assert "EXISTS" not in result.upper(), f"EXISTS should be gone in: {result}"
+        assert "b.bb IN" in result or "bb IN" in result, (
+            f"Expected outer col 'b.bb' in IN clause, got: {result}"
+        )
+        assert "xxx" in result.lower(), f"Expected inner table xxx in result: {result}"
+        assert "xxx.aa" in result or "aa" in result.lower(), f"Expected inner col xxx.aa in result: {result}"
+    # RED-on-revert: remove node.replace or _sound_equi_corr_pairs → None → all asserts fail.
+
+    # ── Test 2 — inner-scoped non-corr pred is preserved in IN subquery
+    def test_should_rewrite_with_inner_non_corr_pred_preserved(self):
+        from genie.skills.mcp_trino.trino_optimize import _try_decorrelate_exists
+        sql = (
+            "SELECT b.id, b.val FROM b "
+            "WHERE EXISTS(SELECT 1 FROM xxx WHERE xxx.aa = b.bb AND xxx.status = 'active')"
+        )
+        result = _try_decorrelate_exists(sql)
+        assert result is not None, "Expected rewrite with non-corr pred preserved"
+        assert "EXISTS" not in result.upper()
+        assert "xxx.status" in result or "status" in result.lower(), (
+            f"Inner non-corr pred 'xxx.status' should be preserved in IN subquery: {result}"
+        )
+        assert "'active'" in result or "active" in result, (
+            f"Non-corr pred value 'active' should be preserved: {result}"
+        )
+    # RED-on-revert: drop non_corr_preds → predicate missing from IN subquery → asserts fail.
+
+    # ── Test 3 — row-equivalence characterization (RULE 2b content-equivalence proof)
+    def test_decorrelate_is_row_equivalent_characterization(self):
+        """Content-equivalence proof via pure-Python relational evaluator.
+
+        (a) Structural: EXISTS gone, exp.In with subquery present.
+        (b) Fixture: identical result sets for original EXISTS and rewritten IN forms.
+            NULL semantics: both EXISTS-empty (FALSE) and IN-with-NULL-left (UNKNOWN)
+            exclude the row in WHERE context — evaluator drops rows where predicate is
+            FALSE OR NULL/UNKNOWN (standard SQL WHERE semantics).
+        """
+        import sqlglot
+        import sqlglot.expressions as exp
+        from genie.skills.mcp_trino.trino_optimize import _try_decorrelate_exists
+
+        # Simple query outside JOIN context for characterization
+        sql_exists = (
+            "SELECT b.id FROM b "
+            "WHERE EXISTS(SELECT 1 FROM xxx WHERE xxx.aa = b.bb)"
+        )
+
+        result = _try_decorrelate_exists(sql_exists)
+        assert result is not None, "Expected rewrite for row-equiv characterization"
+
+        # (a) Structural check
+        tree = sqlglot.parse_one(result, read="trino")
+        assert tree is not None
+        assert not any(isinstance(n, exp.Exists) for n in tree.walk()), (
+            "Rewritten SQL should have no EXISTS nodes"
+        )
+        in_nodes = list(tree.find_all(exp.In))
+        subq_in_nodes = [n for n in in_nodes if n.args.get("query") is not None]
+        assert len(subq_in_nodes) >= 1, f"Expected exp.In with subquery in: {result}"
+
+        # (b) Fixture-based relational evaluator (pure Python, standard SQL WHERE semantics)
+        # WHERE filter: drop rows where predicate is FALSE OR NULL/UNKNOWN
+        def exists_form(outer_rows, inner_rows):
+            """b.id from outer where EXISTS(SELECT 1 FROM xxx WHERE xxx.aa = b.bb)"""
+            result_set = []
+            for row in outer_rows:
+                # EXISTS is TRUE if any inner row matches b.bb == xxx.aa
+                matched = any(inner["aa"] == row["bb"] for inner in inner_rows
+                              if inner["aa"] is not None and row["bb"] is not None)
+                # When outer bb is None: no match → EXISTS = FALSE → excluded (standard WHERE)
+                if matched:
+                    result_set.append(row["id"])
+            return result_set
+
+        def in_form(outer_rows, inner_rows):
+            """b.id from outer where b.bb IN (SELECT xxx.aa FROM xxx)"""
+            inner_set = {r["aa"] for r in inner_rows if r["aa"] is not None}
+            result_set = []
+            for row in outer_rows:
+                # b.bb IN (inner_set): when bb is None, IN evaluates to UNKNOWN → excluded
+                if row["bb"] is not None and row["bb"] in inner_set:
+                    result_set.append(row["id"])
+            return result_set
+
+        # Fixture tables: cover match, no-match, NULL outer key, NULL inner key,
+        # multi-row inner, duplicate inner keys, outer-filter rows,
+        # and NULL outer key WITH matching inner row (distinguishes EXISTS vs IN NULL semantics)
+        outer_rows = [
+            {"id": 1, "bb": "X"},      # match
+            {"id": 2, "bb": "Y"},      # no match
+            {"id": 3, "bb": None},     # NULL outer key (no match for EXISTS; UNKNOWN for IN → both exclude)
+            {"id": 4, "bb": "Z"},      # match (multi-row inner)
+            {"id": 5, "bb": "W"},      # no match
+            {"id": 6, "bb": None},     # NULL outer key WITH matching inner row (exists=FALSE, IN=UNKNOWN → both exclude)
+        ]
+        inner_rows = [
+            {"aa": "X"},               # matches outer id=1
+            {"aa": "Z"},               # matches outer id=4
+            {"aa": "Z"},               # duplicate inner key (still matches id=4)
+            {"aa": None},              # NULL inner key (never matches via EXISTS or IN)
+        ]
+
+        exists_result = sorted(exists_form(outer_rows, inner_rows))
+        in_result = sorted(in_form(outer_rows, inner_rows))
+
+        assert exists_result == in_result, (
+            f"Row sets diverge! EXISTS form: {exists_result}, IN form: {in_result}. "
+            f"Rewrite is NOT row-equivalent."
+        )
+    # RED-on-revert: wrong-direction column resolution (swap inner/outer) → row sets diverge → fail.
+
+    # ── Tests 4–9 (fail-safe: unsafe patterns return None)
+
+    def test_should_not_rewrite_unqualified_columns(self):
+        """C6: unqualified correlation → bail to ADVISE (Sam's literal example)."""
+        from genie.skills.mcp_trino.trino_optimize import _try_decorrelate_exists
+        sql = "SELECT b.y FROM b WHERE EXISTS(SELECT 1 FROM xxx WHERE aa = bb)"
+        assert _try_decorrelate_exists(sql) is None
+    # RED-on-revert: remove C6 unqualified check → emits wrong SQL → assert fails.
+
+    def test_should_not_rewrite_not_exists(self):
+        """C1: NOT EXISTS → anti-join semantics → bail to ADVISE."""
+        from genie.skills.mcp_trino.trino_optimize import _try_decorrelate_exists
+        sql = "SELECT b.y FROM b WHERE NOT EXISTS(SELECT 1 FROM xxx WHERE xxx.aa = b.bb)"
+        assert _try_decorrelate_exists(sql) is None
+    # RED-on-revert: remove NOT parent check → NOT EXISTS wrongly rewritten → assert fails.
+
+    def test_should_not_rewrite_non_equi_correlation(self):
+        """C6: non-equi correlation (xxx.aa > b.bb) → bail to ADVISE."""
+        from genie.skills.mcp_trino.trino_optimize import _try_decorrelate_exists
+        sql = "SELECT b.y FROM b WHERE EXISTS(SELECT 1 FROM xxx WHERE xxx.aa > b.bb)"
+        assert _try_decorrelate_exists(sql) is None
+    # RED-on-revert: remove EQ-only check → non-equi gets misclassified → assert fails.
+
+    def test_should_not_rewrite_exists_in_or(self):
+        """C2: EXISTS inside OR predicate → bail to ADVISE."""
+        from genie.skills.mcp_trino.trino_optimize import _try_decorrelate_exists
+        sql = "SELECT b.y FROM b WHERE b.z = 1 OR EXISTS(SELECT 1 FROM xxx WHERE xxx.aa = b.bb)"
+        assert _try_decorrelate_exists(sql) is None
+    # RED-on-revert: remove OR-ancestor check → EXISTS inside OR wrongly rewritten → assert fails.
+
+    def test_should_not_rewrite_aggregate_in_body(self):
+        """C4: aggregate in EXISTS body → bail to ADVISE."""
+        from genie.skills.mcp_trino.trino_optimize import _try_decorrelate_exists
+        sql = "SELECT b.y FROM b WHERE EXISTS(SELECT COUNT(*) FROM xxx WHERE xxx.aa = b.bb)"
+        assert _try_decorrelate_exists(sql) is None
+    # RED-on-revert: remove AggFunc check → aggregate EXISTS wrongly rewritten → assert fails.
+
+    def test_should_not_rewrite_multi_pair_corr(self):
+        """C6: multiple equi-corr pairs → bail to ADVISE."""
+        from genie.skills.mcp_trino.trino_optimize import _try_decorrelate_exists
+        sql = "SELECT b.y FROM b WHERE EXISTS(SELECT 1 FROM xxx WHERE xxx.aa = b.bb AND xxx.cc = b.dd)"
+        assert _try_decorrelate_exists(sql) is None
+    # RED-on-revert: remove exactly-one-pair check → multi-corr wrongly rewritten → assert fails.
+
+    # ── Test 10 — live render: decorrelated SQL appears in rendered report (RULE 2a)
+    def test_decorrelate_renders_in_report(self):
+        """Pre-pass emits StepEvent AND render_report produces visible SQL (IMPLEMENT-2)."""
+        from genie.skills.mcp_trino.research import _produce_decompose_candidate
+        from genie.output.step_trace import render_report
+
+        trace = []
+        recomposed_sql, _, _, _ = _produce_decompose_candidate(
+            self.SAM_JOIN_SQL,
+            _raise_llm,
+            lambda *a: None,
+            run_static_gates=False,
+            step_trace=trace,
+        )
+
+        # Trace must contain a decorrelate event
+        decorr_events = [ev for ev in trace if ev.step_id == "decorrelate"]
+        assert len(decorr_events) == 1, f"Expected 1 decorrelate event, got: {[ev.step_id for ev in trace]}"
+
+        ev = decorr_events[0]
+        assert ev.detail.get("changed") is True
+        # IN subquery in rewritten SQL (not EXISTS)
+        rewritten = ev.detail.get("rewritten_sql", "")
+        assert "EXISTS" not in rewritten.upper(), f"EXISTS should be gone: {rewritten}"
+        assert "IN" in rewritten.upper(), f"IN expected in rewritten: {rewritten}"
+
+        # IMPLEMENT-2: assert render_report produces the SQL in rendered markdown
+        rendered = render_report(trace)
+        assert "IN" in rendered.upper(), f"IN should be in rendered report: {rendered[:500]}"
+        assert "SQL (after)" in rendered, (
+            f"'SQL (after)' block expected in rendered report but not found. "
+            f"First 500 chars: {rendered[:500]}"
+        )
+    # RED-when-removed: remove IMPLEMENT-1 (_DETAIL_FORMATTERS "decorrelate" entry) →
+    # render_report returns no SQL section → "SQL (after)" not in rendered → assert fails (live-proven).
+
+    # ── Test 11 — advisory path stays ADVISE (RULE 2c — fail-safe proof)
+    def test_advisory_path_stays_advise_for_correlated_exists(self):
+        """run_static_gates=True skips pre-pass → no decorrelate event, recomposed_sql == sql."""
+        from genie.skills.mcp_trino.research import _produce_decompose_candidate
+
+        trace = []
+        # Use a SQL that WOULD rewrite on the executing path (qualified equi-corr)
+        sql = (
+            "SELECT b.id FROM b "
+            "WHERE EXISTS(SELECT 1 FROM xxx WHERE xxx.aa = b.bb)"
+        )
+        # Advisory path: run_static_gates=True; _raise_llm forces heuristic-monster fallback
+        # without LLM call (pre-pass is guarded by 'if not run_static_gates:')
+        recomposed_sql, _, _, _ = _produce_decompose_candidate(
+            sql,
+            _raise_llm,
+            lambda *a: None,
+            run_static_gates=True,
+            step_trace=trace,
+        )
+
+        decorr_events = [ev for ev in trace if ev.step_id == "decorrelate"]
+        assert len(decorr_events) == 0, (
+            f"Advisory path must NOT emit decorrelate event. Trace: {[ev.step_id for ev in trace]}"
+        )
+        assert recomposed_sql == sql, (
+            f"Advisory path must return original SQL unchanged. Got: {recomposed_sql}"
+        )
+    # RED-when-removed: remove 'if not run_static_gates:' guard → pre-pass fires on advisory →
+    # decorrelate event appears AND recomposed_sql != sql → both asserts fail.

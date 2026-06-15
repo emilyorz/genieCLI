@@ -2002,6 +2002,28 @@ def _produce_decompose_candidate(
     from genie.output.step_trace import StepEvent, StepStatus, CANONICAL_COPY
 
     try:
+        # v51b PRE-PASS: decorrelate correlated EXISTS → semi-join IN (executing path only).
+        # Advisory path (run_static_gates=True) skips this → falls through to v51a Priority 4.5 ADVISE.
+        if not run_static_gates:
+            from genie.skills.mcp_trino.trino_optimize import _try_decorrelate_exists
+            decorr_sql = _try_decorrelate_exists(sql)
+            if decorr_sql is not None and decorr_sql != sql:
+                if step_trace is not None:
+                    step_trace.append(StepEvent(
+                        step_id="decorrelate",
+                        stage="Decorrelate EXISTS→IN",
+                        status=StepStatus.RAN,
+                        applicable=True,
+                        tui_headline="correlated EXISTS → semi-join IN (v51b)",
+                        detail={
+                            "action": "rewrite",
+                            "changed": True,
+                            "original_sql": sql,
+                            "rewritten_sql": decorr_sql,
+                        },
+                    ))
+                return decorr_sql, [], [], None
+
         # 1. Decompose
         fragments = _decompose(sql, llm_fn, cost_reader_fn)
         n = len(fragments)
