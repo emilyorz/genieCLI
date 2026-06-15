@@ -1467,6 +1467,12 @@ class TestV51bDecorrelate:
             "SELECT b.y FROM b WHERE b.z = 1 OR EXISTS(SELECT 1 FROM xxx WHERE xxx.aa = b.bb)",
             "SELECT b.y FROM b WHERE EXISTS(SELECT COUNT(*) FROM xxx WHERE xxx.aa = b.bb)",
             "SELECT b.y FROM b WHERE EXISTS(SELECT 1 FROM xxx WHERE xxx.aa = b.bb AND xxx.cc = b.dd)",
+            # C5 completeness class (must parse and bail)
+            "SELECT b.y FROM b WHERE EXISTS(SELECT 1 FROM xxx WHERE xxx.aa = b.bb OFFSET 5)",
+            "SELECT b.y FROM b WHERE EXISTS(SELECT 1 FROM xxx JOIN yyy ON xxx.id = yyy.id WHERE xxx.aa = b.bb)",
+            "SELECT b.y FROM b WHERE EXISTS(SELECT 1 FROM xxx TABLESAMPLE BERNOULLI(10) WHERE xxx.aa = b.bb)",
+            # C6c function-wrapped outer ref
+            "SELECT b.y FROM b WHERE EXISTS(SELECT 1 FROM xxx WHERE xxx.aa = b.bb AND UPPER(b.name) = 'X')",
         ]
         for sql in sqls:
             tree = sqlglot.parse_one(sql, read="trino")
@@ -1652,6 +1658,87 @@ class TestV51bDecorrelate:
         sql = "SELECT b.y FROM b WHERE EXISTS(SELECT 1 FROM xxx WHERE xxx.aa = b.bb AND xxx.cc = b.dd)"
         assert _try_decorrelate_exists(sql) is None
     # RED-on-revert: remove exactly-one-pair check → multi-corr wrongly rewritten → assert fails.
+
+    # ── Tests 4b-4e: C5 completeness class — all query modifiers that alter EXISTS truth value
+
+    def test_should_not_rewrite_exists_with_offset(self):
+        """C5 OFFSET: OFFSET in EXISTS body changes which rows are visible → unsound rewrite.
+
+        Counterexample: b.bb=7; xxx has 3 rows with aa=7; OFFSET 5 skips all 3 rows.
+        EXISTS=FALSE (0 rows after offset), IN=TRUE (7 in {7}) → result sets diverge.
+        """
+        from genie.skills.mcp_trino.trino_optimize import _try_decorrelate_exists
+        sql = "SELECT b.y FROM b WHERE EXISTS(SELECT 1 FROM xxx WHERE xxx.aa = b.bb OFFSET 5)"
+        result = _try_decorrelate_exists(sql)
+        assert result is None, (
+            f"C5: EXISTS with OFFSET must bail to ADVISE (row-equivalence violation), got: {result}"
+        )
+    # RED-when-removed: remove 'offset' from C5 check → OFFSET body is wrongly rewritten →
+    # result is non-None → assert fails. (Prior to fix: returned non-None, proven counterexample.)
+
+    def test_should_not_rewrite_exists_with_cte_in_body(self):
+        """C5b: CTE (WITH) inside EXISTS body is dropped in the rewritten IN subquery → undefined table.
+
+        The rewrite produces 'b.bb IN (SELECT t.aa FROM t)' without 'WITH t AS (...)' prefix,
+        making 't' an undefined table reference — broken SQL.
+        """
+        from genie.skills.mcp_trino.trino_optimize import _try_decorrelate_exists
+        sql = (
+            "SELECT b.y FROM b WHERE EXISTS("
+            "WITH t AS (SELECT aa FROM data_table) SELECT 1 FROM t WHERE t.aa = b.bb"
+            ")"
+        )
+        result = _try_decorrelate_exists(sql)
+        assert result is None, (
+            f"C5b: EXISTS with CTE (WITH) inside body must bail to ADVISE (dropped in rewrite), got: {result}"
+        )
+    # RED-when-removed: remove C5b with_ check → CTE is dropped silently in IN subquery →
+    # broken SQL with undefined table reference; result is non-None → assert fails.
+
+    def test_should_not_rewrite_exists_with_join_in_body(self):
+        """C5c: JOINs in EXISTS body → conservative bail; multi-table semantics are complex."""
+        from genie.skills.mcp_trino.trino_optimize import _try_decorrelate_exists
+        sql = (
+            "SELECT b.y FROM b "
+            "WHERE EXISTS(SELECT 1 FROM xxx JOIN yyy ON xxx.id = yyy.id WHERE xxx.aa = b.bb)"
+        )
+        result = _try_decorrelate_exists(sql)
+        assert result is None, (
+            f"C5c: EXISTS with JOIN inside body must bail to ADVISE (multi-table, complex semantics), got: {result}"
+        )
+    # RED-when-removed: remove C5c joins check → multi-table EXISTS wrongly rewritten →
+    # result is non-None → assert fails.
+
+    def test_should_not_rewrite_exists_with_tablesample(self):
+        """C5d: TABLESAMPLE in FROM table → non-deterministic, non-equivalent to IN."""
+        from genie.skills.mcp_trino.trino_optimize import _try_decorrelate_exists
+        sql = (
+            "SELECT b.y FROM b "
+            "WHERE EXISTS(SELECT 1 FROM xxx TABLESAMPLE BERNOULLI(10) WHERE xxx.aa = b.bb)"
+        )
+        result = _try_decorrelate_exists(sql)
+        assert result is None, (
+            f"C5d: EXISTS with TABLESAMPLE must bail to ADVISE (non-deterministic sampling), got: {result}"
+        )
+    # RED-when-removed: remove C5d TableSample check → TABLESAMPLE body wrongly rewritten →
+    # result is non-None → assert fails.
+
+    def test_should_not_rewrite_function_wrapped_outer_col_eq_residual(self):
+        """C6c final loop: function-wrapped outer-column EQ residual → bail to ADVISE.
+
+        UPPER(b.name)='X' is EQ with non-Column lhs; the final C6c validation loop
+        deep-scans the non-corr pred and finds b.name (outer-scoped) → returns None.
+        This test is FAIL-WHEN-REMOVED for the final C6c validation loop.
+        """
+        from genie.skills.mcp_trino.trino_optimize import _try_decorrelate_exists
+        sql = "SELECT b.y FROM b WHERE EXISTS(SELECT 1 FROM xxx WHERE xxx.aa = b.bb AND UPPER(b.name) = 'X')"
+        result = _try_decorrelate_exists(sql)
+        assert result is None, (
+            f"C6c: function-wrapped outer column (UPPER(b.name)) must bail to ADVISE, got: {result}"
+        )
+    # RED-when-removed: remove the final C6c non_corr_preds validation loop (lines 454-458 in
+    # trino_optimize.py) → UPPER(b.name)='X' classified as non_corr_pred, outer ref unchecked →
+    # unsound rewrite emitted → result is non-None → assert fails.
 
     # ── Test 10 — live render: decorrelated SQL appears in rendered report (RULE 2a)
     def test_decorrelate_renders_in_report(self):

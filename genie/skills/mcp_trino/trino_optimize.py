@@ -348,14 +348,29 @@ def _sound_equi_corr_pairs(exists_node):
         if inner_select.find(exp.AggFunc):
             return None
 
-        # C5: no DISTINCT / GROUP BY / HAVING / ORDER BY / LIMIT
+        # C5: no DISTINCT / GROUP BY / HAVING / ORDER BY / LIMIT / OFFSET in body
+        # (OFFSET omission was a row-equivalence bug — adds per-row row-skip semantics that
+        #  change the EXISTS truth value; FETCH FIRST maps to 'limit' and is already caught)
         if (
             inner_select.args.get("distinct")
             or inner_select.args.get("group")
             or inner_select.args.get("having")
             or inner_select.args.get("order")
             or inner_select.args.get("limit")
+            or inner_select.args.get("offset")
         ):
+            return None
+
+        # C5b: no CTE (WITH) inside EXISTS body — dropped in rewrite → undefined table
+        if inner_select.args.get("with_"):
+            return None
+
+        # C5c: no JOINs in EXISTS body — conservative bail; multi-table semantics complex
+        if inner_select.args.get("joins"):
+            return None
+
+        # C5d: no TABLESAMPLE — non-deterministic per-row vs single-scan semantics diverge
+        if inner_select.find(exp.TableSample):
             return None
 
         # C6: classify correlation pairs
