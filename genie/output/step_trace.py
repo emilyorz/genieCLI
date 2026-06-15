@@ -97,6 +97,14 @@ def _fmt_detail_fragment(d: dict[str, Any]) -> str:
     if "action" in d:
         action_icon = {"optimized": "✅", "reverted": "🔄", "unchanged": "➖"}.get(d["action"], "")
         parts.append(f"**Action:** {action_icon} `{d['action']}`")
+    # Render fragment SQL (Fix 2 — v50)
+    if "original_sql" in d and "rewritten_sql" in d and d["original_sql"] != d["rewritten_sql"]:
+        parts.append(
+            f"**SQL (before):**\n```sql\n{d['original_sql']}\n```\n\n"
+            f"**SQL (after):**\n```sql\n{d['rewritten_sql']}\n```"
+        )
+    elif "sql" in d:
+        parts.append(f"**SQL:**\n```sql\n{d['sql']}\n```")
     return "\n\n".join(parts)
 
 
@@ -276,9 +284,15 @@ def render_report(trace: StepTrace) -> str:
     sections.append("## Step Summary\n\n" + "\n".join(table_rows))
 
     # --- Per-step detail subsections (RAN + DEGRADED steps with detail) ---
+    # Exception (v50): fragment_* events are ALSO rendered when SKIPPED, so an
+    # unchanged/over-cap decomposed fragment still shows its SQL ("拆成哪些 query").
+    # Scoped to fragment_* only — unrelated SKIPPED/NA events stay omitted.
     detail_sections = []
     for ev in trace:
-        if ev.status not in {StepStatus.RAN, StepStatus.DEGRADED}:
+        is_fragment = ev.step_id.startswith("fragment_")
+        if ev.status not in {StepStatus.RAN, StepStatus.DEGRADED} and not (
+            is_fragment and ev.status == StepStatus.SKIPPED
+        ):
             continue
         if not ev.detail:
             continue

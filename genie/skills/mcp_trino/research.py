@@ -1293,6 +1293,24 @@ def _seed_decompose_and_select(
 
     try:
         recomposed_sql, _frags, _cands, _rr = produce_fn(original_sql)
+
+        # Fix 3 (v50): emit compact TUI breadcrumb after trace is populated.
+        # Only fires when trace contains decompose/fragment events (i.e. decompose
+        # actually ran). Both MCP (:2568) and --direct (:1231) standard loops reach
+        # this locus — no edit to trino_query/research.py is needed.
+        # v51 TODO: wire breadcrumb for plan-cost loop (:1470) and no-data paths too.
+        try:
+            if output and events:
+                has_decompose_events = any(
+                    ev.step_id == "decompose" or ev.step_id.startswith("fragment_")
+                    for ev in events
+                )
+                if has_decompose_events:
+                    from genie.output.step_trace import render_tui
+                    output.progress(render_tui(events))
+        except Exception:
+            pass  # guard: never raise from display layer
+
         if recomposed_sql == original_sql:
             # Decompose produced no change — skip measure, keep original.
             return original_sql, baseline_measure, events
@@ -2046,6 +2064,7 @@ def _produce_decompose_candidate(
                     "rank": getattr(fr, "monster_rank", None),
                     "action": "over_cap",
                     "changed": False,
+                    "sql": fr.sql,
                     "col_gate_verdict": "off" if not run_static_gates else "n/a",
                     "sem_gate_verdict": "off" if not run_static_gates else "n/a",
                 }
@@ -2065,9 +2084,13 @@ def _produce_decompose_candidate(
                     "action": ev_action,
                     "changed": cand.changed,
                     "rationale": cand.rationale,
+                    "sql": fr.sql,
                     "col_gate_verdict": "off" if not run_static_gates else "n/a",
                     "sem_gate_verdict": "off" if not run_static_gates else "n/a",
                 }
+                if cand.changed and cand.admitted:
+                    ev_detail["original_sql"] = cand.original_sql
+                    ev_detail["rewritten_sql"] = cand.rewritten_sql
                 ev_headline = f"{fr.fragment_id}: {ev_action}"
 
             if step_trace is not None:
