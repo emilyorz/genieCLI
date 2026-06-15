@@ -2073,6 +2073,13 @@ def _produce_decompose_candidate(
                 if cand.changed and cand.admitted:
                     ev_status = StepStatus.RAN
                     ev_action = "optimized"
+                elif cand.action == "advise" and not cand.changed:
+                    # Change ⑤: honest action label for Priority 4.5 advisory.
+                    # The non-monster passthrough builds its own RewriteCandidate(action="unchanged")
+                    # and never calls optimize(), so its cand.action is "unchanged" — this elif
+                    # fires ONLY for the Priority 4.5 correlated-exists-per-row path.
+                    ev_status = StepStatus.SKIPPED
+                    ev_action = "advise"
                 else:
                     ev_status = StepStatus.SKIPPED
                     ev_action = "unchanged"

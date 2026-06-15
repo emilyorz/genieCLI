@@ -197,6 +197,28 @@ def _should_skip(node) -> bool:
     return False
 
 
+def _subquery_ancestor_kind(node) -> str:
+    """Classify the nearest enclosing Subquery for *node*.
+
+    Returns 'join' if that Subquery sits directly under a Join (JOIN derived-table),
+    'from' if it sits under any other parent (FROM derived-table / non-JOIN), or ''
+    if there is no Subquery ancestor. O(depth) parent-chain walk; no new imports;
+    never raises. Used by Change ② to detect positional correlated EXISTS/IN patterns.
+    Branch condition for the Priority 4.5 SCOPE-GUARD: fragment carries a positional
+    finding injected by Change ③ during extraction (positional_kind != '').
+    """
+    try:
+        p = getattr(node, "parent", None)
+        while p is not None:
+            if type(p).__name__ == "Subquery":
+                par = getattr(p, "parent", None)
+                return "join" if (par is not None and type(par).__name__ == "Join") else "from"
+            p = getattr(p, "parent", None)
+    except Exception:
+        pass
+    return ""
+
+
 def _is_correlated_exists(inner_select, cte_names: set) -> bool:
     """Return True iff the subquery is correlated (references an outer-scope table via
     a qualifier not defined in its own FROM/JOIN) OR references a CTE alias (cannot run
@@ -502,7 +524,27 @@ def decompose(sql: str, llm: LlmFn, cost_reader_fn: CostReaderFn) -> list[Fragme
     built_fragments: list[Fragment] = []
     for raw in fragments_raw:
         frag_sql = raw["sql"]
-        frag_findings = tuple(scan_sql(frag_sql))
+        # Change ③: inject synthetic positional finding BEFORE scan_sql findings so it
+        # leads the tuple and drives _heuristic_monster_ids promotion automatically.
+        frag_findings_list = list(scan_sql(frag_sql))
+        _pos_kind = raw.get("positional_kind", "")
+        if _pos_kind:
+            _label = (
+                "JOIN derived-table subquery" if _pos_kind == "join"
+                else "FROM derived-table subquery"
+            )
+            frag_findings_list.insert(0, DetectionFinding(
+                rule_id="correlated-exists-per-row",
+                action="advise",
+                severity="high",
+                message=(
+                    f"correlated EXISTS/IN evaluated per-row inside {_label}; "
+                    f"cost is positional (inner_cost x enclosing row count)"
+                ),
+                suggestion="candidate for decorrelation to semi-join (v51b); not rewritten in v51a",
+                line=0,
+            ))
+        frag_findings = tuple(frag_findings_list)
 
         if raw["is_independently_runnable"]:
             try:
@@ -672,13 +714,16 @@ def _extract_fragments(sql: str) -> list[dict]:
         else:
             continue  # scalar projection / derived table / other → out of scope (§1.3)
         _is_corr = _is_correlated_exists(inner, cte_names)
+        _pos_kind = _subquery_ancestor_kind(node)   # "join" | "from" | "" (Change ②)
+        _is_positional = _pos_kind != ""
         fragments.append({
             "fragment_id": f"__subquery_{_pred_ordinal}__",
             "sql": inner.sql(dialect="trino"),
             "role": "subquery",
             "position_hint": len(fragments),
             "subq_ordinal": _pred_ordinal,
-            "is_independently_runnable": not _is_corr,
+            "is_independently_runnable": not (_is_corr or _is_positional),  # Change ②: OR-logic
+            "positional_kind": _pos_kind,  # Change ②: "" | "join" | "from"
         })
         _pred_ordinal += 1  # tick: non-skipped predicate subquery
 
@@ -822,6 +867,28 @@ def optimize(fragment: Fragment, llm: LlmFn) -> RewriteCandidate:
             changed=False,
             admitted=True,
             rationale="non-monster: not selected for this pass",
+        )
+
+    # ── Priority 4.5: positional/correlated fragment — ADVISE ONLY, never call LLM.
+    # v51a surfaces & advises; an isolated rewrite referencing outer columns is
+    # semantically invalid (those columns are from the enclosing query scope and were
+    # never passed to optimize()). Decorrelation under row-equivalence is v51b.
+    # Branch condition: fragment carries the extraction-time positional finding (Change ③).
+    _pos_finding = next(
+        (f for f in fragment.findings if f.rule_id == "correlated-exists-per-row"), None
+    )
+    if _pos_finding is not None:
+        return RewriteCandidate(
+            fragment_id=fragment.fragment_id,
+            original_sql=original,
+            rewritten_sql=original,
+            action="advise",
+            changed=False,
+            admitted=True,
+            rationale=(
+                f"correlated-exists-per-row [{_pos_finding.message}]. "
+                f"{_pos_finding.suggestion}"
+            ),
         )
 
     # ── Priority 5: Monster with rewrite/advise finding → call LLM

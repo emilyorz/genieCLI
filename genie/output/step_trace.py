@@ -95,7 +95,7 @@ def _fmt_detail_fragment(d: dict[str, Any]) -> str:
     if gates:
         parts.append("**Gates:** " + "  |  ".join(gates))
     if "action" in d:
-        action_icon = {"optimized": "✅", "reverted": "🔄", "unchanged": "➖"}.get(d["action"], "")
+        action_icon = {"optimized": "✅", "reverted": "🔄", "unchanged": "➖", "advise": "💡"}.get(d["action"], "")  # Change ⑥: add advise icon
         parts.append(f"**Action:** {action_icon} `{d['action']}`")
     # Render fragment SQL (Fix 2 — v50)
     if "original_sql" in d and "rewritten_sql" in d and d["original_sql"] != d["rewritten_sql"]:

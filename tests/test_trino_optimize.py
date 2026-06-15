@@ -1277,3 +1277,159 @@ class TestOptimizePStrategyMenu:
         clean = _make_fragment(is_monster=False, findings=(PASS_FINDING,))
         optimize(clean, lambda p: called.append(p) or "x")
         assert called == []
+
+
+# ---------------------------------------------------------------------------
+# v51a: Critical-Path Detection tests (T1, T1b, T2, T3, T4, T5, T6, T7)
+# ---------------------------------------------------------------------------
+
+def _raise_llm(p: str) -> str:  # forces decompose() heuristic-monster fallback (NOT lambda p:'[]')
+    raise RuntimeError("force heuristic monster selection")
+
+
+class TestV51aPositionalDetection:
+    """v51a: correlated EXISTS/IN per-row detection + ADVISE-only pipeline."""
+
+    # T1 — SCOPE-GUARD: no LLM call for positional fragment (pins Change ④)
+    def test_should_not_call_llm_when_fragment_has_positional_correlated_finding(self):
+        calls = 0
+
+        def counting_llm(prompt: str) -> str:
+            nonlocal calls
+            calls += 1
+            return "SELECT 1 FROM xxx INNER JOIN outer_table ON xxx.aa = outer_table.bb"
+
+        frag = _make_fragment(
+            is_independently_runnable=False,
+            role="subquery",
+            is_monster=True,
+            monster_rank=1,
+            findings=(DetectionFinding(
+                rule_id="correlated-exists-per-row",
+                action="advise",
+                severity="high",
+                message="positional",
+                suggestion="v51b",
+                line=0,
+            ),),
+        )
+        result = optimize(frag, counting_llm)
+        assert result.changed is False
+        assert result.action == "advise"
+        assert calls == 0
+    # RED-on-revert: remove Priority 4.5 → falls to Priority 5 → counting_llm called (calls==1)
+    # → changed=True (rewritten != original) → all three asserts fail.
+
+    # T1b — RENDERED rationale enrichment (pins Change ④ Option A; deliverable-gap falsifier)
+    def test_advise_rationale_contains_context_perrow_and_semijoin_direction(self):
+        frag = _make_fragment(
+            is_independently_runnable=False,
+            role="subquery",
+            is_monster=True,
+            monster_rank=1,
+            findings=(DetectionFinding(
+                rule_id="correlated-exists-per-row",
+                action="advise",
+                severity="high",
+                message=(
+                    "correlated EXISTS/IN evaluated per-row inside JOIN derived-table "
+                    "subquery; cost is positional (inner_cost x enclosing row count)"
+                ),
+                suggestion="candidate for decorrelation to semi-join (v51b); not rewritten in v51a",
+                line=0,
+            ),),
+        )
+        result = optimize(frag, lambda p: "UNUSED")
+        # the analyst-visible rationale must carry all three AC content items
+        assert "JOIN derived-table subquery" in result.rationale          # AC-2 enclosing context
+        assert "per-row" in result.rationale                              # AC-3 per-row note
+        assert "semi-join" in result.rationale                            # AC-4 direction
+    # RED-on-revert: revert the enriched-rationale construction back to a terse string
+    # → none of the three substrings present → all asserts fail.
+
+    # T2 — Extraction: JOIN-derived EXISTS gets positional finding + non-runnable + monster
+    def test_should_flag_positional_finding_for_exists_inside_join_subquery(self):
+        sql = (
+            "SELECT a.id, j.val FROM a "
+            "JOIN (SELECT b.id FROM b WHERE EXISTS (SELECT 1 FROM xxx WHERE aa = bb)) j "
+            "ON a.id = j.id"
+        )
+        cost = lambda s: CostReading(None, None, None, None, available=False, reason="no_runner")
+        frags = decompose(sql, _raise_llm, cost)  # RAISE-stub → heuristic monsters kept
+        pos = [f for f in frags
+               if any(x.rule_id == "correlated-exists-per-row" for x in f.findings)]
+        assert len(pos) == 1
+        assert pos[0].is_independently_runnable is False
+        assert pos[0].is_monster is True
+        msg = next(x for x in pos[0].findings if x.rule_id == "correlated-exists-per-row").message
+        assert "JOIN derived-table" in msg
+    # RED-on-revert: remove positional_kind injection (②③) → no positional finding → len(pos)==0;
+    # or revert the OR-logic → is_independently_runnable True.
+
+    # T3 — Q-P2 class coverage: FROM-subquery (non-JOIN) ALSO fires, with FROM label
+    def test_should_flag_positional_finding_for_exists_inside_from_subquery_non_join(self):
+        sql = "SELECT * FROM (SELECT b.id FROM b WHERE EXISTS (SELECT 1 FROM xxx WHERE aa = bb)) j"
+        cost = lambda s: CostReading(None, None, None, None, available=False, reason="no_runner")
+        frags = decompose(sql, _raise_llm, cost)
+        pos = [f for f in frags
+               if any(x.rule_id == "correlated-exists-per-row" for x in f.findings)]
+        assert len(pos) == 1
+        msg = next(x for x in pos[0].findings if x.rule_id == "correlated-exists-per-row").message
+        assert "FROM derived-table" in msg
+    # RED-on-revert: narrowing the detector to JOIN-only → FROM case stops firing → len(pos)==0.
+    # Sibling-class falsifier: prevents a JOIN-only one-instance patch.
+
+    # T4 — Negative: outer-WHERE EXISTS must NOT fire
+    def test_should_not_flag_positional_finding_for_outer_where_exists(self):
+        sql = "SELECT a.id FROM a WHERE EXISTS (SELECT 1 FROM xxx WHERE aa = bb)"
+        cost = lambda s: CostReading(None, None, None, None, available=False, reason="no_runner")
+        frags = decompose(sql, _raise_llm, cost)
+        assert not any(
+            x.rule_id == "correlated-exists-per-row"
+            for f in frags for x in f.findings
+        )
+    # RED-on-revert: dropping the Subquery-ancestor check → outer-WHERE fires → assert fails.
+
+    # T5 — Negative: CTE-body EXISTS must NOT fire (pins _should_skip ordering)
+    def test_should_not_flag_positional_finding_for_exists_inside_cte_body(self):
+        sql = (
+            "WITH c AS (SELECT b.id FROM b WHERE EXISTS (SELECT 1 FROM xxx WHERE aa = bb)) "
+            "SELECT * FROM c"
+        )
+        cost = lambda s: CostReading(None, None, None, None, available=False, reason="no_runner")
+        frags = decompose(sql, _raise_llm, cost)
+        assert not any(
+            x.rule_id == "correlated-exists-per-row"
+            for f in frags for x in f.findings
+        )
+    # RED-on-revert: if positional check ran BEFORE _should_skip → CTE-body fires → assert fails.
+
+    # T6 — IN(subquery) inside JOIN fires; value-list IN does not (pins both In branches)
+    def test_should_flag_positional_finding_for_in_subquery_inside_join_but_not_value_list(self):
+        sql_sub = (
+            "SELECT a.id FROM a "
+            "JOIN (SELECT b.id FROM b WHERE b.k IN (SELECT k FROM xxx)) j ON a.id = j.id"
+        )
+        sql_val = (
+            "SELECT a.id FROM a "
+            "JOIN (SELECT b.id FROM b WHERE b.k IN (1,2,3)) j ON a.id = j.id"
+        )
+        cost = lambda s: CostReading(None, None, None, None, available=False, reason="no_runner")
+        fr_sub = decompose(sql_sub, _raise_llm, cost)
+        fr_val = decompose(sql_val, _raise_llm, cost)
+        assert any(x.rule_id == "correlated-exists-per-row" for f in fr_sub for x in f.findings)
+        assert not any(x.rule_id == "correlated-exists-per-row" for f in fr_val for x in f.findings)
+    # RED-on-revert: dropping positional injection on the In branch → IN-subquery case fails
+    # the first assert. Value-list half pins the existing value-list guard.
+
+    # T7 — step_trace renders "advise" action with a non-empty icon (pins Change ⑥)
+    def test_step_trace_renders_advise_action_icon(self):
+        from genie.output.step_trace import _fmt_detail_fragment
+        out = _fmt_detail_fragment({
+            "fragment_id": "__subquery_0__",
+            "action": "advise",
+            "rationale": "correlated-exists-per-row [...]. ... semi-join ...",
+        })
+        assert "advise" in out   # action field routed (present even pre-fix as a string)
+        assert "💡" in out       # THE falsifier: only present after Change ⑥
+    # RED-on-revert: remove "advise": "💡" map entry → .get("advise","") → no 💡 → second assert fails.
