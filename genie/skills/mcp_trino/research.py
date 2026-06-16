@@ -2052,6 +2052,57 @@ def _produce_decompose_candidate(
                 },
             ))
 
+        # v52: offline critical-path cost model (§7) — run AFTER decompose, before fragment optimize
+        try:
+            from genie.skills.mcp_trino.critical_path import analyze_critical_path as _analyze_cp
+            from genie.output.step_trace import StepEvent, StepStatus
+            cp_result = _analyze_cp(sql)
+            if step_trace is not None:
+                if not cp_result.available:
+                    cp_status = StepStatus.DEGRADED
+                    cp_headline = f"offline cost model unavailable: {cp_result.reason}"
+                    cp_detail: dict = {"available": False, "reason": cp_result.reason}
+                elif cp_result.trivial:
+                    cp_status = StepStatus.RAN
+                    cp_headline = "no structural bottleneck identified"
+                    cp_detail = {"available": True, "trivial": True}
+                else:
+                    bn = cp_result.bottleneck
+                    bn_label = bn.label if bn else "unknown"
+                    bn_cost_pct = (
+                        round(100.0 * bn.subtree_cost / cp_result.root.subtree_cost, 1)
+                        if (bn and cp_result.root and cp_result.root.subtree_cost)
+                        else 0.0
+                    )
+                    cp_headline = f"hot node: {bn_label} ({bn_cost_pct}%)"
+                    if bn and bn.strategy:
+                        cp_headline += f" → {bn.strategy}"
+                    cp_status = StepStatus.RAN
+                    cp_detail = {
+                        "available": True,
+                        "trivial": False,
+                        "bottleneck_label": bn_label,
+                        "bottleneck_op": bn.op if bn else "",
+                        "bottleneck_cost_pct": bn_cost_pct,
+                        "strategy": bn.strategy if bn else None,
+                        "offline_truth_ceiling": cp_result.offline_truth_ceiling,
+                        "tied_paths": cp_result.tied_paths,
+                        "critical_path": [
+                            {"label": n.label, "op": n.op}
+                            for n in cp_result.critical_path
+                        ],
+                    }
+                step_trace.append(StepEvent(
+                    step_id="critical_path",
+                    stage="Critical Path (offline)",
+                    status=cp_status,
+                    applicable=True,
+                    tui_headline=cp_headline,
+                    detail=cp_detail,
+                ))
+        except Exception:
+            pass  # never block the main path
+
         # 2. Fragment optimize with cap=5 monsters
         monsters = [fr for fr in fragments if fr.is_monster][:5]
         over_cap_list = [fr for fr in fragments if fr.is_monster][5:]
@@ -2435,6 +2486,7 @@ def run_mcp_enhancement(
             static_report=static_report,
             baseline_exc=decision.baseline_exc,
             output=output,
+            step_trace=_step_trace,  # GAP-1: thread step_trace so critical_path StepEvent is visible
         )
         raise NoDataDetected(decision.no_data_reason, result)
 

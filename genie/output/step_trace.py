@@ -178,6 +178,49 @@ def _fmt_detail_decompose(d: dict[str, Any]) -> str:
     return "\n\n".join(parts)
 
 
+def _fmt_detail_critical_path(d: dict[str, Any]) -> str:
+    """Format critical_path step detail block (§8b).
+
+    Renders the hot chain with per-node cost % and truth-ceiling once per section (§8c-4).
+    """
+    if not d.get("available"):
+        return f"**Status:** DEGRADED — {d.get('reason', 'unavailable')}"
+
+    parts = []
+
+    if d.get("trivial"):
+        parts.append("**Result:** no structural bottleneck identified (trivial query)")
+        return "\n\n".join(parts)
+
+    # Hot chain breadcrumb
+    chain = d.get("critical_path", [])
+    if chain:
+        chain_str = " → ".join(n.get("label", n.get("op", "?")) for n in chain)
+        parts.append(f"**Hot chain:** {chain_str}")
+
+    bn_label = d.get("bottleneck_label", "")
+    bn_cost_pct = d.get("bottleneck_cost_pct", 0.0)
+    if bn_label:
+        parts.append(f"**Bottleneck:** {bn_label} ({bn_cost_pct}% of structural cost)")
+
+    strategy = d.get("strategy")
+    if strategy:
+        parts.append(f"**Strategy:** `{strategy}`")
+
+    tied = d.get("tied_paths", 1)
+    if tied > 1:
+        parts.append(f"**Ties:** {tied} equally-ranked paths — showing first (pre-order)")
+
+    # Truth-ceiling: once per section (§8c-4)
+    if d.get("offline_truth_ceiling"):
+        parts.append(
+            "> **Offline truth-ceiling:** ranked by structure; actual cost depends on data "
+            "volume unknown offline. Verify with EXPLAIN or live measurement."
+        )
+
+    return "\n\n".join(parts)
+
+
 _DETAIL_FORMATTERS: dict[str, Any] = {
     "preflight_route":  _fmt_detail_preflight,
     "baseline":         _fmt_detail_baseline,
@@ -185,6 +228,7 @@ _DETAIL_FORMATTERS: dict[str, Any] = {
     "recompose":        _fmt_detail_recompose,
     "verify":           _fmt_detail_verify,
     "decorrelate":      _fmt_detail_fragment,   # v51b: EXISTS→IN pre-pass report section (U1)
+    "critical_path":    _fmt_detail_critical_path,  # v52: offline structural cost model
 }
 
 

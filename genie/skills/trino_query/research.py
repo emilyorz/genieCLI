@@ -1075,6 +1075,7 @@ def _run_optimization_loop(
             static_report=static_report,
             baseline_exc=decision.baseline_exc,
             output=output,
+            step_trace=_step_trace,  # GAP-1: thread step_trace so critical_path StepEvent is visible
         )
 
     elif decision.route == PreflightRoute.REAL_FAILURE:
