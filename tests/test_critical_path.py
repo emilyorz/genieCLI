@@ -7,8 +7,13 @@ from __future__ import annotations
 
 import pytest
 
+import sqlglot
+import sqlglot.expressions as exp
+
 from genie.skills.mcp_trino.critical_path import (
     CriticalPathResult,
+    _classify_join,
+    _join_label,
     analyze_critical_path,
     build_cost_tree,
     compute_costs,
@@ -605,3 +610,218 @@ def test_should_render_critical_path_section_from_formatter():
     assert "CROSS JOIN" in report_md, (
         f"§10: bottleneck not in rendered report markdown. Output:\n{report_md}"
     )
+
+
+# ===========================================================================
+# v53 — critical-path AST coverage gaps (regression lock for Sam's real query)
+# ===========================================================================
+
+# Sam's company rule-engine query, structurally verbatim: a CTE whose body is
+# rule_table JOIN base_table ON (1=1 + fuzzy LIKE/COALESCE/strpos + real equi
+# keys customer/tech_id + a CASE WHEN carrying two correlated EXISTS), wrapped in
+# a final projection SELECT. Pre-v53 the two EXISTS were invisible and the join
+# label named an inner validation table. This fixture locks the fix.
+V53_RULE_ENGINE = """
+WITH main_agg AS (
+  SELECT
+    b.unique_id,
+    MAX(b.product) AS product,
+    SUM(CASE WHEN r.reason = 'A' THEN 1 ELSE 0 END) AS cnt_a,
+    SUM(CASE WHEN r.reason IN ('B','C') THEN 1 ELSE 0 END) AS cnt_b
+  FROM rule_table r
+  JOIN base_table b
+    ON 1=1
+   AND r.product LIKE b.product ESCAPE '\\'
+   AND COALESCE(r.field1, r.field2) = b.route
+   AND strpos(r.allowed_subtypes, b.subtype) > 0
+   AND r.customer = b.customer
+   AND r.tech_id = b.tech_id
+   AND (CASE
+          WHEN r.tool_restrict IS NULL THEN TRUE
+          ELSE (
+            EXISTS (SELECT 1 FROM tooling_info t
+                     WHERE t.rule_id = r.id AND t.version LIKE CONCAT('%', b.ver, '%'))
+            AND EXISTS (SELECT 1 FROM yield_die_info y
+                         WHERE y.rule_id = r.id AND y.qty BETWEEN r.lo AND r.hi)
+          )
+        END)
+  GROUP BY b.unique_id
+)
+SELECT
+  m.product, m.cnt_a, m.cnt_b,
+  CAST(NULL AS VARCHAR) AS pad1
+FROM main_agg m
+"""
+
+
+def _all_nodes(sql: str) -> list:
+    """flatten_nodes including wrappers (for descendant/parentage assertions)."""
+    root = build_cost_tree(sql)
+    compute_costs(root)
+    return flatten_nodes(root, exclude_wrappers=False)
+
+
+def _first_join(sql: str) -> exp.Join:
+    tree = sqlglot.parse_one(sql, dialect="trino")
+    return list(tree.find_all(exp.Join))[0]
+
+
+def _descendants(node) -> list:
+    """All descendant nodes of node (excluding node itself)."""
+    out = []
+    for child in node.children:
+        out.append(child)
+        out.extend(_descendants(child))
+    return out
+
+
+# --- AC1: EXISTS in JOIN-ON CASE WHEN become correlated_subquery nodes --------
+
+def test_should_surface_both_join_on_exists_as_nodes_when_v53_rule_engine():
+    """AC1: tooling_info + yield_die_info EXISTS (in JOIN ON) become nodes."""
+    nodes = _all_nodes(V53_RULE_ENGINE)
+    corr = [n for n in nodes if n.op == "correlated_subquery"]
+    labels = " ".join(n.label.lower() for n in corr)
+    assert len(corr) == 2, f"Expected 2 correlated_subquery nodes, got {len(corr)}: {[n.label for n in corr]}"
+    assert "tooling_info" in labels, f"tooling_info EXISTS missing: {labels}"
+    assert "yield_die_info" in labels, f"yield_die_info EXISTS missing: {labels}"
+
+
+# --- AC2: the double-EXISTS validation is represented in the hot path ----------
+
+def test_should_put_exists_validation_on_critical_path_when_v53_rule_engine():
+    """AC2: a correlated EXISTS node sits on the critical path (the real driver)."""
+    result = analyze_critical_path(V53_RULE_ENGINE)
+    assert result.available and not result.trivial
+    path_ops = [n.op for n in result.critical_path]
+    assert "correlated_subquery" in path_ops, (
+        f"EXISTS validation not on critical path; path ops={path_ops}"
+    )
+
+
+# --- AC2b: parentage — EXISTS nodes are descendants of the rule-join node ------
+
+def test_should_parent_join_on_exists_under_the_join_node_when_v53():
+    """AC2b: ON-clause EXISTS attach under the join subtree, not as SELECT siblings."""
+    root = build_cost_tree(V53_RULE_ENGINE)
+    compute_costs(root)
+    all_nodes = flatten_nodes(root, exclude_wrappers=False)
+    join_nodes = [n for n in all_nodes if n.op.startswith("join_")]
+    assert join_nodes, "no join node found"
+    join = join_nodes[0]
+    corr_under_join = [n for n in _descendants(join) if n.op == "correlated_subquery"]
+    assert len(corr_under_join) == 2, (
+        f"Expected both EXISTS parented under the join; found {len(corr_under_join)} in its subtree"
+    )
+
+
+# --- AC3: F3 cartesian escalation + no-false-positive guards -------------------
+
+def test_should_classify_tautology_plus_nonequi_as_cross_when_no_equi_key():
+    """AC3(i): 1=1 + strpos>0, no equi key → join_cross (heavier than plain non-equi)."""
+    sql_taut = "SELECT * FROM a JOIN b ON 1=1 AND strpos(a.x, b.y) > 0"
+    sql_plain_nonequi = "SELECT * FROM a JOIN b ON a.x > b.y"
+    assert _classify_join(_first_join(sql_taut)) == "join_cross"
+    assert _classify_join(_first_join(sql_plain_nonequi)) == "join_non_equi"
+
+
+def test_should_classify_pure_tautology_fuzzy_as_cross_not_inner():
+    """AC3(ii): 1=1 + LIKE only (no GT/LT, no equi key) → join_cross, NOT join_inner."""
+    sql = "SELECT * FROM a JOIN b ON 1=1 AND a.x LIKE b.y"
+    assert _classify_join(_first_join(sql)) == "join_cross"
+
+
+def test_should_keep_inner_join_when_real_equi_key_present_despite_fuzzy():
+    """AC3(iii): a real cross-table equi key keeps the join bounded → join_inner,
+    unaffected by incidental 1=1 / LIKE side predicates (F3 no-false-positive)."""
+    assert _classify_join(_first_join("SELECT * FROM a JOIN b ON a.k = b.k")) == "join_inner"
+    assert _classify_join(
+        _first_join("SELECT * FROM a JOIN b ON a.k = b.k AND a.x LIKE b.y")
+    ) == "join_inner"
+    assert _classify_join(
+        _first_join("SELECT * FROM a JOIN b ON a.k = b.k AND 1=1")
+    ) == "join_inner"
+
+
+# --- AC4: join label names the directly-joined tables, never an ON-subquery ----
+
+def test_should_label_join_with_direct_tables_not_on_subquery_table():
+    """AC4: rule-join label is r⋈b — never names tooling_info (an ON-clause subquery)."""
+    nodes = _all_nodes(V53_RULE_ENGINE)
+    join = [n for n in nodes if n.op.startswith("join_")][0]
+    assert "r⋈b" in join.label, f"Expected 'r⋈b' in label, got {join.label!r}"
+    assert "tooling" not in join.label.lower(), f"label leaked ON-subquery table: {join.label!r}"
+
+
+def test_join_label_uses_join_this_directly():
+    """AC4 unit: _join_label uses join.this (right) + threaded left, not find_all."""
+    join = _first_join("SELECT * FROM facts f JOIN dims d ON f.k = d.k")
+    label = _join_label("join_inner", join, left_name="f")
+    assert label == "JOIN f⋈d", f"got {label!r}"
+
+
+# --- AC4b: correlated scalar subquery in the SELECT projection list ------------
+
+def test_should_surface_correlated_scalar_subquery_in_select_list():
+    """AC4b: a correlated scalar subquery in the SELECT list becomes a node."""
+    sql = """
+    SELECT o.id,
+           (SELECT max(li.qty) FROM line_items li WHERE li.order_id = o.id) AS max_qty
+    FROM orders o
+    """
+    nodes = _all_nodes(sql)
+    corr = [n for n in nodes if n.op == "correlated_subquery"]
+    assert len(corr) >= 1, "correlated scalar subquery in SELECT list not surfaced"
+    assert any("line_items" in n.label.lower() for n in corr)
+
+
+# --- AC7: never raises; uncorrelated ON-clause subquery degrades gracefully ----
+
+def test_should_not_raise_on_rule_engine_query():
+    """AC7: analyze_critical_path stays well-defined (never raises) on the rule query."""
+    result = analyze_critical_path(V53_RULE_ENGINE)
+    assert isinstance(result.available, bool)
+    assert result.available is True
+
+
+def test_should_not_blow_up_node_for_uncorrelated_on_clause_exists():
+    """AC7: an UNcorrelated EXISTS in a JOIN ON adds no correlated_subquery node."""
+    sql = """
+    SELECT a.id FROM a
+    JOIN b ON a.k = b.k AND EXISTS (SELECT 1 FROM lookup l WHERE l.flag = 'X')
+    """
+    nodes = _all_nodes(sql)
+    corr = [n for n in nodes if n.op == "correlated_subquery"]
+    assert corr == [], f"uncorrelated EXISTS wrongly treated as blowup: {[n.label for n in corr]}"
+
+
+# --- F3 edge cases (review attempt-1 findings) --------------------------------
+
+def test_should_keep_inner_join_when_computed_or_coalesced_equi_key_present():
+    """A function-wrapped real join key bounds the join — `1=1 AND UPPER(a.k)=b.k`
+    or COALESCE-wrapped equality must stay join_inner, NOT escalate to join_cross."""
+    assert _classify_join(
+        _first_join("SELECT * FROM a JOIN b ON 1=1 AND UPPER(a.k) = b.k")
+    ) == "join_inner"
+    assert _classify_join(
+        _first_join("SELECT * FROM a JOIN b ON 1=1 AND COALESCE(a.x, a.y) = b.z")
+    ) == "join_inner"
+
+
+def test_should_not_treat_literal_contradiction_as_cartesian():
+    """`1=2` is a contradiction (always-empty join), not a tautology — it must not
+    trigger the cartesian branch."""
+    assert _classify_join(_first_join("SELECT * FROM a JOIN b ON 1=2 AND a.x LIKE b.y")) == "join_inner"
+    # bare equal-literal IS a tautology → cartesian when no equi key
+    assert _classify_join(_first_join("SELECT * FROM a JOIN b ON 1=1 AND a.x LIKE b.y")) == "join_cross"
+    assert _classify_join(_first_join("SELECT * FROM a JOIN b ON 'x'='x' AND a.p LIKE b.q")) == "join_cross"
+
+
+def test_should_label_chained_join_with_running_left_table():
+    """Multi-join FROM: the 2nd join's left is the 1st join's right table, not the
+    original FROM primary."""
+    sql = "SELECT * FROM a JOIN b ON a.k = b.k JOIN c ON b.k = c.k"
+    nodes = _all_nodes(sql)
+    join_labels = [n.label for n in nodes if n.op.startswith("join_")]
+    assert any("a⋈b" in lbl for lbl in join_labels), f"first join label wrong: {join_labels}"
+    assert any("b⋈c" in lbl for lbl in join_labels), f"chained join left wrong: {join_labels}"

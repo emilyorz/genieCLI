@@ -78,6 +78,27 @@ def _collect_and_leaves(condition: exp.Expression) -> list[exp.Expression]:
     return [condition]
 
 
+def _is_literal_tautology(leaf: exp.Expression) -> bool:
+    """True if leaf is a constant tautology — `1=1`, `'x'='x'`, or bare `TRUE`.
+
+    §3.1 F3: in a JOIN ON clause a literal tautology is a cartesian signal — it
+    contributes no row-reducing constraint. Rule-engine SQL commonly opens an ON
+    with `1=1` so every real condition can be appended as `AND ...`; whether the
+    join is actually cartesian depends on whether a real equi key sits among those
+    ANDs (handled by the caller's has_equi_pair guard).
+    """
+    if isinstance(leaf, exp.Boolean):
+        return bool(leaf.this) is True
+    if isinstance(leaf, exp.EQ):
+        left, right = leaf.left, leaf.right
+        if isinstance(left, exp.Literal) and isinstance(right, exp.Literal):
+            # Only an EQUAL literal pair is a tautology. `1=2` is a contradiction
+            # (always-empty join) — NOT a cartesian signal; let it fall through to
+            # normal classification rather than mislabel an empty join as heaviest.
+            return (left.this == right.this) and (left.is_string == right.is_string)
+    return False
+
+
 def _classify_join(join: exp.Join) -> str:
     """Return the op kind for a JOIN node per §3.1.
 
@@ -99,16 +120,32 @@ def _classify_join(join: exp.Join) -> str:
     non_equi_ops = (exp.LT, exp.GT, exp.LTE, exp.GTE, exp.NEQ, exp.Between)
     has_equi_pair = False
     has_non_equi = False
+    has_tautology = False
 
     for leaf in leaves:
-        if isinstance(leaf, non_equi_ops):
+        if _is_literal_tautology(leaf):
+            has_tautology = True
+        elif isinstance(leaf, non_equi_ops):
             has_non_equi = True
         elif isinstance(leaf, exp.EQ):
-            # Check if both sides reference columns from different tables
+            # An equality referencing a column on BOTH sides bounds the join — a
+            # real join key — even when wrapped in a function (UPPER(a.k)=b.k,
+            # COALESCE(a.x,a.y)=b.z). Only literal=literal (no columns, caught above
+            # as a tautology) is non-bounding. This keeps a computed-key equi join
+            # out of the cartesian branch (F3 no-false-positive).
             left, right = leaf.left, leaf.right
-            if isinstance(left, exp.Column) and isinstance(right, exp.Column):
-                # At least one equi pair across tables
+            left_has_col = isinstance(left, exp.Column) or bool(next(left.find_all(exp.Column), None))
+            right_has_col = isinstance(right, exp.Column) or bool(next(right.find_all(exp.Column), None))
+            if left_has_col and right_has_col:
                 has_equi_pair = True
+
+    # F3: a `1=1`/TRUE tautology with NO real cross-table equi key is a filtered
+    # cross product — classify as cartesian (CROSS_JOIN_BLOWUP) regardless of any
+    # fuzzy/non-equi predicates. A genuine equi key (has_equi_pair) means the join
+    # is bounded → this branch is skipped and normal classification applies, so a
+    # real equi join carrying an incidental `1=1`/LIKE filter is unaffected.
+    if has_tautology and not has_equi_pair:
+        return "join_cross"
 
     if has_non_equi:
         return "join_non_equi"
@@ -201,8 +238,15 @@ def _table_name(tbl: exp.Table) -> str:
     return (tbl.alias or tbl.name or "?")
 
 
-def _join_label(op: str, join: exp.Join) -> str:
-    """Build a human join label like 'JOIN facts⋈dims' per §2.1."""
+def _join_label(op: str, join: exp.Join, left_name: Optional[str] = None) -> str:
+    """Build a human join label like 'JOIN facts⋈dims' per §2.1.
+
+    F4: the right table is the join's OWN directly-attached source (`join.this`).
+    Never `find_all(exp.Table)` — that descends into ON-clause subqueries and would
+    name a validation table (e.g. the EXISTS target) instead of the joined table.
+    `left_name` is the FROM-side table, threaded in by the caller (the join node
+    itself does not know its left input).
+    """
     kind_map = {
         "join_cross":    "CROSS JOIN",
         "join_inner":    "JOIN",
@@ -213,14 +257,105 @@ def _join_label(op: str, join: exp.Join) -> str:
     }
     kind_str = kind_map.get(op, "JOIN")
 
-    # From left side: the primary table in FROM
-    # We don't have the parent here, so use join's own table
-    tables = [_table_name(t) for t in join.find_all(exp.Table)]
-    if len(tables) >= 2:
-        return f"{kind_str} {tables[0]}⋈{tables[1]}"
-    elif len(tables) == 1:
-        return f"{kind_str} ⋈{tables[0]}"
+    right = join.this
+    if isinstance(right, exp.Table):
+        right_name = _table_name(right)
+    elif isinstance(right, exp.Subquery):
+        right_name = right.alias or "subquery"
+    else:
+        right_name = ""
+
+    if left_name and right_name:
+        return f"{kind_str} {left_name}⋈{right_name}"
+    if right_name:
+        return f"{kind_str} ⋈{right_name}"
     return kind_str
+
+
+def _make_correlated_node(
+    inner_sel: exp.Select,
+    all_visible: set[str],
+    parent_magnitude: float,
+    depth: int,
+    kind: str,
+) -> "CostNode":
+    """Build a correlated_subquery CostNode (with its recursed inner subtree).
+
+    `kind` ∈ {EXISTS, IN, CORRELATED} controls only the human label/excerpt; the
+    cost treatment (CORRELATED_SUBQUERY_FACTOR, truth-ceiling flag, P2 strategy) is
+    identical — a correlated subquery runs once per parent row regardless of syntax.
+    """
+    sub_magnitude = parent_magnitude * CORRELATED_SUBQUERY_FACTOR
+    inner_tables = list(inner_sel.find_all(exp.Table))
+    inner_name = inner_tables[0].name if inner_tables else "subquery"
+    label = {"IN": f"IN ({inner_name})"}.get(kind, f"EXISTS {inner_name}")
+    excerpt = {
+        "EXISTS": f"EXISTS ({inner_name})",
+        "IN": f"IN ({inner_name})",
+        "CORRELATED": f"CORRELATED ({inner_name})",
+    }.get(kind, f"EXISTS ({inner_name})")
+    sub_node = CostNode(
+        op="correlated_subquery",
+        label=label,
+        self_weight=NODE_BASE_WEIGHT["correlated_subquery"],
+        rule_penalties=node_penalty(RULE_SUBQUERY_IN_SELECT_PUSHABLE_TO_JOIN, "high"),
+        row_magnitude=int(sub_magnitude),
+        flags={"offline_truth_ceiling"},
+        strategy="P2",  # exists-to-left-join (TRAP)
+        sql_excerpt=excerpt,
+    )
+    inner_node = _analyze_select(
+        inner_sel,
+        parent_magnitude=sub_magnitude,
+        outer_aliases=all_visible,
+        depth=depth + 1,
+    )
+    sub_node.children.append(inner_node)
+    return sub_node
+
+
+def _scan_correlated_subqueries(
+    scope: exp.Expression,
+    all_visible: set[str],
+    parent_magnitude: float,
+    depth: int,
+) -> list["CostNode"]:
+    """Return correlated_subquery nodes for all correlated EXISTS/IN/scalar
+    subqueries anywhere inside `scope` (§3.2).
+
+    F1/F2: `scope` may be a WHERE/HAVING clause, a JOIN ON clause (subqueries
+    nested in a CASE WHEN are reached via find_all), or a SELECT projection
+    expression. Only correlated subqueries become blowup nodes; uncorrelated ones
+    are left as ordinary (zero-extra-cost) structure.
+    """
+    nodes: list[CostNode] = []
+
+    # EXISTS(...) — exp.Exists.this is a Select (not a Subquery)
+    for exists_expr in scope.find_all(exp.Exists):
+        inner_sel = exists_expr.this
+        if isinstance(inner_sel, exp.Select) and _is_correlated(inner_sel, all_visible):
+            nodes.append(_make_correlated_node(inner_sel, all_visible, parent_magnitude, depth, "EXISTS"))
+
+    # IN (SELECT ...) — subquery lives under args["query"]
+    for in_expr in scope.find_all(exp.In):
+        query_arg = in_expr.args.get("query")
+        if not query_arg:
+            continue
+        inner_sel = query_arg if isinstance(query_arg, exp.Select) else (
+            query_arg.this if isinstance(query_arg, exp.Subquery) else None
+        )
+        if isinstance(inner_sel, exp.Select) and _is_correlated(inner_sel, all_visible):
+            nodes.append(_make_correlated_node(inner_sel, all_visible, parent_magnitude, depth, "IN"))
+
+    # Bare scalar subqueries NOT wrapped in EXISTS/IN
+    for subq in scope.find_all(exp.Subquery):
+        if subq.find_ancestor(exp.Exists) or subq.find_ancestor(exp.In):
+            continue
+        inner_sel = subq.this
+        if isinstance(inner_sel, exp.Select) and _is_correlated(inner_sel, all_visible):
+            nodes.append(_make_correlated_node(inner_sel, all_visible, parent_magnitude, depth, "CORRELATED"))
+
+    return nodes
 
 
 def _from_table_label(tbl: exp.Table) -> str:
@@ -304,6 +439,12 @@ def _analyze_select(
     # ------------------------------------------------------------------
     # 2. JOINs at this SELECT level
     # ------------------------------------------------------------------
+    # F4: left-side table name for join labels — the join node itself only knows
+    # its right input, so thread the FROM primary in from here.
+    running_left: Optional[str] = None
+    if from_clause and isinstance(from_clause.this, exp.Table):
+        running_left = _table_name(from_clause.this)
+
     for join in joins:
         op = _classify_join(join)
 
@@ -329,7 +470,14 @@ def _analyze_select(
             if j_strategy is None:
                 j_strategy = "P1"  # function-pushup (SAFE)
 
-        label = _join_label(op, join)
+        label = _join_label(op, join, left_name=running_left)
+        # Advance the running left for the NEXT join's label: a chained join's left
+        # input is the prior join's right table, not the original FROM primary.
+        _rt = join.this
+        if isinstance(_rt, exp.Table):
+            running_left = _table_name(_rt)
+        elif isinstance(_rt, exp.Subquery) and _rt.alias:
+            running_left = _rt.alias
 
         join_node = CostNode(
             op=op,
@@ -341,6 +489,18 @@ def _analyze_select(
             strategy=j_strategy,
             sql_excerpt=label,
         )
+
+        # F1/F2: correlated EXISTS/IN/scalar subqueries living in the JOIN ON clause
+        # (commonly nested in a CASE WHEN) run once per joined row — attach them as
+        # CHILDREN of this join node so they sit on the join's subtree (magnitude
+        # propagates from the join's blowup, not the pre-join parent magnitude).
+        on_clause = join.args.get("on")
+        if on_clause is not None:
+            for sub_node in _scan_correlated_subqueries(
+                on_clause, all_visible, j_magnitude, depth
+            ):
+                join_node.children.append(sub_node)
+
         children.append(join_node)
 
     # ------------------------------------------------------------------
@@ -350,105 +510,20 @@ def _analyze_select(
         clause = select_node.args.get(clause_key)
         if not clause:
             continue
+        for sub_node in _scan_correlated_subqueries(
+            clause, all_visible, parent_magnitude, depth
+        ):
+            children.append(sub_node)
 
-        # §3.2: scan exp.Exists (EXISTS(...)) — Exists.this is a Select
-        for exists_expr in clause.find_all(exp.Exists):
-            inner_sel = exists_expr.this
-            if not isinstance(inner_sel, exp.Select):
-                continue
-            correlated = _is_correlated(inner_sel, all_visible)
-            if correlated:
-                sub_magnitude = parent_magnitude * CORRELATED_SUBQUERY_FACTOR
-                # Extract inner table name for label
-                inner_tables = list(inner_sel.find_all(exp.Table))
-                inner_name = inner_tables[0].name if inner_tables else "subquery"
-                sub_node = CostNode(
-                    op="correlated_subquery",
-                    label=f"EXISTS {inner_name}",
-                    self_weight=NODE_BASE_WEIGHT["correlated_subquery"],
-                    rule_penalties=node_penalty(RULE_SUBQUERY_IN_SELECT_PUSHABLE_TO_JOIN, "high"),
-                    row_magnitude=int(sub_magnitude),
-                    flags={"offline_truth_ceiling"},
-                    strategy="P2",  # exists-to-left-join (TRAP)
-                    sql_excerpt=f"EXISTS ({inner_name})",
-                )
-                # Recurse into the inner select
-                inner_node = _analyze_select(
-                    inner_sel,
-                    parent_magnitude=sub_magnitude,
-                    outer_aliases=all_visible,
-                    depth=depth + 1,
-                )
-                sub_node.children.append(inner_node)
-                children.append(sub_node)
-            # uncorrelated EXISTS → treated as regular child (not a blowup node)
-
-        # §3.2: scan exp.In with a subquery (IN (SELECT ...))
-        for in_expr in clause.find_all(exp.In):
-            query_arg = in_expr.args.get("query")
-            if not query_arg:
-                continue
-            inner_sel = query_arg if isinstance(query_arg, exp.Select) else (
-                query_arg.this if isinstance(query_arg, exp.Subquery) else None
-            )
-            if not isinstance(inner_sel, exp.Select):
-                continue
-            correlated = _is_correlated(inner_sel, all_visible)
-            if correlated:
-                sub_magnitude = parent_magnitude * CORRELATED_SUBQUERY_FACTOR
-                inner_tables = list(inner_sel.find_all(exp.Table))
-                inner_name = inner_tables[0].name if inner_tables else "subquery"
-                sub_node = CostNode(
-                    op="correlated_subquery",
-                    label=f"IN ({inner_name})",
-                    self_weight=NODE_BASE_WEIGHT["correlated_subquery"],
-                    rule_penalties=node_penalty(RULE_SUBQUERY_IN_SELECT_PUSHABLE_TO_JOIN, "high"),
-                    row_magnitude=int(sub_magnitude),
-                    flags={"offline_truth_ceiling"},
-                    strategy="P2",
-                    sql_excerpt=f"IN ({inner_name})",
-                )
-                inner_node = _analyze_select(
-                    inner_sel,
-                    parent_magnitude=sub_magnitude,
-                    outer_aliases=all_visible,
-                    depth=depth + 1,
-                )
-                sub_node.children.append(inner_node)
-                children.append(sub_node)
-
-        # §3.2: regular scalar subqueries NOT wrapped in EXISTS/IN
-        for subq in clause.find_all(exp.Subquery):
-            if subq.find_ancestor(exp.Exists):
-                continue
-            if subq.find_ancestor(exp.In):
-                continue
-            inner_sel = subq.this
-            if not isinstance(inner_sel, exp.Select):
-                continue
-            correlated = _is_correlated(inner_sel, all_visible)
-            if correlated:
-                sub_magnitude = parent_magnitude * CORRELATED_SUBQUERY_FACTOR
-                inner_tables = list(inner_sel.find_all(exp.Table))
-                inner_name = inner_tables[0].name if inner_tables else "subquery"
-                sub_node = CostNode(
-                    op="correlated_subquery",
-                    label=f"EXISTS {inner_name}",
-                    self_weight=NODE_BASE_WEIGHT["correlated_subquery"],
-                    rule_penalties=node_penalty(RULE_SUBQUERY_IN_SELECT_PUSHABLE_TO_JOIN, "high"),
-                    row_magnitude=int(sub_magnitude),
-                    flags={"offline_truth_ceiling"},
-                    strategy="P2",
-                    sql_excerpt=f"CORRELATED ({inner_name})",
-                )
-                inner_node = _analyze_select(
-                    inner_sel,
-                    parent_magnitude=sub_magnitude,
-                    outer_aliases=all_visible,
-                    depth=depth + 1,
-                )
-                sub_node.children.append(inner_node)
-                children.append(sub_node)
+    # ------------------------------------------------------------------
+    # 3b. Correlated scalar subqueries in the SELECT projection list (§3.2 F1)
+    # e.g. SELECT (SELECT max(x) FROM t WHERE t.id = outer.id) ...
+    # ------------------------------------------------------------------
+    for proj in select_node.expressions:
+        for sub_node in _scan_correlated_subqueries(
+            proj, all_visible, parent_magnitude, depth
+        ):
+            children.append(sub_node)
 
     # ------------------------------------------------------------------
     # 4. Window functions
