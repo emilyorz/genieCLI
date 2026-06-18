@@ -553,6 +553,21 @@ def _render_decompose_advisory(result: dict) -> list:
     if reverted:
         lines += [f"Cross-fragment / column+semantic gate reverted: {', '.join(str(r) for r in reverted)}.", ""]
 
+    # v56: offline structural verification for the decorrelation (P9) candidate.
+    # When the original carries a correlated EXISTS, prove fan-out safety from the AST
+    # and emit the residual data/semantic checklist (the row-equivalence gate cannot
+    # run offline — tables do not exist). Never raises; degrades to no section.
+    try:
+        from genie.skills.mcp_trino.strategy_verify import render_advisory_verification
+        verify_lines = render_advisory_verification(
+            result.get("original_sql") or "",
+            advisory_sql if advisory_sql is not None else "",
+        )
+        if verify_lines:
+            lines += verify_lines
+    except Exception:
+        pass
+
     lines += ["Per-fragment suggestions are advisory and UNVERIFIED — verify on a live cluster before applying.", ""]
     return lines
 
