@@ -25,13 +25,13 @@ from genie.skills.mcp_trino.p_strategies import (
     strategies_for_action,
 )
 
-_EXPECTED_IDS = frozenset(f"P{i}" for i in range(1, 9))
+_EXPECTED_IDS = frozenset(f"P{i}" for i in range(1, 10))
 
 
-def test_menu_has_exactly_p1_through_p8():
+def test_menu_has_exactly_p1_through_p9():
     # No gap (the historical "P5 undefined" hole) and no extra/missing slot.
     assert ALL_P_STRATEGY_IDS == _EXPECTED_IDS
-    assert len(P_STRATEGIES) == 8
+    assert len(P_STRATEGIES) == 9
 
 
 def test_ids_are_unique():
@@ -93,14 +93,15 @@ def test_known_tier_assignments():
     expected = {
         "P1": SAFE, "P2": TRAP, "P3": DANGEROUS, "P4": DANGEROUS,
         "P5": TRAP, "P6": DANGEROUS, "P7": SAFE, "P8": SAFE,
+        "P9": TRAP,
     }
     actual = {s.id: s.tier for s in P_STRATEGIES}
     assert actual == expected
 
 
-def test_render_menu_lists_all_eight_with_safety_flags():
+def test_render_menu_lists_all_nine_with_safety_flags():
     menu = render_menu()
-    for i in range(1, 9):
+    for i in range(1, 10):
         assert f"P{i}" in menu
     # Advise-only and verify flags must be visible to the optimizer LLM.
     assert "ADVISE ONLY" in menu

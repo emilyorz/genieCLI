@@ -1088,7 +1088,44 @@ def _parse_monster_response(response: str, fragments: list[Fragment]) -> list[st
 # §2.3  optimize()
 # ---------------------------------------------------------------------------
 
-def optimize(fragment: Fragment, llm: LlmFn) -> RewriteCandidate:
+@dataclass(frozen=True)
+class CpGuidance:
+    """Whole-query critical-path context fed into the optimize prompt (v55).
+
+    Built by ``_produce_decompose_candidate`` from the offline cost model's
+    ``cp_result`` and passed identically to every fragment's optimize call — the
+    LLM gets to know which structure the cost model flagged as the bottleneck and
+    which named strategy it recommends, instead of seeing only per-fragment rules.
+    """
+    bottleneck_label: str             # cost-model hot-node label (e.g. a CTE name / op)
+    bottleneck_op: str                # the hot node's operation kind
+    bottleneck_cost_pct: float        # share of the root subtree cost (0..100)
+    recommended_strategy: Optional[str]  # named P-strategy the cost model maps the hot node to
+
+
+def _render_cp_guidance(cp: Optional[CpGuidance]) -> str:
+    """Render the cost-model guidance block, or '' when no bottleneck context exists."""
+    if cp is None:
+        return ""
+    line = (
+        f"Cost-model guidance (offline critical path): the hot node is "
+        f"'{cp.bottleneck_label}' [{cp.bottleneck_op}], ~{cp.bottleneck_cost_pct}% of total "
+        f"estimated cost."
+    )
+    if cp.recommended_strategy:
+        line += (
+            f" The cost model recommends prioritizing strategy {cp.recommended_strategy} "
+            f"on the structure that lies on this critical path; prefer it over lower-impact "
+            f"rewrites when it fits this fragment."
+        )
+    return line + "\n\n"
+
+
+def optimize(
+    fragment: Fragment,
+    llm: LlmFn,
+    cp_guidance: Optional[CpGuidance] = None,
+) -> RewriteCandidate:
     """Apply 4-action tier to a single fragment. Never raises.
 
     Priority order:
@@ -1097,6 +1134,10 @@ def optimize(fragment: Fragment, llm: LlmFn) -> RewriteCandidate:
     3. Clean passthrough (B7)
     4. Non-monster passthrough
     5. Monster with rewrite/advise → LLM
+
+    ``cp_guidance`` (v55, optional) injects whole-query critical-path context into
+    the LLM prompt so the rewrite can be steered toward the cost model's bottleneck;
+    None preserves the pre-v55 prompt exactly.
     """
     original = fragment.sql
 
@@ -1200,6 +1241,7 @@ def optimize(fragment: Fragment, llm: LlmFn) -> RewriteCandidate:
     prompt = (
         f"Optimize this SQL fragment by applying a NAMED strategy from the menu below — "
         f"do not freestyle.\n\n"
+        f"{_render_cp_guidance(cp_guidance)}"
         f"{_render_p_menu()}\n\n"
         f"Tier discipline:\n"
         f"- SAFE: apply freely (value-preserving).\n"

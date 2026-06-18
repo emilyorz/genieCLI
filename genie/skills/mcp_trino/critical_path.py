@@ -282,7 +282,7 @@ def _make_correlated_node(
     """Build a correlated_subquery CostNode (with its recursed inner subtree).
 
     `kind` ∈ {EXISTS, IN, CORRELATED} controls only the human label/excerpt; the
-    cost treatment (CORRELATED_SUBQUERY_FACTOR, truth-ceiling flag, P2 strategy) is
+    cost treatment (CORRELATED_SUBQUERY_FACTOR, truth-ceiling flag, P9 strategy) is
     identical — a correlated subquery runs once per parent row regardless of syntax.
     """
     sub_magnitude = parent_magnitude * CORRELATED_SUBQUERY_FACTOR
@@ -301,7 +301,7 @@ def _make_correlated_node(
         rule_penalties=node_penalty(RULE_SUBQUERY_IN_SELECT_PUSHABLE_TO_JOIN, "high"),
         row_magnitude=int(sub_magnitude),
         flags={"offline_truth_ceiling"},
-        strategy="P2",  # exists-to-left-join (TRAP)
+        strategy="P9",  # exists-to-preagg-join (TRAP) — row-preserving decorrelation if grouped on correct key; verify-gated (v55)
         sql_excerpt=excerpt,
     )
     inner_node = _analyze_select(
@@ -836,7 +836,7 @@ def _strategy_for_node(node: CostNode) -> Optional[str]:
     op_strategy: dict[str, Optional[str]] = {
         "join_cross":          None,   # BLOCK — advisory only
         "join_non_equi":       "P5",   # predicate-partition-pushdown (TRAP)
-        "correlated_subquery": "P2",   # exists-to-left-join (TRAP)
+        "correlated_subquery": "P9",   # exists-to-preagg-join (TRAP) — verify-gated decorrelation (v55)
         "join_inner":          None,
         "join_left":           None,
         "join_right":          None,

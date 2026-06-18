@@ -1,4 +1,4 @@
-"""Canonical P1–P8 rewrite-strategy reference — the optimization "fix menu".
+"""Canonical P1–P9 rewrite-strategy reference — the optimization "fix menu".
 
 Single source of truth for the manager's eight Trino-rewrite strategies. These
 are the **fix menu** applied during the optimize step (how to rewrite a fragment
@@ -22,7 +22,10 @@ History: P1–P8 were the manager's mental model, never codified in the repo;
 optimize-profile PLAN draft). v47 codifies all eight; P5 = predicate/partition
 pushdown (Sam-confirmed 2026-06-13). Importing ``ALL_P_STRATEGY_IDS`` /
 ``P_STRATEGIES`` in producers and the contract test makes drift a test failure,
-mirroring the ``rule_ids.py`` pattern.
+mirroring the ``rule_ids.py`` pattern. v55 adds P9 = exists-to-preagg-join (decorrelate a
+1-to-many correlated subquery by pre-aggregating it by its key into a CTE so the
+LEFT JOIN is row-preserving *when grouped on the correct key* — verify-gated,
+unlike P2 which is only valid for an already-unique key).
 """
 from __future__ import annotations
 
@@ -72,13 +75,17 @@ P_STRATEGIES: tuple[PStrategy, ...] = (
     PStrategy(
         id="P2",
         name="exists-to-left-join",
-        trigger="a correlated EXISTS subquery used to enrich/filter the outer row.",
-        recipe="rewrite the correlated EXISTS as a LEFT JOIN to the same relation.",
+        trigger="a correlated EXISTS subquery whose joined key is PROVABLY UNIQUE on the "
+                "joined side (1-to-1). If the inner relation is 1-to-many on the key, use P9 "
+                "(pre-aggregate first) instead — a plain LEFT JOIN here would fan out.",
+        recipe="rewrite the correlated EXISTS as a LEFT JOIN to the same relation (only when "
+               "the key is unique; otherwise P9).",
         tier=TRAP,
         safety_note="EXISTS is a semi-join (does NOT multiply rows); a LEFT JOIN on a "
                     "1-to-many key fans out → duplicate base rows → downstream "
                     "MAX/SUM/COUNT/LISTAGG change. Safe ONLY when the join key is "
-                    "provably unique on the joined side — must verify row-equivalence.",
+                    "provably unique on the joined side — must verify row-equivalence. "
+                    "For 1-to-many keys this strategy is WRONG; use P9.",
     ),
     PStrategy(
         id="P3",
@@ -143,6 +150,23 @@ P_STRATEGIES: tuple[PStrategy, ...] = (
         safety_note="an execution-strategy change only; the join result values are unchanged. "
                     "(Cost regresses if the build side is mis-estimated, but never wrong.)",
     ),
+    PStrategy(
+        id="P9",
+        name="exists-to-preagg-join",
+        trigger="a correlated EXISTS/IN subquery whose result enriches or validates the outer "
+                "row (feeds a CASE / computed column), where the inner relation is 1-to-many "
+                "on the correlation key — so P2's naive LEFT JOIN would fan out.",
+        recipe="pre-aggregate the inner relation by the correlation key into an upstream CTE "
+               "(GROUP BY key, array_agg/MAX the needed attributes → key becomes unique), then "
+               "LEFT JOIN that CTE on the key and reference the aggregated columns "
+               "(COALESCE empty → ARRAY[]) instead of the per-row EXISTS.",
+        tier=TRAP,
+        safety_note="pre-aggregating by the correlation key yields one row per key, so the "
+                    "LEFT JOIN is row-preserving where P2's naive join is NOT (P2 fans out on a "
+                    "1-to-many key). NOT unconditionally safe: row-preservation holds ONLY if "
+                    "the aggregation groups on the true correlation key and reproduces the EXISTS "
+                    "truth value (NULL/empty handling). TRAP — verify row-equivalence before apply.",
+    ),
 )
 
 ALL_P_STRATEGY_IDS: frozenset[str] = frozenset(s.id for s in P_STRATEGIES)
@@ -157,7 +181,7 @@ def strategies_for_action(action: str) -> tuple[PStrategy, ...]:
 
 
 def render_menu() -> str:
-    """Render the P1–P8 menu as a compact prompt block for the optimize step."""
+    """Render the P1–P9 menu as a compact prompt block for the optimize step."""
     lines = ["Rewrite strategy menu (apply ONLY a named strategy that fits; do not freestyle):"]
     for s in P_STRATEGIES:
         verify = " [MUST verify row-equivalence]" if s.tier in TIERS_REQUIRE_VERIFY else ""

@@ -13,6 +13,7 @@ from genie.skills.mcp_trino.cost_reader import CostReading
 from genie.skills.trino_query.detection_scan import DetectionFinding
 from genie.skills.mcp_trino.trino_optimize import (
     Baseline,
+    CpGuidance,
     Fragment,
     RecomposeResult,
     RecomposeStatus,
@@ -1254,9 +1255,9 @@ class TestOptimizePStrategyMenu:
         optimize(frag, llm)
         return captured["prompt"]
 
-    def test_prompt_includes_all_eight_strategies(self):
+    def test_prompt_includes_all_nine_strategies(self):
         prompt = self._capture_prompt()
-        for i in range(1, 9):
+        for i in range(1, 10):
             assert f"P{i}" in prompt
 
     def test_prompt_includes_p5_predicate_pushdown(self):
@@ -1277,6 +1278,75 @@ class TestOptimizePStrategyMenu:
         clean = _make_fragment(is_monster=False, findings=(PASS_FINDING,))
         optimize(clean, lambda p: called.append(p) or "x")
         assert called == []
+
+
+# ---------------------------------------------------------------------------
+# TestOptimizeCpGuidance (v55) — critical-path context threads into the prompt
+# ---------------------------------------------------------------------------
+
+class TestOptimizeCpGuidance:
+    def _capture_prompt(self, cp_guidance):
+        captured = {}
+
+        def llm(prompt: str) -> str:
+            captured["prompt"] = prompt
+            return "SELECT 1"
+
+        frag = _make_fragment(
+            sql="SELECT * FROM big JOIN small ON big.k = small.k",
+            is_monster=True,
+            monster_rank=1,
+            findings=(REWRITE_FINDING,),
+        )
+        optimize(frag, llm, cp_guidance=cp_guidance)
+        return captured["prompt"]
+
+    def test_prompt_omits_guidance_when_none(self):
+        # Backward-compat: no cp_guidance → prompt BYTE-IDENTICAL to the pre-v55 optimize()
+        # prompt. Lock it against drift: capturing with cp_guidance=None must equal capturing
+        # via the legacy 2-arg call, and must carry no guidance block.
+        captured = {}
+
+        def llm(prompt: str) -> str:
+            captured.setdefault("prompts", []).append(prompt)
+            return "SELECT 1"
+
+        frag = _make_fragment(
+            sql="SELECT * FROM big JOIN small ON big.k = small.k",
+            is_monster=True,
+            monster_rank=1,
+            findings=(REWRITE_FINDING,),
+        )
+        optimize(frag, llm)                       # legacy 2-arg call
+        optimize(frag, llm, cp_guidance=None)     # explicit None
+        assert captured["prompts"][0] == captured["prompts"][1]
+        assert "Cost-model guidance" not in captured["prompts"][0]
+
+    def test_prompt_includes_bottleneck_and_recommended_strategy(self):
+        guidance = CpGuidance(
+            bottleneck_label="EXISTS spec_table",
+            bottleneck_op="correlated_subquery",
+            bottleneck_cost_pct=72.5,
+            recommended_strategy="P9",
+        )
+        prompt = self._capture_prompt(guidance)
+        assert "Cost-model guidance" in prompt
+        assert "EXISTS spec_table" in prompt
+        assert "72.5" in prompt
+        assert "P9" in prompt
+        # The menu still follows the guidance block.
+        assert "do not freestyle" in prompt
+
+    def test_prompt_guidance_without_strategy_has_no_recommendation_line(self):
+        guidance = CpGuidance(
+            bottleneck_label="ORDER BY",
+            bottleneck_op="sort",
+            bottleneck_cost_pct=40.0,
+            recommended_strategy=None,
+        )
+        prompt = self._capture_prompt(guidance)
+        assert "Cost-model guidance" in prompt
+        assert "recommends prioritizing strategy" not in prompt
 
 
 # ---------------------------------------------------------------------------

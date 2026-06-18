@@ -1991,6 +1991,7 @@ def _produce_decompose_candidate(
         decompose as _decompose,
         optimize as _optimize,
         recompose as _recompose,
+        CpGuidance,
         RecomposeStatus,
         RewriteCandidate,
     )
@@ -2053,10 +2054,24 @@ def _produce_decompose_candidate(
             ))
 
         # v52: offline critical-path cost model (§7) — run AFTER decompose, before fragment optimize
+        # v55: also build CpGuidance from the result so fragment optimize is bottleneck-aware.
+        cp_guidance = None
         try:
             from genie.skills.mcp_trino.critical_path import analyze_critical_path as _analyze_cp
             from genie.output.step_trace import StepEvent, StepStatus
             cp_result = _analyze_cp(sql)
+            # v55: surface the bottleneck + recommended strategy to fragment optimize.
+            if cp_result.available and not cp_result.trivial and cp_result.bottleneck:
+                _bn = cp_result.bottleneck
+                _root_cost = cp_result.root.subtree_cost if cp_result.root else 0
+                cp_guidance = CpGuidance(
+                    bottleneck_label=_bn.label,
+                    bottleneck_op=_bn.op,
+                    bottleneck_cost_pct=(
+                        round(100.0 * _bn.subtree_cost / _root_cost, 1) if _root_cost else 0.0
+                    ),
+                    recommended_strategy=_bn.strategy,
+                )
             if step_trace is not None:
                 if not cp_result.available:
                     cp_status = StepStatus.DEGRADED
@@ -2114,7 +2129,7 @@ def _produce_decompose_candidate(
             frag_idx += 1
             is_over_cap = id(fr) in over_cap_set
             if fr in monsters:
-                cand = _optimize(fr, llm_fn)
+                cand = _optimize(fr, llm_fn, cp_guidance=cp_guidance)
             else:
                 # Non-monster or over-cap: passthrough
                 cand = RewriteCandidate(

@@ -370,13 +370,13 @@ def test_should_return_deterministic_bottleneck_on_repeated_calls():
     assert len(set(labels)) == 1, f"Non-deterministic bottleneck: {labels}"
 
 
-def test_should_have_strategy_p2_when_correlated_exists_is_bottleneck():
-    """§6: EXISTS correlated subquery bottleneck → strategy P2."""
+def test_should_have_strategy_p9_when_correlated_exists_is_bottleneck():
+    """§6: EXISTS correlated subquery bottleneck → strategy P9 (safe pre-agg decorrelation, v55)."""
     result = analyze_critical_path(Q2)
     assert result.available
     assert result.bottleneck is not None
-    assert result.bottleneck.strategy == "P2", (
-        f"Expected P2 strategy for correlated EXISTS, got {result.bottleneck.strategy!r}"
+    assert result.bottleneck.strategy == "P9", (
+        f"Expected P9 strategy for correlated EXISTS, got {result.bottleneck.strategy!r}"
     )
 
 
