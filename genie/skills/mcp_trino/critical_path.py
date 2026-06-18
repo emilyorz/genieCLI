@@ -505,23 +505,28 @@ def _analyze_select(
 
     # ------------------------------------------------------------------
     # 3. Correlated subqueries in WHERE/HAVING (§3.2)
-    # ------------------------------------------------------------------
-    for clause_key in ("where", "having"):
+    # A WHERE-clause correlated subquery runs once per POST-join row, so it must
+    # inherit the post-join derived_magnitude (the join blowup), not the pre-join
+    # parent_magnitude — otherwise a per-row EXISTS validation downstream of a big
+    # join is undercounted and never reaches the critical path. HAVING runs after
+    # GROUP BY (reduced cardinality) → keep the unboosted parent_magnitude.
+    for clause_key, clause_magnitude in (("where", derived_magnitude), ("having", parent_magnitude)):
         clause = select_node.args.get(clause_key)
         if not clause:
             continue
         for sub_node in _scan_correlated_subqueries(
-            clause, all_visible, parent_magnitude, depth
+            clause, all_visible, clause_magnitude, depth
         ):
             children.append(sub_node)
 
     # ------------------------------------------------------------------
     # 3b. Correlated scalar subqueries in the SELECT projection list (§3.2 F1)
     # e.g. SELECT (SELECT max(x) FROM t WHERE t.id = outer.id) ...
+    # Evaluated per output row of FROM+joins → post-join derived_magnitude.
     # ------------------------------------------------------------------
     for proj in select_node.expressions:
         for sub_node in _scan_correlated_subqueries(
-            proj, all_visible, parent_magnitude, depth
+            proj, all_visible, derived_magnitude, depth
         ):
             children.append(sub_node)
 

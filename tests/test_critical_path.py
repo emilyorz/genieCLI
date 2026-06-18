@@ -817,6 +817,59 @@ def test_should_not_treat_literal_contradiction_as_cartesian():
     assert _classify_join(_first_join("SELECT * FROM a JOIN b ON 'x'='x' AND a.p LIKE b.q")) == "join_cross"
 
 
+# --- WHERE-clause correlated EXISTS downstream of a big join ------------------
+# Sam's actual query shape: a rule-engine CTE joins two tables, then a WHERE
+# `CASE ... EXISTS ... END > 0` runs a per-row validation. The EXISTS runs once
+# per POST-join row, so it must outrank the join and land on the critical path.
+
+V53_WHERE_EXISTS_AFTER_JOIN = """
+WITH cte1 AS (SELECT id AS pk, part_no, attr2, prefix FROM db.sch.table_a),
+     cte2 AS (SELECT perm_flag, sys_key, prod_attr, lo, hi, keycol, reason_code FROM db.sch.table_b),
+     cte3 AS (
+       SELECT B.pk, MAX(B.attr2) AS m1
+       FROM cte2 A
+       INNER JOIN cte1 B
+         ON A.prod_attr LIKE B.part_no
+        AND COALESCE(A.perm_flag, A.sys_key) = B.attr2
+        AND STRPOS(A.prod_attr, B.prefix) > 0
+       WHERE (CASE
+                WHEN A.perm_flag IS NULL THEN 1
+                WHEN A.sys_key IS NULL THEN (
+                  CASE WHEN EXISTS (SELECT 1 FROM db.sch.table_c c WHERE c.keycol = A.keycol)
+                        AND EXISTS (SELECT 1 FROM db.sch.table_d d WHERE d.qty BETWEEN A.lo AND A.hi)
+                       THEN 2 ELSE 0 END)
+                ELSE 0
+              END) > 0
+       GROUP BY B.pk
+     )
+SELECT CURRENT_TIMESTAMP AS ts, CAST(NULL AS VARCHAR) AS pad, buf.m1 FROM cte3 buf
+"""
+
+
+def test_should_put_where_exists_after_join_on_critical_path():
+    """A WHERE correlated EXISTS downstream of a join must be the bottleneck (it runs
+    per post-join row) — not the join. Regression for the v53.1 magnitude fix."""
+    result = analyze_critical_path(V53_WHERE_EXISTS_AFTER_JOIN)
+    assert result.available and not result.trivial
+    assert result.bottleneck is not None
+    assert result.bottleneck.op == "correlated_subquery", (
+        f"WHERE-EXISTS undercounted; bottleneck={result.bottleneck.op}:{result.bottleneck.label}"
+    )
+    path_ops = [n.op for n in result.critical_path]
+    assert "correlated_subquery" in path_ops
+
+
+def test_should_give_where_exists_post_join_magnitude():
+    """The WHERE EXISTS magnitude reflects the post-join blowup, not pre-join (=1)."""
+    nodes = _all_nodes(V53_WHERE_EXISTS_AFTER_JOIN)
+    corr = [n for n in nodes if n.op == "correlated_subquery"]
+    assert corr, "no correlated_subquery node"
+    # post-join (non-equi factor 30) × correlated factor 3 = 90, far above pre-join (3)
+    assert all(n.row_magnitude >= 30 for n in corr), (
+        f"WHERE EXISTS still on pre-join magnitude: {[(n.label, n.row_magnitude) for n in corr]}"
+    )
+
+
 def test_should_label_chained_join_with_running_left_table():
     """Multi-join FROM: the 2nd join's left is the 1st join's right table, not the
     original FROM primary."""
