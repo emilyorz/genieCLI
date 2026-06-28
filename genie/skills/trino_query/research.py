@@ -403,6 +403,10 @@ def _run_no_data_path(
     import os as _os_v48_nd
     _v48_nd_seed_enabled = _os_v48_nd.environ.get("GENIE_V48_SEED_DECOMPOSE", "1") != "0"
 
+    # v58: fragment rewrite opt-in (mirroring MCP path env vars)
+    _v58_nd_frag_rewrite = _os_v48_nd.environ.get("GENIE_FRAGMENT_REWRITE", "0") == "1"
+    _v58_nd_frag_cap = max(1, int(_os_v48_nd.environ.get("GENIE_FRAGMENT_REWRITE_CAP", "5")))
+
     from genie.output.step_trace import StepTrace as _ND_StepTrace
     _nd_trace: _ND_StepTrace = step_trace if step_trace is not None else []
     _nd_advisory_sql = original_sql
@@ -415,6 +419,8 @@ def _run_no_data_path(
             _nd_recomposed, _nd_frags, _nd_cands, _nd_rr = _nd_decompose(
                 original_sql, _nd_llm_fn, _nd_cost_reader,
                 run_static_gates=True, step_trace=_nd_trace,
+                enable_fragment_rewrite=_v58_nd_frag_rewrite,
+                max_fragment_model_calls=_v58_nd_frag_cap,
             )
             if _nd_recomposed != original_sql:
                 _nd_advisory_sql = _nd_recomposed
@@ -657,6 +663,10 @@ def _run_plan_cost_loop(
     import os as _os_v48_dpcl
     _v48_dpcl_seed_enabled = _os_v48_dpcl.environ.get("GENIE_V48_SEED_DECOMPOSE", "1") != "0"
 
+    # v58: fragment rewrite opt-in (mirroring MCP plan-cost path env vars)
+    _v58_dpcl_frag_rewrite = _os_v48_dpcl.environ.get("GENIE_FRAGMENT_REWRITE", "0") == "1"
+    _v58_dpcl_frag_cap = max(1, int(_os_v48_dpcl.environ.get("GENIE_FRAGMENT_REWRITE_CAP", "5")))
+
     from genie.output.step_trace import StepTrace as _DPCL_StepTrace
     _dpcl_step_trace: _DPCL_StepTrace = []
     _dpcl_seed_sql = original_sql
@@ -670,6 +680,8 @@ def _run_plan_cost_loop(
                 _dpcl_recomposed, _dpcl_frags, _dpcl_cands, _dpcl_rr = _dpcl_decompose(
                     original_sql, _dpcl_llm_fn, _dpcl_cost_reader,
                     run_static_gates=False, step_trace=_dpcl_step_trace,
+                    enable_fragment_rewrite=_v58_dpcl_frag_rewrite,
+                    max_fragment_model_calls=_v58_dpcl_frag_cap,
                 )
                 if _dpcl_recomposed != original_sql:
                     _dpcl_seed_meas = _measure(
@@ -1181,6 +1193,10 @@ def _run_optimization_loop(
     import os as _os_v48_direct
     _v48_direct_seed_enabled = _os_v48_direct.environ.get("GENIE_V48_SEED_DECOMPOSE", "1") != "0"
 
+    # v58: fragment rewrite opt-in (mirroring MCP standard-loop env vars)
+    _v58_dir_frag_rewrite = _os_v48_direct.environ.get("GENIE_FRAGMENT_REWRITE", "0") == "1"
+    _v58_dir_frag_cap = max(1, int(_os_v48_direct.environ.get("GENIE_FRAGMENT_REWRITE_CAP", "5")))
+
     _direct_llm_fn = None
     _dir_cost_reader_fn = None
     if _v48_direct_seed_enabled:
@@ -1212,6 +1228,8 @@ def _run_optimization_loop(
         return _produce_decompose_candidate(
             _sql, _direct_llm_fn, _dir_cost_reader_fn,
             run_static_gates=False, step_trace=_step_trace,
+            enable_fragment_rewrite=_v58_dir_frag_rewrite,
+            max_fragment_model_calls=_v58_dir_frag_cap,
         )
 
     def _dir_measure_fn(_sql: str) -> "_MeasureResult":

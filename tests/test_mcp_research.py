@@ -1259,27 +1259,93 @@ def test_decompose_seed_default_does_not_call_fragment_llm(monkeypatch):
     assert all(not candidate.changed for candidate in candidates)
 
 
-def test_decompose_seed_opt_in_calls_fragment_llm(monkeypatch):
+def test_decompose_seed_opt_in_cap_limits_fragment_llm(monkeypatch):
+    """v58: cap test with 3 monster fragments and max_fragment_model_calls=1.
+
+    Only 1 fragment should trigger the LLM optimize call; the remaining 2
+    must be passthrough (over-cap).  This proves the cap actually constrains.
+    """
+    from unittest.mock import patch as _patch
+    from genie.skills.mcp_trino.trino_optimize import (
+        Fragment, RecomposeResult, RecomposeStatus, RewriteCandidate,
+    )
+    from genie.output.step_trace import StepStatus
+
     monkeypatch.setattr(
         "genie.skills.mcp_trino.critical_path.analyze_critical_path",
         lambda _sql: SimpleNamespace(available=False, reason="test"),
     )
-    calls = []
 
-    def record_call(_prompt):
-        calls.append(_prompt)
-        return "[]"
+    _fake_cost_obj = _fake_cost()
 
-    _produce_decompose_candidate(
-        "WITH a AS (SELECT 1 AS id) SELECT id FROM a",
-        record_call,
-        lambda _sql: _fake_cost(),
-        run_static_gates=False,
-        enable_fragment_rewrite=True,
-        max_fragment_model_calls=1,
+    # Build 3 monster fragments
+    fragments = [
+        Fragment(
+            fragment_id=f"cte_{i}",
+            sql=f"SELECT {i} AS id",
+            role="cte",
+            position_hint=i,
+            subq_ordinal=None,
+            is_independently_runnable=True,
+            is_monster=True,
+            monster_rank=i,
+            findings=(),
+            cost=_fake_cost_obj,
+        )
+        for i in range(1, 4)
+    ]
+
+    optimize_calls = []
+
+    def mock_optimize(fragment, llm_fn, cp_guidance=None):
+        optimize_calls.append(fragment.fragment_id)
+        return RewriteCandidate(
+            fragment_id=fragment.fragment_id,
+            original_sql=fragment.sql,
+            rewritten_sql=fragment.sql + " -- opt",
+            action="rewrite",
+            changed=True,
+            admitted=True,
+            rationale="test",
+        )
+
+    rr = RecomposeResult(
+        sql="SELECT 1 -- recomposed",
+        status=RecomposeStatus.OK,
+        cross_fragment_findings=(),
+        reverted_fragments=(),
+        scan_ok_confident=True,
     )
 
-    assert calls
+    trace = []
+    with _patch("genie.skills.mcp_trino.trino_optimize.decompose", return_value=fragments), \
+         _patch("genie.skills.mcp_trino.trino_optimize.optimize", side_effect=mock_optimize), \
+         _patch("genie.skills.mcp_trino.trino_optimize.recompose", return_value=rr), \
+         _patch("genie.skills.trino_query.detection_scan.scan_sql",
+                return_value=SimpleNamespace(scan_ok_confident=True, findings=())), \
+         _patch("genie.skills.mcp_trino.write_analysis._column_safe_candidates",
+                side_effect=lambda c: (c, [])), \
+         _patch("genie.skills.mcp_trino.write_analysis._semantic_safe_candidates",
+                side_effect=lambda c: (c, [])):
+        _produce_decompose_candidate(
+            "WITH a AS (SELECT 1) SELECT * FROM a",
+            lambda _prompt: "[]",
+            lambda _sql: _fake_cost(),
+            run_static_gates=False,
+            enable_fragment_rewrite=True,
+            max_fragment_model_calls=1,
+            step_trace=trace,
+        )
+
+    # Only 1 fragment should have been optimized (cap=1)
+    assert len(optimize_calls) == 1, f"expected 1 optimize call, got {len(optimize_calls)}: {optimize_calls}"
+
+    # The other 2 should be over-cap SKIPPED
+    over_cap_events = [
+        ev for ev in trace
+        if ev.status == StepStatus.SKIPPED and ev.detail.get("action") == "over_cap"
+    ]
+    assert len(over_cap_events) == 2, f"expected 2 over-cap events, got {len(over_cap_events)}"
 
 
 def test_plan_cost_loop_records_model_failure_without_raising():

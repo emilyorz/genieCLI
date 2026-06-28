@@ -2341,7 +2341,7 @@ def run_mcp_enhancement(
         client: MCP client connected to the Trino server
         sql: Original SQL to enhance
         metric_key: Metric to optimize (default: query_time_ms)
-        max_iterations: Number of enhancement rounds (default: 5)
+        max_iterations: Number of enhancement rounds (default: 1)
         verify_runs: Runs per candidate for median measurement (default: 3)
         provider: LLM provider for generating SQL rewrites
         model: Model name
