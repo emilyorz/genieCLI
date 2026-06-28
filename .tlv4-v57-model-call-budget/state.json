@@ -33,8 +33,8 @@
       "reviewer": "sonnet"
     }
   },
-  "current_step": "wrap_retro",
-  "step_status": "pending",
+  "current_step": "DONE",
+  "step_status": "passed",
   "max_attempts": 3,
   "steps": {
     "ticket": {
@@ -123,18 +123,18 @@
       ]
     },
     "wrap_retro": {
-      "status": "pending",
-      "score": null,
-      "producer_artifact": null,
-      "producer_hash": null,
-      "producer_dispatch_id": null,
-      "review_artifact": null,
-      "review_hash": null,
-      "reviewer_dispatch_id": null,
-      "model": null,
+      "status": "passed",
+      "score": 9.4,
+      "producer_artifact": "artifacts/wrap_retro.producer.md",
+      "producer_hash": "d032b741ec172a3036dc570b027914ab74e9bebeaaddcb35e7aa46ee31fe466e",
+      "producer_dispatch_id": "wrap_retro-producer-a1",
+      "review_artifact": "artifacts/wrap_retro.review.json",
+      "review_hash": "6888b803ceb4d07c16f1a045e561f4c39ca7af9c17c828e5d44560963a7a3065",
+      "reviewer_dispatch_id": "wrap_retro-reviewer-a1",
+      "model": "main-runtime",
       "attempts": 0,
-      "base_sha": null,
-      "dirty_status_hash": null,
+      "base_sha": "e11c47276327f792f8aa7ad2076bad558c8aec34",
+      "dirty_status_hash": "a7203020cfddd2afc4f3192ca294a35bbcfbc1ca04db66e4f0e9c088cbb23a03",
       "commit_sha": null,
       "issue_ledger": [
         {
@@ -276,5 +276,5 @@
       }
     }
   ],
-  "updated_at": "2026-06-28T16:16:33+08:00"
+  "updated_at": "2026-06-28T16:22:18+08:00"
 }

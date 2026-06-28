@@ -1,0 +1,11 @@
+{
+  "score": 9.4,
+  "hard_fails": [],
+  "open_issues": [
+    "Follow-up: update stale run_mcp_enhancement docstring default from 5 to 1.",
+    "Follow-up: decide whether --direct should get GENIE_FRAGMENT_REWRITE opt-in wiring."
+  ],
+  "pass_bool": true,
+  "reviewer_dispatch_id": "wrap_retro-reviewer-a1",
+  "reviewed_artifact_hash": "d032b741ec172a3036dc570b027914ab74e9bebeaaddcb35e7aa46ee31fe466e"
+}
