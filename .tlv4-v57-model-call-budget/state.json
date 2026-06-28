@@ -1,0 +1,280 @@
+{
+  "schema_version": "task-ledger-v4-1",
+  "project": "genieCLI-v57-fanout-model-calls",
+  "project_root": "/Users/leeabc/work/emilyorz/genieCLI",
+  "entry_profile": "bugfix",
+  "active_steps": [
+    "ticket",
+    "develop",
+    "review",
+    "wrap_retro"
+  ],
+  "backward_edges": [
+    [
+      "review",
+      "develop"
+    ]
+  ],
+  "routing": {
+    "ticket": {
+      "producer": "sonnet",
+      "reviewer": "sonnet"
+    },
+    "develop": {
+      "producer": "sonnet",
+      "reviewer": "sonnet"
+    },
+    "review": {
+      "producer": "sonnet",
+      "reviewer": "opus"
+    },
+    "wrap_retro": {
+      "producer": "sonnet",
+      "reviewer": "sonnet"
+    }
+  },
+  "current_step": "wrap_retro",
+  "step_status": "pending",
+  "max_attempts": 3,
+  "steps": {
+    "ticket": {
+      "status": "passed",
+      "score": 9.4,
+      "producer_artifact": "artifacts/ticket.producer.md",
+      "producer_hash": "c1084e062149cab3741f8379a06a33dfedc0c1f2a12dd9ead95da23d99a1b253",
+      "producer_dispatch_id": "ticket-producer-a1",
+      "review_artifact": "artifacts/ticket.review.json",
+      "review_hash": "4f5382ae49b3f82d3b41dbac64b1b98de0c9dbb83961955393dd6df45bfa5ad1",
+      "reviewer_dispatch_id": "ticket-reviewer-a1",
+      "model": "sonnet",
+      "attempts": 0,
+      "base_sha": "7dde3cdb8bc7b36833b5e6cf78924ad3323236b3",
+      "dirty_status_hash": "c5c2f6952e35653a0bd27e4837e9db8f083180abe4b06815463347822539ad86",
+      "commit_sha": null,
+      "issue_ledger": []
+    },
+    "develop": {
+      "status": "passed",
+      "score": 9.3,
+      "producer_artifact": "artifacts/develop.producer.md",
+      "producer_hash": "841d23e23d90754d11781ec49260f7bdebdbbcc8970ed10cd6670a059027a9d7",
+      "producer_dispatch_id": "develop-producer-a3",
+      "review_artifact": "artifacts/develop.review.json",
+      "review_hash": "020fa4e7787a2601977b05187ebe98a4ef8f71133067b67ec4499467f95a726b",
+      "reviewer_dispatch_id": "develop-reviewer-a3",
+      "model": "main-runtime",
+      "attempts": 0,
+      "base_sha": "7dde3cdb8bc7b36833b5e6cf78924ad3323236b3",
+      "dirty_status_hash": "c2103b71649a2d5343e8a88f453467231179b19ea7aa5a901f1bd98cd3f3fc76",
+      "commit_sha": null,
+      "issue_ledger": [
+        {
+          "id": "Consider follow-up wiring for --direct GENIE_FRAGMENT_REWRITE env symmetry; non-blocking for this MCP-scoped v57 fix.",
+          "status": "open",
+          "first_attempt": 1,
+          "source": "backedge:review",
+          "detail": "Consider follow-up wiring for --direct GENIE_FRAGMENT_REWRITE env symmetry; non-blocking for this MCP-scoped v57 fix."
+        },
+        {
+          "id": "Review producer found two existing tests broken by the _produce_decompose_candidate signature/default behavior change: tests/test_decompose_then_iterate.py and tests/test_step_trace.py. Must return to develop and update the intended fragment-rewrite tests to opt in explicitly.",
+          "status": "open",
+          "first_attempt": 1,
+          "source": "backedge:review",
+          "detail": "Review producer found two existing tests broken by the _produce_decompose_candidate signature/default behavior change: tests/test_decompose_then_iterate.py and tests/test_step_trace.py. Must return to develop and update the intended fragment-rewrite tests to opt in explicitly."
+        }
+      ]
+    },
+    "review": {
+      "status": "passed",
+      "score": 9.4,
+      "producer_artifact": "artifacts/review.producer.md",
+      "producer_hash": "58887381387c1ee656e7ac4ecfe363a7482fcb4e1aaaed2b6b596b18fb390c13",
+      "producer_dispatch_id": "review-producer-a2",
+      "review_artifact": "artifacts/review.review.json",
+      "review_hash": "bc9305d84ffcba0680e6b5caef9e77ea22dff689594d7dd8845d7608a2a62db0",
+      "reviewer_dispatch_id": "review-reviewer-a2",
+      "model": "opus",
+      "attempts": 0,
+      "base_sha": "7dde3cdb8bc7b36833b5e6cf78924ad3323236b3",
+      "dirty_status_hash": "6cbd8c3f0ad6234f33379581f635146da4d4a6e949adbe79541e2c5c6fe504d8",
+      "commit_sha": null,
+      "issue_ledger": [
+        {
+          "id": "L1: Docstring at research.py:2344 still says 'default: 5' but actual default is now 1",
+          "status": "open",
+          "first_attempt": 1,
+          "source": "inherited:develop",
+          "detail": "L1: Docstring at research.py:2344 still says 'default: 5' but actual default is now 1"
+        },
+        {
+          "id": "L2: --direct path call sites (trino_query/research.py:415,670,1212) lack GENIE_FRAGMENT_REWRITE env-var wiring — fragment rewrite permanently off on --direct with no escape hatch (ticket scopes to MCP path so non-blocking)",
+          "status": "open",
+          "first_attempt": 1,
+          "source": "inherited:develop",
+          "detail": "L2: --direct path call sites (trino_query/research.py:415,670,1212) lack GENIE_FRAGMENT_REWRITE env-var wiring — fragment rewrite permanently off on --direct with no escape hatch (ticket scopes to MCP path so non-blocking)"
+        },
+        {
+          "id": "L3: AC3 opt-in cap test exercises trivial single-fragment case; slice logic [:cap] is trivial so gap is minor",
+          "status": "open",
+          "first_attempt": 1,
+          "source": "inherited:develop",
+          "detail": "L3: AC3 opt-in cap test exercises trivial single-fragment case; slice logic [:cap] is trivial so gap is minor"
+        }
+      ]
+    },
+    "wrap_retro": {
+      "status": "pending",
+      "score": null,
+      "producer_artifact": null,
+      "producer_hash": null,
+      "producer_dispatch_id": null,
+      "review_artifact": null,
+      "review_hash": null,
+      "reviewer_dispatch_id": null,
+      "model": null,
+      "attempts": 0,
+      "base_sha": null,
+      "dirty_status_hash": null,
+      "commit_sha": null,
+      "issue_ledger": [
+        {
+          "id": "L1: Internal docstring still says max_iterations default is 5 while runtime default is 1; documentation-only follow-up.",
+          "status": "open",
+          "first_attempt": 1,
+          "source": "inherited:review",
+          "detail": "L1: Internal docstring still says max_iterations default is 5 while runtime default is 1; documentation-only follow-up."
+        },
+        {
+          "id": "L2: --direct path has evidence-only default via shared helper but no GENIE_FRAGMENT_REWRITE opt-in wiring; non-blocking because v57 ticket scopes MCP /trino-research.",
+          "status": "open",
+          "first_attempt": 1,
+          "source": "inherited:review",
+          "detail": "L2: --direct path has evidence-only default via shared helper but no GENIE_FRAGMENT_REWRITE opt-in wiring; non-blocking because v57 ticket scopes MCP /trino-research."
+        },
+        {
+          "id": "L3: AC3 cap test uses a simple single-fragment case; non-blocking because cap slice logic is trivial and legacy cap test covers multi-fragment opt-in.",
+          "status": "open",
+          "first_attempt": 1,
+          "source": "inherited:review",
+          "detail": "L3: AC3 cap test uses a simple single-fragment case; non-blocking because cap slice logic is trivial and legacy cap test covers multi-fragment opt-in."
+        }
+      ]
+    }
+  },
+  "routing_overrides": {},
+  "github_issue": null,
+  "pending_decision": null,
+  "history": [
+    {
+      "at": "2026-06-28T00:56:17+08:00",
+      "backedge": [
+        "review",
+        "develop"
+      ],
+      "reason": "Review found two existing tests broken by fragment rewrite default-off behavior; fix tests in develop.",
+      "snapshot": {
+        "develop": {
+          "status": "passed",
+          "score": 9.5,
+          "producer_artifact": "artifacts/develop.producer.md",
+          "producer_hash": "cdf9a9cd8913405891c62aebab4ec845ee1e81019f0d25a41298a5c6d3fa16da",
+          "producer_dispatch_id": "develop-producer-a2",
+          "review_artifact": "artifacts/develop.review.json",
+          "review_hash": "b7157f28f46209b1d7d81eca1c25b747308f8ea7630a3f2f191c9cb542fe6cd1",
+          "reviewer_dispatch_id": "develop-reviewer-a2",
+          "model": "main-runtime",
+          "attempts": 1,
+          "base_sha": "7dde3cdb8bc7b36833b5e6cf78924ad3323236b3",
+          "dirty_status_hash": "c2103b71649a2d5343e8a88f453467231179b19ea7aa5a901f1bd98cd3f3fc76",
+          "commit_sha": null,
+          "issue_ledger": [
+            {
+              "id": "AC3 cap test is weak: test_decompose_seed_opt_in_calls_fragment_llm uses a single-fragment query, trivially satisfying max_fragment_model_calls=1 without exercising the cap slice logic on multi-fragment input.",
+              "status": "open",
+              "first_attempt": 1,
+              "detail": "AC3 cap test is weak: test_decompose_seed_opt_in_calls_fragment_llm uses a single-fragment query, trivially satisfying max_fragment_model_calls=1 without exercising the cap slice logic on multi-fragment input."
+            },
+            {
+              "id": "AC2 test mechanism is indirect: test_decompose_seed_default_does_not_call_fragment_llm uses AssertionError as sentinel, but the outer try/except Exception in _produce_decompose_candidate would swallow it. The test still works because assert-candidates catches the degrade path, but a counter-based approach would be more explicit.",
+              "status": "open",
+              "first_attempt": 1,
+              "detail": "AC2 test mechanism is indirect: test_decompose_seed_default_does_not_call_fragment_llm uses AssertionError as sentinel, but the outer try/except Exception in _produce_decompose_candidate would swallow it. The test still works because assert-candidates catches the degrade path, but a counter-based approach would be more explicit."
+            },
+            {
+              "id": "max_iterations default change from 5 to 1 at research.py:2325 is a behavior change beyond the ticket scope — ticket says 'default hard budget of one model optimization call' but the interactive prompt also changes from [5] to [1] at line 3360, which alters the interactive UX. Arguably correct per ticket intent but could surprise existing users.",
+              "status": "open",
+              "first_attempt": 1,
+              "detail": "max_iterations default change from 5 to 1 at research.py:2325 is a behavior change beyond the ticket scope — ticket says 'default hard budget of one model optimization call' but the interactive prompt also changes from [5] to [1] at line 3360, which alters the interactive UX. Arguably correct per ticket intent but could surprise existing users."
+            },
+            {
+              "id": "AC4 missing test: ticket requires 'A test proves provider failure during the standard iteration loop returns an EnhancementReport'. The only model-failure test covers _plan_cost_loop_core (preflight.py), not run_mcp_enhancement (research.py:2783). The standard-loop exception handler is untested.",
+              "status": "open",
+              "first_attempt": 1,
+              "detail": "AC4 missing test: ticket requires 'A test proves provider failure during the standard iteration loop returns an EnhancementReport'. The only model-failure test covers _plan_cost_loop_core (preflight.py), not run_mcp_enhancement (research.py:2783). The standard-loop exception handler is untested."
+            }
+          ]
+        },
+        "review": {
+          "status": "failed",
+          "score": null,
+          "producer_artifact": "artifacts/review.producer.md",
+          "producer_hash": "92b43ef77f1e68ce5d10069fa283be86b27d553ad0cf5db7b14a7eb372a7a38a",
+          "producer_dispatch_id": "review-producer-a1",
+          "review_artifact": null,
+          "review_hash": null,
+          "reviewer_dispatch_id": null,
+          "model": "opus",
+          "attempts": 1,
+          "base_sha": "7dde3cdb8bc7b36833b5e6cf78924ad3323236b3",
+          "dirty_status_hash": "c2103b71649a2d5343e8a88f453467231179b19ea7aa5a901f1bd98cd3f3fc76",
+          "commit_sha": null,
+          "issue_ledger": [
+            {
+              "id": "AC3 cap test is weak: test_decompose_seed_opt_in_calls_fragment_llm uses a single-fragment query, trivially satisfying max_fragment_model_calls=1 without exercising the cap slice logic on multi-fragment input. Low severity — the slice logic is trivial.",
+              "status": "open",
+              "first_attempt": 1,
+              "source": "inherited:develop",
+              "detail": "AC3 cap test is weak: test_decompose_seed_opt_in_calls_fragment_llm uses a single-fragment query, trivially satisfying max_fragment_model_calls=1 without exercising the cap slice logic on multi-fragment input. Low severity — the slice logic is trivial."
+            },
+            {
+              "id": "AC2 sentinel mechanism relies on AssertionError never being thrown (correct in practice since no LLM call is made), but a counter-based approach would be more explicit. Non-blocking — the complementary assertions on recomposed_sql and candidate.changed provide the real verification.",
+              "status": "open",
+              "first_attempt": 1,
+              "source": "inherited:develop",
+              "detail": "AC2 sentinel mechanism relies on AssertionError never being thrown (correct in practice since no LLM call is made), but a counter-based approach would be more explicit. Non-blocking — the complementary assertions on recomposed_sql and candidate.changed provide the real verification."
+            },
+            {
+              "id": "Consider follow-up wiring for --direct GENIE_FRAGMENT_REWRITE env symmetry; non-blocking for this MCP-scoped v57 fix.",
+              "status": "open",
+              "first_attempt": 1,
+              "detail": "Consider follow-up wiring for --direct GENIE_FRAGMENT_REWRITE env symmetry; non-blocking for this MCP-scoped v57 fix."
+            },
+            {
+              "id": "Review producer found two existing tests broken by the _produce_decompose_candidate signature/default behavior change: tests/test_decompose_then_iterate.py and tests/test_step_trace.py. Must return to develop and update the intended fragment-rewrite tests to opt in explicitly.",
+              "status": "open",
+              "first_attempt": 1,
+              "detail": "Review producer found two existing tests broken by the _produce_decompose_candidate signature/default behavior change: tests/test_decompose_then_iterate.py and tests/test_step_trace.py. Must return to develop and update the intended fragment-rewrite tests to opt in explicitly."
+            }
+          ]
+        },
+        "wrap_retro": {
+          "status": "pending",
+          "score": null,
+          "producer_artifact": null,
+          "producer_hash": null,
+          "producer_dispatch_id": null,
+          "review_artifact": null,
+          "review_hash": null,
+          "reviewer_dispatch_id": null,
+          "model": null,
+          "attempts": 0,
+          "base_sha": null,
+          "dirty_status_hash": null,
+          "commit_sha": null,
+          "issue_ledger": []
+        }
+      }
+    }
+  ],
+  "updated_at": "2026-06-28T16:16:33+08:00"
+}

@@ -1475,6 +1475,10 @@ def _run_mcp_plan_cost_loop(
     import os as _os_v48_pcl
     _v48_pcl_seed_enabled = _os_v48_pcl.environ.get("GENIE_V48_SEED_DECOMPOSE", "1") != "0"
 
+    # v57: fragment rewrite opt-in (same env vars as standard loop)
+    _v57_pcl_frag_rewrite = _os_v48_pcl.environ.get("GENIE_FRAGMENT_REWRITE", "0") == "1"
+    _v57_pcl_frag_cap = max(1, int(_os_v48_pcl.environ.get("GENIE_FRAGMENT_REWRITE_CAP", "5")))
+
     from genie.output.step_trace import StepTrace as _PCL_StepTrace
     _pcl_step_trace: _PCL_StepTrace = []
     _pcl_seed_sql = original_sql
@@ -1488,6 +1492,8 @@ def _run_mcp_plan_cost_loop(
                 _pcl_recomposed, _pcl_frags, _pcl_cands, _pcl_rr = _produce_decompose_candidate(
                     original_sql, _pcl_llm_fn, _pcl_cost_reader,
                     run_static_gates=False, step_trace=_pcl_step_trace,
+                    enable_fragment_rewrite=_v57_pcl_frag_rewrite,
+                    max_fragment_model_calls=_v57_pcl_frag_cap,
                 )
                 if _pcl_recomposed != original_sql:
                     _pcl_seed_meas = _measure_mcp(
@@ -1979,11 +1985,15 @@ def _produce_decompose_candidate(
     cost_reader_fn,
     run_static_gates: bool,
     step_trace=None,
+    *,
+    enable_fragment_rewrite: bool = False,
+    max_fragment_model_calls: int = 1,
 ):
-    """Run decompose→per-fragment-optimize(cap=5)→recompose to produce a starting candidate.
+    """Produce the optional decompose seed candidate.
 
-    run_static_gates=False for executing read paths (row-equiv measured empirically).
-    run_static_gates=True for advisory no-data/can't-connect paths.
+    Executing read paths default to evidence-only decomposition: deterministic
+    decorrelation may still apply, but per-fragment LLM ranking/rewrite is off
+    unless explicitly enabled. Advisory paths can opt in to fragment rewrite.
     Never raises — degrades to returning (sql, [], [], rr) on any failure.
     Returns (recomposed_sql, fragments, candidates, rr).
     """
@@ -2025,8 +2035,8 @@ def _produce_decompose_candidate(
                     ))
                 return decorr_sql, [], [], None
 
-        # 1. Decompose
-        fragments = _decompose(sql, llm_fn, cost_reader_fn)
+        # 1. Decompose (LLM monster ranking only when fragment rewrite is opted in)
+        fragments = _decompose(sql, llm_fn, cost_reader_fn, use_llm_ranking=enable_fragment_rewrite)
         n = len(fragments)
         monster_ids = [f.fragment_id for f in fragments if f.is_monster]
         fragment_ids = [f.fragment_id for f in fragments]
@@ -2118,9 +2128,12 @@ def _produce_decompose_candidate(
         except Exception:
             pass  # never block the main path
 
-        # 2. Fragment optimize with cap=5 monsters
-        monsters = [fr for fr in fragments if fr.is_monster][:5]
-        over_cap_list = [fr for fr in fragments if fr.is_monster][5:]
+        # 2. Fragment optimize — gated by enable_fragment_rewrite.
+        # When off (default for read paths), all fragments are passthrough:
+        # evidence is collected but no per-fragment LLM calls are made.
+        _frag_cap = max_fragment_model_calls
+        monsters = [fr for fr in fragments if fr.is_monster][:_frag_cap] if enable_fragment_rewrite else []
+        over_cap_list = [fr for fr in fragments if fr.is_monster][_frag_cap:] if enable_fragment_rewrite else []
         over_cap_set = set(id(fr) for fr in over_cap_list)
 
         candidates = []
@@ -2128,10 +2141,11 @@ def _produce_decompose_candidate(
         for fr in fragments:
             frag_idx += 1
             is_over_cap = id(fr) in over_cap_set
-            if fr in monsters:
+            if enable_fragment_rewrite and fr in monsters:
                 cand = _optimize(fr, llm_fn, cp_guidance=cp_guidance)
             else:
-                # Non-monster or over-cap: passthrough
+                # Non-monster, over-cap, or fragment rewrite disabled: passthrough
+                _rationale = "passthrough (fragment rewrite disabled)" if not enable_fragment_rewrite else "passthrough (non-monster or over-cap)"
                 cand = RewriteCandidate(
                     fragment_id=fr.fragment_id,
                     original_sql=fr.sql,
@@ -2139,7 +2153,7 @@ def _produce_decompose_candidate(
                     action="unchanged",
                     changed=False,
                     admitted=True,
-                    rationale="passthrough (non-monster or over-cap)",
+                    rationale=_rationale,
                 )
             candidates.append(cand)
 
@@ -2308,7 +2322,7 @@ def run_mcp_enhancement(
     client: McpClient,
     sql: str,
     metric_key: str = "query_time_ms",
-    max_iterations: int = 5,
+    max_iterations: int = 1,
     verify_runs: int = 3,
     provider=None,
     model: str = "",
@@ -2658,6 +2672,11 @@ def run_mcp_enhancement(
     import os as _os_v48
     _v48_seed_enabled = _os_v48.environ.get("GENIE_V48_SEED_DECOMPOSE", "1") != "0"
 
+    # v57: fragment rewrite is off by default for read paths (evidence-only decompose).
+    # Opt in via GENIE_FRAGMENT_REWRITE=1.  Hard cap from GENIE_FRAGMENT_REWRITE_CAP (default 5).
+    _v57_frag_rewrite = _os_v48.environ.get("GENIE_FRAGMENT_REWRITE", "0") == "1"
+    _v57_frag_cap = max(1, int(_os_v48.environ.get("GENIE_FRAGMENT_REWRITE_CAP", "5")))
+
     _read_llm_fn = None
     _mcp_cost_reader_fn = None
     if _v48_seed_enabled:
@@ -2673,6 +2692,8 @@ def run_mcp_enhancement(
         return _produce_decompose_candidate(
             _sql, _read_llm_fn, _mcp_cost_reader_fn,
             run_static_gates=False, step_trace=_step_trace,
+            enable_fragment_rewrite=_v57_frag_rewrite,
+            max_fragment_model_calls=_v57_frag_cap,
         )
 
     def _mcp_measure_fn(_sql: str) -> "MeasureResult":
@@ -2751,13 +2772,30 @@ def run_mcp_enhancement(
         session["history"] = sys_msgs + non_sys[-4:]
         session["history"].append(new_msg("user", context))
 
-        # Get AI response
+        # Get AI response — provider/model failures become a reportable iteration.
         req = CompletionRequest(messages=session["history"], model=model, reasoning=reasoning)
-        if output and hasattr(output, "status"):
-            with output.status("AI thinking..."):
+        try:
+            if output and hasattr(output, "status"):
+                with output.status("AI thinking..."):
+                    reply = provider.complete_text(req)
+            else:
                 reply = provider.complete_text(req)
-        else:
-            reply = provider.complete_text(req)
+        except Exception as _model_exc:
+            elapsed = time.monotonic() - iter_start
+            _fail_msg = f"model/provider failed: {_model_exc}"
+            _render_iteration_result(
+                output, iteration=iteration, total=max_iterations,
+                status="model_failed", hypothesis=_fail_msg,
+                metric_key=metric_key, metric_value=best_metric, delta=0.0,
+                elapsed_s=elapsed,
+                reason=_fail_msg,
+            )
+            iterations.append(IterationRecord(
+                iteration=iteration, status="model_failed",
+                metric_value=best_metric, delta=0.0,
+                hypothesis=_fail_msg,
+            ))
+            break  # stop iterating — build report with what we have
 
         if not reply:
             if output:
@@ -3319,10 +3357,10 @@ def run_trino_research_via_mcp(
     if iterations is None:
         from genie.input import _read_input
         try:
-            iter_str = _read_input("  Max iterations [5]: ").strip() or "5"
+            iter_str = _read_input("  Max iterations [1]: ").strip() or "1"
             iterations = max(1, int(iter_str))
         except (ValueError, EOFError, KeyboardInterrupt):
-            iterations = 5
+            iterations = 1
 
     # ── Get verify runs ──
     if runs is None:

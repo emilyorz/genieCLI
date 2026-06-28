@@ -775,7 +775,13 @@ def _canonicalize_plan(plan_json: object) -> object:
 # §2.2  decompose()
 # ---------------------------------------------------------------------------
 
-def decompose(sql: str, llm: LlmFn, cost_reader_fn: CostReaderFn) -> list[Fragment]:
+def decompose(
+    sql: str,
+    llm: LlmFn,
+    cost_reader_fn: CostReaderFn,
+    *,
+    use_llm_ranking: bool = True,
+) -> list[Fragment]:
     """Decompose SQL into rankable fragments. Never raises."""
     try:
         import sqlglot
@@ -856,16 +862,19 @@ def decompose(sql: str, llm: LlmFn, cost_reader_fn: CostReaderFn) -> list[Fragme
             cost=frag_cost,
         ))
 
-    # Build ranked monster list heuristically, then refine with LLM
+    # Build ranked monster list heuristically; LLM refinement is opt-in for read paths.
     heuristic_monsters = _heuristic_monster_ids(built_fragments)
 
-    monster_ids: list[str] = []
-    try:
-        llm_response = llm(_build_monster_prompt(built_fragments, heuristic_monsters))
-        monster_ids = _parse_monster_response(llm_response, built_fragments)
-    except Exception:
-        # LLM raising → fall back to heuristic
-        monster_ids = heuristic_monsters
+    monster_ids: list[str] = heuristic_monsters
+    if use_llm_ranking:
+        try:
+            llm_response = llm(_build_monster_prompt(built_fragments, heuristic_monsters))
+            parsed_monsters = _parse_monster_response(llm_response, built_fragments)
+            if parsed_monsters:
+                monster_ids = parsed_monsters
+        except Exception:
+            # LLM raising → fall back to heuristic
+            monster_ids = heuristic_monsters
 
     # Assign is_monster + monster_rank
     final_fragments: list[Fragment] = []

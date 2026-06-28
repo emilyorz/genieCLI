@@ -501,7 +501,17 @@ def _plan_cost_loop_core(
 
         output.progress("  AI thinking...")
         req = CompletionRequest(messages=session["history"], model=model, reasoning=reasoning)
-        reply = provider.complete_text(req)
+        try:
+            reply = provider.complete_text(req)
+        except Exception as exc:
+            output.error(f"  Model/provider failed — stopping iteration phase: {exc}")
+            history.append({
+                "iteration": iteration,
+                "status": "model_failed",
+                "candidate_sql": None,
+                "plan_cost": None,
+            })
+            break
         if not reply:
             output.error("  Empty AI response — stopping iteration phase.")
             break

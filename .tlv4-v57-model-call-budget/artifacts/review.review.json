@@ -1,0 +1,12 @@
+{
+  "score": 9.4,
+  "hard_fails": [],
+  "open_issues": [
+    "L1: Internal docstring still says max_iterations default is 5 while runtime default is 1; documentation-only follow-up.",
+    "L2: --direct path has evidence-only default via shared helper but no GENIE_FRAGMENT_REWRITE opt-in wiring; non-blocking because v57 ticket scopes MCP /trino-research.",
+    "L3: AC3 cap test uses a simple single-fragment case; non-blocking because cap slice logic is trivial and legacy cap test covers multi-fragment opt-in."
+  ],
+  "pass_bool": true,
+  "reviewer_dispatch_id": "review-reviewer-a2",
+  "reviewed_artifact_hash": "58887381387c1ee656e7ac4ecfe363a7482fcb4e1aaaed2b6b596b18fb390c13"
+}

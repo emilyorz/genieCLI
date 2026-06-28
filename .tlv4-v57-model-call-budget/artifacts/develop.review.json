@@ -1,0 +1,12 @@
+{
+  "score": 9.3,
+  "hard_fails": [],
+  "open_issues": [
+    "L1: Docstring at research.py:2344 still says 'default: 5' but actual default is now 1",
+    "L2: --direct path call sites (trino_query/research.py:415,670,1212) lack GENIE_FRAGMENT_REWRITE env-var wiring — fragment rewrite permanently off on --direct with no escape hatch (ticket scopes to MCP path so non-blocking)",
+    "L3: AC3 opt-in cap test exercises trivial single-fragment case; slice logic [:cap] is trivial so gap is minor"
+  ],
+  "pass_bool": true,
+  "reviewer_dispatch_id": "develop-reviewer-a3",
+  "reviewed_artifact_hash": "841d23e23d90754d11781ec49260f7bdebdbbcc8970ed10cd6670a059027a9d7"
+}

@@ -431,6 +431,7 @@ class TestFragCap:
         trace = []
         _produce_decompose_candidate(
             _ORIG_SQL, _noop_llm, _noop_cost, run_static_gates=False, step_trace=trace,
+            enable_fragment_rewrite=True, max_fragment_model_calls=5,
         )
 
         over_cap_events = [

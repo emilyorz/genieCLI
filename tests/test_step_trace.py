@@ -591,6 +591,7 @@ class TestFragmentSqlInEventDetail:
                 cost_reader_fn=None,
                 run_static_gates=False,
                 step_trace=step_trace,
+                enable_fragment_rewrite=True,
             )
 
         frag_events = [ev for ev in step_trace if ev.step_id.startswith("fragment_")]

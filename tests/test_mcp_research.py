@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import json
+from types import SimpleNamespace
 from unittest.mock import MagicMock, patch
 
 import pytest
@@ -23,6 +24,7 @@ from genie.skills.mcp_trino.research import (
     _fmt_metric_value,
     _generate_table_suggestions,
     _parse_explain_stages,
+    _produce_decompose_candidate,
     _render_iteration_result,
     _render_plan_card,
     _render_sql_diff,
@@ -1218,3 +1220,168 @@ class TestExplainInReport:
         md = generate_report(report, locale="zh")
         assert "原始查詢計畫" in md
         assert "優化後查詢計畫" in md
+
+
+# ── v57 model-call budget guards ─────────────────────────────────────────────
+
+
+def _fake_cost():
+    return SimpleNamespace(
+        available=False,
+        reason="test",
+        cost_scalar=None,
+        rows_est=None,
+        bytes_est=None,
+        plan_json=None,
+    )
+
+
+def test_decompose_seed_default_does_not_call_fragment_llm(monkeypatch):
+    monkeypatch.setattr(
+        "genie.skills.mcp_trino.critical_path.analyze_critical_path",
+        lambda _sql: SimpleNamespace(available=False, reason="test"),
+    )
+
+    def fail_if_called(_prompt):
+        raise AssertionError("fragment LLM should not be called by default")
+
+    sql = "WITH a AS (SELECT 1 AS id) SELECT id FROM a"
+    recomposed_sql, fragments, candidates, _ = _produce_decompose_candidate(
+        sql,
+        fail_if_called,
+        lambda _sql: _fake_cost(),
+        run_static_gates=False,
+    )
+
+    assert recomposed_sql == sql
+    assert fragments
+    assert candidates
+    assert all(not candidate.changed for candidate in candidates)
+
+
+def test_decompose_seed_opt_in_calls_fragment_llm(monkeypatch):
+    monkeypatch.setattr(
+        "genie.skills.mcp_trino.critical_path.analyze_critical_path",
+        lambda _sql: SimpleNamespace(available=False, reason="test"),
+    )
+    calls = []
+
+    def record_call(_prompt):
+        calls.append(_prompt)
+        return "[]"
+
+    _produce_decompose_candidate(
+        "WITH a AS (SELECT 1 AS id) SELECT id FROM a",
+        record_call,
+        lambda _sql: _fake_cost(),
+        run_static_gates=False,
+        enable_fragment_rewrite=True,
+        max_fragment_model_calls=1,
+    )
+
+    assert calls
+
+
+def test_plan_cost_loop_records_model_failure_without_raising():
+    from genie.skills.mcp_trino.preflight import _plan_cost_loop_core
+
+    provider = MagicMock()
+    provider.complete_text.side_effect = RuntimeError("provider down")
+    output = _output_mock()
+
+    result = _plan_cost_loop_core(
+        provider=provider,
+        model="test-model",
+        reasoning="default",
+        sys_prompt="system",
+        original_sql="SELECT 1",
+        metric_key="query_time_ms",
+        max_iterations=1,
+        max_fallbacks=0,
+        baseline_cost=1.0,
+        baseline_sig=None,
+        baseline_plan=None,
+        baseline_rows_est=1,
+        baseline_bytes_est=1,
+        explain_runner=lambda _sql: None,
+        measure_fn=lambda _sql, _label: None,
+        metric_fn=lambda _measured: 1.0,
+        row_equiv_fn=lambda _measured: (True, "exact match"),
+        static_report=None,
+        output=output,
+    )
+
+    assert result.winner_sql is None
+    assert result.history == [
+        {"iteration": 1, "status": "model_failed", "candidate_sql": None, "plan_cost": None}
+    ]
+
+
+def test_standard_loop_model_failure_returns_enhancement_report(monkeypatch):
+    from genie.skills.mcp_trino import research as research_mod
+    from genie.skills.mcp_trino.preflight import LongQueryGateResult
+
+    monkeypatch.setenv("GENIE_V48_SEED_DECOMPOSE", "0")
+    monkeypatch.setattr(
+        "genie.skills.trino_query.sql_static.analyze",
+        lambda _sql: SimpleNamespace(findings=[], summary="clean"),
+    )
+    monkeypatch.setattr(
+        "genie.skills.trino_query.sql_static.summary_line",
+        lambda _report: "clean",
+    )
+    monkeypatch.setattr(
+        research_mod,
+        "_fetch_per_node_memory_limit",
+        lambda _client: SimpleNamespace(bytes=None, source="default-fallback"),
+    )
+    monkeypatch.setattr(
+        research_mod,
+        "_measure_mcp",
+        lambda *_args, **_kwargs: MeasureResult(
+            median_metric=100.0,
+            samples=[100.0],
+            row_count=1,
+            rows=[{"x": 1}],
+            columns=["x"],
+            metrics=RunMetrics(query_time_ms=100.0, wall_time_ms=100.0, cpu_time_ms=50.0),
+        ),
+    )
+    monkeypatch.setattr(research_mod, "_build_mcp_explain_runner", lambda _client: (lambda _sql: None))
+    monkeypatch.setattr(research_mod, "_execute_via_mcp", lambda *_args, **_kwargs: {"error": None})
+    monkeypatch.setattr(research_mod, "_fetch_explain_analyze", lambda *_args, **_kwargs: ExplainAnalyzeResult(raw_text="", available=False))
+    monkeypatch.setattr(research_mod, "_assemble_mcp_directions", lambda *_args, **_kwargs: ([], []))
+    monkeypatch.setattr("genie.skills.mcp_trino.preflight.plan_cost", lambda *_args, **_kwargs: (None, None, None))
+    monkeypatch.setattr(
+        "genie.skills.mcp_trino.preflight.check_long_query_gate",
+        lambda **_kwargs: LongQueryGateResult(ok=True),
+    )
+    monkeypatch.setattr("genie.skills.mcp_trino.rule_gate.build_rule_gate_summary", lambda *_args, **_kwargs: None)
+    monkeypatch.setattr("genie.skills.mcp_trino.rule_gate.format_rule_gate_for_prompt", lambda _summary: "")
+    monkeypatch.setattr("genie.skills.mcp_trino.rule_gate.render_rule_gate_summary", lambda *_args, **_kwargs: None)
+    monkeypatch.setattr("genie.skills.mcp_trino.pre_execution_diagnosis.attribute_directions", lambda *_args, **_kwargs: [])
+    monkeypatch.setattr("genie.skills.mcp_trino.pre_execution_diagnosis.format_attribution_report", lambda _outcomes: "")
+
+    provider = MagicMock()
+    provider.complete_text.side_effect = RuntimeError("provider down")
+    client = MagicMock(spec=McpClient)
+    client.config = McpConfig(url="http://mcp.test/mcp", enabled=True, timeout=1)
+
+    report = research_mod.run_mcp_enhancement(
+        client=client,
+        sql="SELECT 1 AS x",
+        metric_key="query_time_ms",
+        max_iterations=1,
+        verify_runs=1,
+        provider=provider,
+        model="test-model",
+        reasoning="default",
+        output=_output_mock(),
+        build_prompt=lambda *_args, **_kwargs: "",
+        long_query_opt_in=True,
+    )
+
+    assert isinstance(report, EnhancementReport)
+    assert report.enhanced_sql == report.original_sql
+    assert [it.status for it in report.iterations] == ["model_failed"]
+    assert "provider down" in report.iterations[0].hypothesis
