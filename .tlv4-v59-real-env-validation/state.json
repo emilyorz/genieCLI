@@ -1,0 +1,154 @@
+{
+  "schema_version": "task-ledger-v4-1",
+  "project": "genieCLI-v59-real-env-validation",
+  "project_root": "/Users/leeabc/work/emilyorz/genieCLI",
+  "entry_profile": "bugfix",
+  "active_steps": [
+    "ticket",
+    "develop",
+    "review",
+    "wrap_retro"
+  ],
+  "backward_edges": [
+    [
+      "review",
+      "develop"
+    ]
+  ],
+  "routing": {
+    "ticket": {
+      "producer": "sonnet",
+      "reviewer": "sonnet"
+    },
+    "develop": {
+      "producer": "sonnet",
+      "reviewer": "sonnet"
+    },
+    "review": {
+      "producer": "sonnet",
+      "reviewer": "opus"
+    },
+    "wrap_retro": {
+      "producer": "sonnet",
+      "reviewer": "sonnet"
+    }
+  },
+  "current_step": "wrap_retro",
+  "step_status": "pending",
+  "max_attempts": 3,
+  "steps": {
+    "ticket": {
+      "status": "passed",
+      "score": 9.8,
+      "producer_artifact": "artifacts/ticket.producer.md",
+      "producer_hash": "888c108c70af8c997236902e66a1d63956c7b7c091ed0d09d5f3572af33163bf",
+      "producer_dispatch_id": "ticket-producer-a0",
+      "review_artifact": "artifacts/ticket.review.json",
+      "review_hash": "137f945ce8425674cd7db2773b95534433a7225a05208a8449b783b9b081edaa",
+      "reviewer_dispatch_id": "ticket-reviewer-a0",
+      "model": "claude-code-sonnet",
+      "attempts": 0,
+      "base_sha": "6cd96406756f65b235b44d0c528a7c68150c15d0",
+      "dirty_status_hash": "ff425a7951ed894202289a5e4f9028d758fca93d06af0946e7814fe8abad4fa0",
+      "commit_sha": null,
+      "issue_ledger": []
+    },
+    "develop": {
+      "status": "passed",
+      "score": 9.2,
+      "producer_artifact": "artifacts/develop.producer.md",
+      "producer_hash": "624e5db393a7736c69601c95eed58a7950267af4cff37873810db8ccf4f59685",
+      "producer_dispatch_id": "develop-producer-a0",
+      "review_artifact": "artifacts/develop.review.json",
+      "review_hash": "0c8a28878363561113f00e7f1e3c6e6cf94a00554d18608af2bb6d8bd38169ed",
+      "reviewer_dispatch_id": "develop-reviewer-a0",
+      "model": "claude-code-sonnet",
+      "attempts": 0,
+      "base_sha": "6cd96406756f65b235b44d0c528a7c68150c15d0",
+      "dirty_status_hash": "ff425a7951ed894202289a5e4f9028d758fca93d06af0946e7814fe8abad4fa0",
+      "commit_sha": null,
+      "issue_ledger": []
+    },
+    "review": {
+      "status": "passed",
+      "score": 9.2,
+      "producer_artifact": "artifacts/review.producer.md",
+      "producer_hash": "bc50c7dda24966a71b5bba4cab33679b0de0c6c0a88ba6c5cc6b84a35ba75315",
+      "producer_dispatch_id": "review-producer-a0",
+      "review_artifact": "artifacts/review.review.json",
+      "review_hash": "af6c4ef17a1ca2d651551cd4672e7b92fca06daf720fdc915bb604a8f1d2eb64",
+      "reviewer_dispatch_id": "review-reviewer-a0",
+      "model": "claude-code-sonnet",
+      "attempts": 0,
+      "base_sha": "6cd96406756f65b235b44d0c528a7c68150c15d0",
+      "dirty_status_hash": "d2261d37c2658f37736b98b3b4c4ece4b2d1a381485dc62d45a9a1b5daf288c1",
+      "commit_sha": null,
+      "issue_ledger": [
+        {
+          "id": "The validation script's --live pending path marks the live validation CheckResult as ok/PASS while the detail says PENDING. This does not fake Trino/Qwen contact, but a future cleanup should render pending as a distinct non-pass status to avoid ambiguity in summaries.",
+          "status": "open",
+          "first_attempt": 1,
+          "source": "inherited:develop",
+          "detail": "The validation script's --live pending path marks the live validation CheckResult as ok/PASS while the detail says PENDING. This does not fake Trino/Qwen contact, but a future cleanup should render pending as a distinct non-pass status to avoid ambiguity in summaries."
+        },
+        {
+          "id": "The producer reports a full-suite result, but only the offline and broad validation outputs are saved as separate artifacts. This is acceptable for the narrow docs/validation scope, but preserving full-suite output would make wrap review easier.",
+          "status": "open",
+          "first_attempt": 1,
+          "source": "inherited:develop",
+          "detail": "The producer reports a full-suite result, but only the offline and broad validation outputs are saved as separate artifacts. This is acceptable for the narrow docs/validation scope, but preserving full-suite output would make wrap review easier."
+        },
+        {
+          "id": "The working tree still contains several pre-existing untracked .tlv4-* directories. Downstream commit/wrap should explicitly include only the intended v59 files/artifacts and avoid a blanket add.",
+          "status": "open",
+          "first_attempt": 1,
+          "source": "inherited:develop",
+          "detail": "The working tree still contains several pre-existing untracked .tlv4-* directories. Downstream commit/wrap should explicitly include only the intended v59 files/artifacts and avoid a blanket add."
+        }
+      ]
+    },
+    "wrap_retro": {
+      "status": "pending",
+      "score": null,
+      "producer_artifact": null,
+      "producer_hash": null,
+      "producer_dispatch_id": null,
+      "review_artifact": null,
+      "review_hash": null,
+      "reviewer_dispatch_id": null,
+      "model": null,
+      "attempts": 0,
+      "base_sha": null,
+      "dirty_status_hash": null,
+      "commit_sha": null,
+      "issue_ledger": [
+        {
+          "id": "Commit/wrap must use explicit paths only; unrelated untracked .tlv4-* directories are present, so blanket git add . would be unsafe.",
+          "status": "open",
+          "first_attempt": 1,
+          "source": "inherited:review",
+          "detail": "Commit/wrap must use explicit paths only; unrelated untracked .tlv4-* directories are present, so blanket git add . would be unsafe."
+        },
+        {
+          "id": "Live company Trino/Qwen validation remains pending and must not be reported as passed unless actually run in an authorized environment.",
+          "status": "open",
+          "first_attempt": 1,
+          "source": "inherited:review",
+          "detail": "Live company Trino/Qwen validation remains pending and must not be reported as passed unless actually run in an authorized environment."
+        },
+        {
+          "id": "Non-blocking wording issue: STATUS.md says v59 is \"working tree only, not committed\"; wrap/commit should avoid leaving that stale after commit.",
+          "status": "open",
+          "first_attempt": 1,
+          "source": "inherited:review",
+          "detail": "Non-blocking wording issue: STATUS.md says v59 is \"working tree only, not committed\"; wrap/commit should avoid leaving that stale after commit."
+        }
+      ]
+    }
+  },
+  "routing_overrides": {},
+  "github_issue": null,
+  "pending_decision": null,
+  "history": [],
+  "updated_at": "2026-07-01T09:39:03+08:00"
+}

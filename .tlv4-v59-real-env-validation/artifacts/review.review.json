@@ -1,0 +1,12 @@
+{
+  "score": 9.2,
+  "hard_fails": [],
+  "open_issues": [
+    "Commit/wrap must use explicit paths only; unrelated untracked .tlv4-* directories are present, so blanket git add . would be unsafe.",
+    "Live company Trino/Qwen validation remains pending and must not be reported as passed unless actually run in an authorized environment.",
+    "Non-blocking wording issue: STATUS.md says v59 is \"working tree only, not committed\"; wrap/commit should avoid leaving that stale after commit."
+  ],
+  "pass_bool": true,
+  "reviewer_dispatch_id": "review-reviewer-a0",
+  "reviewed_artifact_hash": "bc50c7dda24966a71b5bba4cab33679b0de0c6c0a88ba6c5cc6b84a35ba75315"
+}

@@ -1,0 +1,1 @@
+{"role":"producer","step":"ticket","model":"claude-code-sonnet","dispatch_id":"ticket-producer-a0","owner":"Emily Hermes","notes":"v59 bugfix-profile ticket producer; Claude Code print mode; no product writes"}
