@@ -135,6 +135,8 @@ def _fmt_detail_verify(d: dict[str, Any]) -> str:
         parts.append(f"**Final metric:** {d['final_metric']:,.0f} ms")
     if "improvement_pct" in d:
         parts.append(f"**Improvement:** {d['improvement_pct']:.1f}%")
+    if "evidence_coverage_summary" in d:
+        parts.append(f"**Evidence:** {d['evidence_coverage_summary']}")
     return "\n\n".join(parts)
 
 

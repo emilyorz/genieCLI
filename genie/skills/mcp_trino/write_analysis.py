@@ -558,13 +558,29 @@ def _render_decompose_advisory(result: dict) -> list:
     # and emit the residual data/semantic checklist (the row-equivalence gate cannot
     # run offline — tables do not exist). Never raises; degrades to no section.
     try:
-        from genie.skills.mcp_trino.strategy_verify import render_advisory_verification
-        verify_lines = render_advisory_verification(
-            result.get("original_sql") or "",
-            advisory_sql if advisory_sql is not None else "",
+        from genie.skills.mcp_trino.strategy_verify import (
+            build_evidence_coverage,
+            evidence_coverage_enabled,
+            render_advisory_verification,
+            render_evidence_coverage,
+            verify_p9_fanout,
         )
+        original_sql = result.get("original_sql") or ""
+        rewritten_sql = advisory_sql if advisory_sql is not None else ""
+        verify_lines = render_advisory_verification(original_sql, rewritten_sql)
         if verify_lines:
             lines += verify_lines
+        if evidence_coverage_enabled() and advisory_sql is not None and da.get("changed"):
+            has_correlated_exists = bool(verify_lines)
+            fanout_result = verify_p9_fanout(original_sql, rewritten_sql) if has_correlated_exists else None
+            coverage = build_evidence_coverage(
+                strategy_id="P9",
+                fanout_result=fanout_result,
+                p9_claimed=has_correlated_exists and rewritten_sql != original_sql,
+                has_correlated_exists=has_correlated_exists,
+                live_result=None,
+            )
+            lines += [render_evidence_coverage(coverage), ""]
     except Exception:
         pass
 

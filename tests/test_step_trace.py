@@ -599,3 +599,38 @@ class TestFragmentSqlInEventDetail:
         d = frag_events[0].detail
         assert d.get("original_sql") == ORIG
         assert d.get("rewritten_sql") == REWRITTEN
+
+# ---------------------------------------------------------------------------
+# E′ evidence coverage summary (v60)
+# ---------------------------------------------------------------------------
+
+class TestEvidenceCoverageSummary:
+    def test_verify_detail_includes_coverage_summary_line(self):
+        trace = [
+            _ev(
+                "verify", "Verify", StepStatus.RAN, "seed checked",
+                detail={
+                    "winner_iteration": 1,
+                    "final_metric": 10,
+                    "evidence_coverage_summary": "coverage: L1=PASS L2=PENDING L3=NOT_APPLICABLE -> ADVISED",
+                },
+            )
+        ]
+
+        out = render_report(trace)
+
+        assert "**Evidence:** coverage: L1=PASS L2=PENDING L3=NOT_APPLICABLE -> ADVISED" in out
+
+    def test_verify_detail_unchanged_without_coverage_summary(self):
+        trace = [
+            _ev(
+                "verify", "Verify", StepStatus.RAN, "seed checked",
+                detail={"winner_iteration": 1, "final_metric": 10},
+            )
+        ]
+
+        out = render_report(trace)
+
+        assert "**Winner:** iteration 1" in out
+        assert "**Evidence:**" not in out
+

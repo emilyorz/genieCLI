@@ -1502,7 +1502,47 @@ def _run_mcp_plan_cost_loop(
                         timeout_ms=candidate_timeout_ms,
                     )
                     _pcl_seed_equiv, _pcl_seed_reason = _results_equivalent(baseline.rows, _pcl_seed_meas.rows)
-                    if _pcl_seed_equiv and _pcl_seed_meas.median_metric < baseline_metric:
+                    _pcl_seed_faster = _pcl_seed_meas.median_metric < baseline_metric
+                    try:
+                        from genie.output.step_trace import StepEvent as _PCL_StepEvent, StepStatus as _PCL_StepStatus
+                        from genie.skills.mcp_trino.strategy_verify import (
+                            LiveEvidence as _PCL_LiveEvidence,
+                            build_evidence_coverage as _pcl_build_coverage,
+                            coverage_summary_line as _pcl_coverage_summary_line,
+                            evidence_coverage_enabled as _pcl_coverage_enabled,
+                            verify_p9_fanout as _pcl_verify_p9_fanout,
+                        )
+                        if _pcl_coverage_enabled():
+                            _pcl_reject_reason = None
+                            if not _pcl_seed_equiv:
+                                _pcl_reject_reason = "not equivalent"
+                            elif not _pcl_seed_faster:
+                                _pcl_reject_reason = "not faster"
+                            _pcl_fanout = _pcl_verify_p9_fanout(original_sql, _pcl_recomposed)
+                            _pcl_cov = _pcl_build_coverage(
+                                strategy_id="P9",
+                                fanout_result=_pcl_fanout,
+                                p9_claimed=_pcl_recomposed != original_sql,
+                                has_correlated_exists=bool(_pcl_fanout.correlation_keys),
+                                live_result=_PCL_LiveEvidence(
+                                    row_equivalent=_pcl_seed_equiv,
+                                    faster=_pcl_seed_faster,
+                                    metric_before=baseline_metric,
+                                    metric_after=_pcl_seed_meas.median_metric,
+                                    reason=_pcl_reject_reason,
+                                ),
+                            )
+                            _pcl_step_trace.append(_PCL_StepEvent(
+                                step_id="verify",
+                                stage="Evidence Coverage",
+                                status=_PCL_StepStatus.RAN,
+                                applicable=True,
+                                tui_headline=_pcl_cov.ship_status.value,
+                                detail={"evidence_coverage_summary": _pcl_coverage_summary_line(_pcl_cov)},
+                            ))
+                    except Exception:
+                        pass
+                    if _pcl_seed_equiv and _pcl_seed_faster:
                         _pcl_seed_sql = _pcl_recomposed
                         _pcl_seed_baseline = _pcl_seed_meas
                         if output:

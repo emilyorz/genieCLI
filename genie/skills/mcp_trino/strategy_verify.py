@@ -45,6 +45,159 @@ class FanoutResult:
     groupby_keys: tuple[str, ...]      # GROUP BY column names of the bound pre-aggregation CTE (if any)
 
 
+class CoverageStatus(str, Enum):
+    """Evidence coverage row status for report rendering."""
+
+    PASS = "PASS"
+    FAIL = "FAIL"
+    PARTIAL = "PARTIAL"
+    PENDING = "PENDING"
+    NOT_APPLICABLE = "NOT_APPLICABLE"
+
+
+class ShipStatus(str, Enum):
+    """Mutually-exclusive candidate shipping status."""
+
+    SHIP = "SHIP"
+    ADVISED = "ADVISED"
+    PENDING_LIVE = "PENDING_LIVE"
+
+
+L2_REASON_SUPERSEDED = "superseded by L3 live validation; EXPLAIN producer not required for shipping verdict"
+L2_REASON_OUT_OF_SCOPE = "EXPLAIN producer out of scope this iteration"
+L1_REASON_P9_NOT_APPLIED = "P9 not applied"
+L3_REASON_NO_LIVE = "no live validation performed"
+
+
+@dataclass(frozen=True)
+class LiveEvidence:
+    """Live measurement evidence already produced by the executing seed path."""
+
+    row_equivalent: bool
+    faster: bool
+    metric_before: float | None = None
+    metric_after: float | None = None
+    reason: str | None = None
+
+
+@dataclass(frozen=True)
+class CoverageRow:
+    layer: str
+    status: CoverageStatus
+    reason: str
+
+    def to_dict(self) -> dict[str, str]:
+        return {"layer": self.layer, "status": self.status.value, "reason": self.reason}
+
+
+@dataclass(frozen=True)
+class EvidenceCoverage:
+    strategy_id: str
+    l1: CoverageRow
+    l2: CoverageRow
+    l3: CoverageRow
+    ship_status: ShipStatus
+
+    def to_dict(self) -> dict[str, object]:
+        return {
+            "strategy_id": self.strategy_id,
+            "ship_status": self.ship_status.value,
+            "l1": self.l1.to_dict(),
+            "l2": self.l2.to_dict(),
+            "l3": self.l3.to_dict(),
+        }
+
+
+def evidence_coverage_enabled() -> bool:
+    """Return whether E′ evidence coverage rendering is enabled."""
+    import os
+
+    return os.environ.get("GENIE_EVIDENCE_COVERAGE", "") != "0"
+
+
+def _l1_row(
+    strategy_id: str,
+    fanout_result: FanoutResult | None,
+    p9_claimed: bool,
+    has_correlated_exists: bool,
+) -> CoverageRow:
+    if strategy_id != "P9" or not p9_claimed or not has_correlated_exists or fanout_result is None:
+        return CoverageRow("L1", CoverageStatus.NOT_APPLICABLE, "P9 offline verifier not applicable")
+    if fanout_result.verdict is FanoutVerdict.PROVEN_NO_FANOUT:
+        return CoverageRow("L1", CoverageStatus.PASS, fanout_result.detail)
+    if fanout_result.verdict is FanoutVerdict.KEY_MISMATCH:
+        return CoverageRow("L1", CoverageStatus.FAIL, fanout_result.detail)
+    if fanout_result.verdict is FanoutVerdict.CANNOT_VERIFY:
+        return CoverageRow("L1", CoverageStatus.PARTIAL, fanout_result.detail)
+    if fanout_result.verdict is FanoutVerdict.NOT_APPLIED:
+        return CoverageRow("L1", CoverageStatus.FAIL, L1_REASON_P9_NOT_APPLIED)
+    return CoverageRow("L1", CoverageStatus.PARTIAL, fanout_result.detail)
+
+
+def _l3_row(live_result: LiveEvidence | None) -> CoverageRow:
+    if live_result is None:
+        return CoverageRow("L3", CoverageStatus.NOT_APPLICABLE, L3_REASON_NO_LIVE)
+    if live_result.row_equivalent and live_result.faster:
+        return CoverageRow("L3", CoverageStatus.PASS, live_result.reason or "live row-equivalence and speedup verified")
+    if not live_result.row_equivalent:
+        return CoverageRow("L3", CoverageStatus.FAIL, live_result.reason or "not equivalent")
+    if not live_result.faster:
+        return CoverageRow("L3", CoverageStatus.FAIL, live_result.reason or "not faster")
+    return CoverageRow("L3", CoverageStatus.FAIL, live_result.reason or "measurement error")
+
+
+def _ship_status(l1: CoverageRow, l3: CoverageRow) -> ShipStatus:
+    if l3.status is CoverageStatus.PASS:
+        return ShipStatus.SHIP
+    if l1.status is CoverageStatus.PASS:
+        return ShipStatus.ADVISED
+    return ShipStatus.PENDING_LIVE
+
+
+def _l2_row(ship_status: ShipStatus) -> CoverageRow:
+    if ship_status is ShipStatus.SHIP:
+        return CoverageRow("L2", CoverageStatus.NOT_APPLICABLE, L2_REASON_SUPERSEDED)
+    return CoverageRow("L2", CoverageStatus.PENDING, L2_REASON_OUT_OF_SCOPE)
+
+
+def build_evidence_coverage(
+    strategy_id: str,
+    fanout_result: FanoutResult | None,
+    p9_claimed: bool,
+    has_correlated_exists: bool,
+    live_result: LiveEvidence | None = None,
+) -> EvidenceCoverage:
+    """Build E′ evidence coverage rows without changing any accept/reject decision."""
+    l1 = _l1_row(strategy_id, fanout_result, p9_claimed, has_correlated_exists)
+    l3 = _l3_row(live_result)
+    ship = _ship_status(l1, l3)
+    l2 = _l2_row(ship)
+    return EvidenceCoverage(strategy_id=strategy_id, l1=l1, l2=l2, l3=l3, ship_status=ship)
+
+
+def render_evidence_coverage(coverage: EvidenceCoverage) -> str:
+    """Render a compact markdown evidence coverage table."""
+    rows = [
+        "### Evidence Coverage — " + coverage.strategy_id,
+        "",
+        f"Status: `{coverage.ship_status.value}`",
+        "",
+        "| Level | Status | Reason |",
+        "|---|---|---|",
+    ]
+    for row in (coverage.l1, coverage.l2, coverage.l3):
+        rows.append(f"| {row.layer} | {row.status.value} | {row.reason} |")
+    return "\n".join(rows)
+
+
+def coverage_summary_line(coverage: EvidenceCoverage) -> str:
+    """Single-line evidence summary for step_trace detail."""
+    return (
+        f"coverage: L1={coverage.l1.status.value} L2={coverage.l2.status.value} "
+        f"L3={coverage.l3.status.value} -> {coverage.ship_status.value}"
+    )
+
+
 # ---------------------------------------------------------------------------
 # Correlation extraction from the ORIGINAL query (fail-safe, read-only)
 # ---------------------------------------------------------------------------
@@ -574,8 +727,20 @@ def render_advisory_verification(original_sql: str, rewritten_sql: str) -> list[
 
 
 __all__ = [
+    "CoverageRow",
+    "CoverageStatus",
+    "EvidenceCoverage",
     "FanoutVerdict",
     "FanoutResult",
+    "L1_REASON_P9_NOT_APPLIED",
+    "L2_REASON_OUT_OF_SCOPE",
+    "L2_REASON_SUPERSEDED",
+    "LiveEvidence",
+    "ShipStatus",
+    "build_evidence_coverage",
+    "coverage_summary_line",
+    "evidence_coverage_enabled",
+    "render_evidence_coverage",
     "verify_p9_fanout",
     "strategy_checklist",
     "render_advisory_verification",
