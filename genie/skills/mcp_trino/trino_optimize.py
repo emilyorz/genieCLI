@@ -19,7 +19,10 @@ from typing import Callable, Optional, Sequence
 # §5.5  Import aliasing (shadow-free; resolves B4)
 # ---------------------------------------------------------------------------
 from genie.skills.mcp_trino.cost_reader import CostReading, read_cost
-from genie.skills.mcp_trino.p_strategies import render_menu as _render_p_menu
+from genie.skills.mcp_trino.p_strategies import (
+    P_STRATEGY_BY_ID,
+    render_menu as _render_p_menu,
+)
 from genie.skills.mcp_trino.research import rows_equivalent as _check_rows_equivalent
 from genie.skills.trino_query.detection_scan import DetectionFinding, scan_sql
 
@@ -1113,21 +1116,46 @@ class CpGuidance:
 
 
 def _render_cp_guidance(cp: Optional[CpGuidance]) -> str:
-    """Render the cost-model guidance block, or '' when no bottleneck context exists."""
+    """Render the deterministic diagnosis brief, or '' when no bottleneck exists."""
     if cp is None:
         return ""
-    line = (
-        f"Cost-model guidance (offline critical path): the hot node is "
-        f"'{cp.bottleneck_label}' [{cp.bottleneck_op}], ~{cp.bottleneck_cost_pct}% of total "
-        f"estimated cost."
-    )
-    if cp.recommended_strategy:
-        line += (
-            f" The cost model recommends prioritizing strategy {cp.recommended_strategy} "
-            f"on the structure that lies on this critical path; prefer it over lower-impact "
-            f"rewrites when it fits this fragment."
+
+    lines = [
+        "Diagnosis brief (deterministic):",
+        (
+            f"- Hot node: '{cp.bottleneck_label}' [{cp.bottleneck_op}], "
+            f"~{cp.bottleneck_cost_pct}% of offline estimated cost."
+        ),
+    ]
+
+    strategy = P_STRATEGY_BY_ID.get(cp.recommended_strategy or "")
+    if strategy is not None:
+        lines.extend([
+            (
+                f"- Strategy shortlist: {strategy.id} {strategy.name} "
+                f"({strategy.tier}; recommended by critical path)."
+            ),
+            f"- Recipe: {strategy.recipe}",
+        ])
+    elif cp.recommended_strategy:
+        lines.append(
+            f"- Strategy shortlist: {cp.recommended_strategy} "
+            f"(recommended by critical path; strategy metadata unavailable)."
         )
-    return line + "\n\n"
+    else:
+        lines.append("- Strategy shortlist: none from critical path; use detected issues only.")
+
+    lines.extend([
+        (
+            "- Apply order: try shortlisted strategies first when they fit this fragment; "
+            "otherwise return the original SQL unchanged."
+        ),
+        (
+            "- Evidence ceiling: offline structural guidance is not live row-equivalence; "
+            "TRAP rewrites still require verification before shipping."
+        ),
+    ])
+    return "\n".join(lines) + "\n\n"
 
 
 def optimize(

@@ -1322,7 +1322,7 @@ class TestOptimizeCpGuidance:
         assert captured["prompts"][0] == captured["prompts"][1]
         assert "Cost-model guidance" not in captured["prompts"][0]
 
-    def test_prompt_includes_bottleneck_and_recommended_strategy(self):
+    def test_prompt_includes_diagnosis_brief_and_recommended_strategy(self):
         guidance = CpGuidance(
             bottleneck_label="EXISTS spec_table",
             bottleneck_op="correlated_subquery",
@@ -1330,14 +1330,16 @@ class TestOptimizeCpGuidance:
             recommended_strategy="P9",
         )
         prompt = self._capture_prompt(guidance)
-        assert "Cost-model guidance" in prompt
+        assert "Diagnosis brief (deterministic)" in prompt
         assert "EXISTS spec_table" in prompt
         assert "72.5" in prompt
-        assert "P9" in prompt
-        # The menu still follows the guidance block.
+        assert "Strategy shortlist: P9 exists-to-preagg-join" in prompt
+        assert "recommended by critical path" in prompt
+        assert "offline structural guidance is not live row-equivalence" in prompt
+        # The full menu still follows the narrowed diagnosis brief.
         assert "do not freestyle" in prompt
 
-    def test_prompt_guidance_without_strategy_has_no_recommendation_line(self):
+    def test_prompt_guidance_without_strategy_has_no_shortlist_strategy(self):
         guidance = CpGuidance(
             bottleneck_label="ORDER BY",
             bottleneck_op="sort",
@@ -1345,8 +1347,21 @@ class TestOptimizeCpGuidance:
             recommended_strategy=None,
         )
         prompt = self._capture_prompt(guidance)
-        assert "Cost-model guidance" in prompt
-        assert "recommends prioritizing strategy" not in prompt
+        assert "Diagnosis brief (deterministic)" in prompt
+        assert "Strategy shortlist: none from critical path" in prompt
+        assert "recommended by critical path" not in prompt
+
+    def test_prompt_guidance_unknown_strategy_degrades_without_crash(self):
+        guidance = CpGuidance(
+            bottleneck_label="mystery op",
+            bottleneck_op="unknown",
+            bottleneck_cost_pct=12.0,
+            recommended_strategy="PX",
+        )
+        prompt = self._capture_prompt(guidance)
+        assert "Diagnosis brief (deterministic)" in prompt
+        assert "Strategy shortlist: PX" in prompt
+        assert "strategy metadata unavailable" in prompt
 
 
 # ---------------------------------------------------------------------------
