@@ -19,10 +19,14 @@ import statistics
 import threading
 import time
 from pathlib import Path
-from typing import Callable, Optional
+from typing import Callable, Optional, NamedTuple
 
 from genie.core.sql_extraction import extract_sql_from_reply
-from genie.skills.mcp_trino.preflight import CandidateTimeoutError, make_candidate_timeout_ms
+from genie.skills.mcp_trino.preflight import (
+    CandidateTimeoutError, ExecutionPolicy, ReadOnlyViolationError,
+    _assert_executable_read_only, _execution_sql_for, check_read_only,
+    make_candidate_timeout_ms, validate_safe_limit,
+)
 from genie.skills.trino_query.connection import get_active_profile
 from genie.skills.trino_query import QueryMetrics, _extract_metrics
 
@@ -31,7 +35,75 @@ from genie.skills.trino_query import QueryMetrics, _extract_metrics
 # Measurement helpers (run in-process, no subprocess/verify.py needed)
 # ---------------------------------------------------------------------------
 
-def _execute_sql_sync(sql: str, capture_rows: bool = False) -> tuple[int, QueryMetrics, list]:
+DEFAULT_FETCH_BATCH_SIZE = 1_000
+
+
+class _RowCapture(NamedTuple):
+    observed_row_count: int
+    rows: list
+    captured_row_count: int
+    capture_status: str
+    completeness: str
+
+
+def _validate_positive_non_bool_int(name: str, value: object) -> int:
+    if isinstance(value, bool) or not isinstance(value, int) or value <= 0:
+        raise ValueError(f"{name} must be a positive integer")
+    return value
+
+
+def _read_rows_bounded(cursor, *, capture_rows: bool, max_capture_rows: int,
+                       batch_size: int = DEFAULT_FETCH_BATCH_SIZE) -> _RowCapture:
+    """Drain a cursor with ``fetchmany`` and optionally retain a bounded prefix.
+
+    Args and return contract: ``max_capture_rows`` and ``batch_size`` are positive
+    non-bool integers and ``batch_size <= max_capture_rows``.  On successful EOF,
+    the returned capture reports observed rows, retained rows, capture status, and
+    completeness.
+
+    For a compliant cursor:
+        retained rows <= max_capture_rows
+        current fetched batch <= batch_size
+        batch_size <= max_capture_rows
+
+        retained rows + one current batch
+        <= max_capture_rows + batch_size
+        <= 2 * max_capture_rows
+
+    This is only a row-reference bound. It is not a byte-memory, row-payload-size,
+    driver-prefetch/internal-buffer, oversized-batch-before-detection,
+    network-transfer, EOF-drain-transfer, MCP-envelope, or Trino-server-resource
+    bound.
+    """
+    cap = _validate_positive_non_bool_int("max_capture_rows", max_capture_rows)
+    batch = _validate_positive_non_bool_int("batch_size", batch_size)
+    if batch > cap:
+        raise ValueError("batch_size must be less than or equal to max_capture_rows")
+
+    observed = 0
+    retained: list = []
+    while True:
+        rows = cursor.fetchmany(batch)
+        if rows is None:
+            rows = []
+        if len(rows) > batch:
+            raise RuntimeError("cursor returned more rows than requested fetchmany batch_size")
+        if not rows:
+            break
+        observed += len(rows)
+        if capture_rows and len(retained) < cap:
+            retained.extend(rows[:cap - len(retained)])
+
+    if not capture_rows:
+        return _RowCapture(observed, [], 0, "not_captured", "not_captured")
+    if observed > cap:
+        return _RowCapture(observed, retained, len(retained), "truncated", "direct_truncated")
+    return _RowCapture(observed, retained, len(retained), "complete", "verified_complete")
+
+
+def _execute_sql_sync(sql: str, capture_rows: bool = False, *,
+                      max_capture_rows: int = 100_000,
+                      batch_size: int = DEFAULT_FETCH_BATCH_SIZE) -> tuple[int, QueryMetrics, list]:
     """Execute SQL on Trino, return (row_count, metrics, rows).
 
     When capture_rows=True, actual row data is returned for equivalence checks.
@@ -39,17 +111,17 @@ def _execute_sql_sync(sql: str, capture_rows: bool = False) -> tuple[int, QueryM
     cfg = get_active_profile()
     conn = cfg.connect()
     cur = conn.cursor()
-    cur.execute(sql)
     try:
-        rows = cur.fetchall()
-        row_count = len(rows)
-    except Exception:
-        rows = []
-        row_count = 0
-    stats = getattr(cur, "stats", {}) or {}
-    metrics = _extract_metrics(stats)
-    conn.close()
-    return row_count, metrics, rows if capture_rows else []
+        cur.execute(sql)
+        captured = _read_rows_bounded(
+            cur, capture_rows=capture_rows, max_capture_rows=max_capture_rows,
+            batch_size=batch_size,
+        )
+        stats = getattr(cur, "stats", {}) or {}
+        metrics = _extract_metrics(stats)
+        return captured.observed_row_count, metrics, captured.rows
+    finally:
+        conn.close()
 
 
 def _execute_sql(
@@ -57,6 +129,9 @@ def _execute_sql(
     capture_rows: bool = False,
     timeout_ms: Optional[float] = None,
     label: str = "candidate",
+    *,
+    max_capture_rows: int = 100_000,
+    batch_size: int = DEFAULT_FETCH_BATCH_SIZE,
 ) -> tuple[int, QueryMetrics, list]:
     """Execute SQL with an optional wall-clock timeout.
 
@@ -64,7 +139,10 @@ def _execute_sql(
     stop the server-side query instead of waiting for the full driver request.
     """
     if timeout_ms is None or timeout_ms <= 0:
-        return _execute_sql_sync(sql, capture_rows=capture_rows)
+        return _execute_sql_sync(
+            sql, capture_rows=capture_rows, max_capture_rows=max_capture_rows,
+            batch_size=batch_size,
+        )
 
     result: dict[str, tuple[int, QueryMetrics, list]] = {}
     error: dict[str, BaseException] = {}
@@ -80,15 +158,13 @@ def _execute_sql(
             cur = conn.cursor()
             state["cur"] = cur
             cur.execute(sql)
-            try:
-                rows = cur.fetchall()
-                row_count = len(rows)
-            except Exception:
-                rows = []
-                row_count = 0
+            captured = _read_rows_bounded(
+                cur, capture_rows=capture_rows, max_capture_rows=max_capture_rows,
+                batch_size=batch_size,
+            )
             stats = getattr(cur, "stats", {}) or {}
             metrics = _extract_metrics(stats)
-            result["value"] = (row_count, metrics, rows if capture_rows else [])
+            result["value"] = (captured.observed_row_count, metrics, captured.rows)
         except BaseException as exc:
             error["exc"] = exc
         finally:
@@ -132,6 +208,8 @@ def _measure(
     output=None,
     label: str = "query",
     timeout_ms: Optional[float] = None,
+    max_capture_rows: int = 100_000,
+    batch_size: int = DEFAULT_FETCH_BATCH_SIZE,
 ) -> dict:
     """Run SQL `runs` times, return median metric + row_count + all samples.
 
@@ -154,11 +232,13 @@ def _measure(
                 rc, m, rows = _execute_sql(
                     sql, capture_rows=capture,
                     timeout_ms=timeout_ms, label=label,
+                    max_capture_rows=max_capture_rows, batch_size=batch_size,
                 )
         else:
             rc, m, rows = _execute_sql(
                 sql, capture_rows=capture,
                 timeout_ms=timeout_ms, label=label,
+                max_capture_rows=max_capture_rows, batch_size=batch_size,
             )
         row_count = rc
         if capture:
@@ -171,13 +251,123 @@ def _measure(
     # Pick the run closest to median for full metrics display
     median_idx = min(range(len(samples)), key=lambda i: abs(samples[i] - median_val))
 
+    if not capture_rows:
+        capture_status, completeness = "not_captured", "not_captured"
+    elif row_count > max_capture_rows:
+        capture_status, completeness = "truncated", "direct_truncated"
+    else:
+        capture_status, completeness = "complete", "verified_complete"
     return {
         "median": median_val,
         "samples": samples,
-        "row_count": row_count,
+        "row_count": row_count,  # compatibility alias for observed_row_count
+        "observed_row_count": row_count,
         "rows": last_rows,
+        "captured_row_count": len(last_rows),
+        "max_capture_rows": max_capture_rows,
+        "capture_status": capture_status,
+        "completeness": completeness,
         "metrics": all_metrics[median_idx],
     }
+
+
+def _measure_logical_sql(logical_sql: str, metric_key: str, runs: int, *,
+                         policy: ExecutionPolicy, **kwargs) -> dict:
+    """Enforce read-only logical SQL immediately before direct measurement."""
+    _assert_executable_read_only(logical_sql)
+    execution_sql = _execution_sql_for(logical_sql, policy)
+    result = _measure(execution_sql, metric_key, runs, **kwargs)
+    result.update({
+        "logical_sql": logical_sql,
+        "execution_sql": execution_sql,
+        "safe_limit": policy.safe_limit,
+    })
+    return result
+
+
+def _direct_measure_to_measure_result(measurement: dict):
+    """Convert a direct measurement without upgrading absent provenance to proof."""
+    from genie.skills.mcp_trino.research import MeasureResult
+    rows = measurement.get("rows", [])
+    median = measurement["median"]
+    return MeasureResult(
+        median_metric=median,
+        samples=measurement.get("samples", [median]),
+        row_count=measurement["row_count"],
+        observed_row_count=measurement.get("observed_row_count", measurement["row_count"]),
+        rows=rows,
+        captured_row_count=measurement.get("captured_row_count", len(rows)),
+        max_capture_rows=measurement.get("max_capture_rows", 100_000),
+        capture_status=measurement.get("capture_status", "not_captured"),
+        completeness=measurement.get("completeness", "not_captured"),
+        columns=measurement.get("columns", []),
+        metrics=measurement["metrics"],
+    )
+
+
+def _correctness_authorized(baseline: dict, candidate: dict) -> bool:
+    """Authorize only explicitly proven complete direct captures.
+
+    Missing provenance is incomplete provenance, not legacy-compatible proof.
+    """
+    return (
+        baseline.get("capture_status") == candidate.get("capture_status") == "complete"
+        and baseline.get("completeness") == candidate.get("completeness") == "verified_complete"
+    )
+
+
+def _incomplete_history(*, iteration: int, baseline: dict, candidate: dict,
+                        candidate_sql: str, base_sql: str, metric: float,
+                        delta: float) -> dict:
+    """Build the sole persisted authorization-failure history representation."""
+    return {
+        "iteration": iteration,
+        "status": "equivalence_unverified_incomplete_result",
+        "rejection_reason": _incomplete_rejection_reason(baseline, candidate),
+        "metric": metric,
+        "delta": delta,
+        "base_sql": base_sql,
+        "candidate_sql": candidate_sql,
+        "baseline_capture_status": baseline.get("capture_status"),
+        "candidate_capture_status": candidate.get("capture_status"),
+        "baseline_completeness": baseline.get("completeness"),
+        "candidate_completeness": candidate.get("completeness"),
+    }
+
+
+def _incomplete_rejection_reason(baseline, candidate) -> str:
+    """Return one of the complete, canonical incomplete-result reasons.
+
+    A complete verified-direct side is deliberately classified separately so an
+    incomplete peer gets its required baseline/candidate-specific reason.
+    """
+    def kind(item):
+        if item.get("completeness") == "direct_truncated":
+            return "direct_truncated"
+        if item.get("capture_status") == "not_captured":
+            return "capture_not_captured"
+        if item.get("capture_status") == "truncated":
+            return "capture_truncated"
+        if item.get("completeness") == "unverified_received_envelope":
+            return "upstream_completeness_unverified"
+        if item.get("capture_status") == "complete" and item.get("completeness") == "verified_complete":
+            return "verified"
+        return "unknown"
+
+    left, right = kind(baseline), kind(candidate)
+    both = {
+        "direct_truncated": "both_direct_truncated",
+        "capture_not_captured": "both_captures_not_captured",
+        "capture_truncated": "both_captures_truncated",
+        "upstream_completeness_unverified": "both_upstream_completeness_unverified",
+    }
+    if left == right and left in both:
+        return both[left]
+    if right == "verified" and left in both:
+        return f"baseline_{left}"
+    if left == "verified" and right in both:
+        return f"candidate_{right}"
+    return "mixed_incomplete_result"
 
 
 def _baseline_wall_ms(metrics) -> float:
@@ -566,6 +756,7 @@ def _run_plan_cost_loop(
     explain_runner: Callable[[str], Optional[str]],
     max_fallbacks: int,
     candidate_timeout_ms: Optional[float] = None,
+    execution_policy: ExecutionPolicy | None = None,
 ) -> dict:
     """Plan-cost ranking + L1 structural guard + K-retry on row-equivalence.
 
@@ -593,6 +784,8 @@ def _run_plan_cost_loop(
     )
     from genie.skills.trino_query.plan_signature import plan_signature
 
+    policy = execution_policy or ExecutionPolicy(None)
+    _assert_executable_read_only(original_sql)
     baseline_metric = baseline["median"]
     baseline_rows = baseline["row_count"]
     if candidate_timeout_ms is None:
@@ -647,14 +840,17 @@ def _run_plan_cost_loop(
     )
 
     # ── Direct adapter closures (§2.2 reconstruction) ──
-    measure_fn = lambda sql, label: _measure(
-        sql, metric_key, verify_runs,
+    measure_fn = lambda sql, label: _measure_logical_sql(
+        sql, metric_key, verify_runs, policy=policy,
         capture_rows=True, output=output, label=label,
         timeout_ms=candidate_timeout_ms,
     )
     metric_fn = lambda m: m["median"]
-    # D8: NO row_count pre-check on direct path (differs from MCP adapter intentionally).
-    row_equiv_fn = lambda measured: _results_equivalent(baseline_data, measured["rows"])
+    # Do not let a plan-cost candidate become a winner from partial rows.
+    def row_equiv_fn(measured):
+        if not _correctness_authorized(baseline, measured):
+            return False, _incomplete_rejection_reason(baseline, measured)
+        return _results_equivalent(baseline_data, measured["rows"])
     # Single-emission empty-branch message; core emits this via empty_message param.
     _DIRECT_EMPTY_MSG = "  [verify] No candidate beats baseline plan cost — emitting no_verifiable_improvement"
 
@@ -669,6 +865,9 @@ def _run_plan_cost_loop(
 
     from genie.output.step_trace import StepTrace as _DPCL_StepTrace
     _dpcl_step_trace: _DPCL_StepTrace = []
+    # Seed verification occurs before the ranked L3 phase, so retain its
+    # canonical authorization rejection and merge it into returned history.
+    _dpcl_seed_rejection_history: list[dict] = []
     _dpcl_seed_sql = original_sql
     if _v48_dpcl_seed_enabled:
         try:
@@ -684,12 +883,27 @@ def _run_plan_cost_loop(
                     max_fragment_model_calls=_v58_dpcl_frag_cap,
                 )
                 if _dpcl_recomposed != original_sql:
-                    _dpcl_seed_meas = _measure(
-                        _dpcl_recomposed, metric_key, verify_runs,
+                    _dpcl_seed_meas = _measure_logical_sql(
+                        _dpcl_recomposed, metric_key, verify_runs, policy=policy,
                         capture_rows=True, output=output, label="seed",
                         timeout_ms=candidate_timeout_ms,
                     )
-                    _dpcl_seed_equiv = _dpcl_seed_meas["row_count"] == baseline_rows
+                    _dpcl_seed_authorized = _correctness_authorized(baseline, _dpcl_seed_meas)
+                    if not _dpcl_seed_authorized:
+                        # The decompose seed is not a ranked L3 candidate, but it
+                        # is still a correctness authorization attempt. Persist the
+                        # exact canonical record once and keep the coupled baseline.
+                        _dpcl_seed_rejection_history.append(_incomplete_history(
+                            iteration=0, baseline=baseline, candidate=_dpcl_seed_meas,
+                            base_sql=original_sql, candidate_sql=_dpcl_recomposed,
+                            metric=_dpcl_seed_meas["median"],
+                            delta=_dpcl_seed_meas["median"] - baseline_metric,
+                        ))
+                    _dpcl_seed_equiv = (
+                        _dpcl_seed_authorized
+                        and _dpcl_seed_meas["row_count"] == baseline_rows
+                        and _results_equivalent(baseline_data, _dpcl_seed_meas["rows"])[0]
+                    )
                     if _dpcl_seed_equiv and _dpcl_seed_meas["median"] < baseline_metric:
                         _dpcl_seed_sql = _dpcl_recomposed
                         if output:
@@ -700,6 +914,16 @@ def _run_plan_cost_loop(
         except Exception as _dpcl_seed_exc:
             if output:
                 output.progress(f"  [seed] decompose failed in direct plan-cost loop (degraded): {_dpcl_seed_exc}")
+
+    def incomplete_history_fn(measured, ranked):
+        if _correctness_authorized(baseline, measured):
+            return None
+        return _incomplete_history(
+            iteration=ranked["iteration"], baseline=baseline, candidate=measured,
+            base_sql=original_sql, candidate_sql=ranked["sql"],
+            metric=measured["median"],
+            delta=measured["median"] - baseline_metric,
+        )
 
     result = _plan_cost_loop_core(
         provider=provider,
@@ -723,7 +947,13 @@ def _run_plan_cost_loop(
         output=_SafeOutput(output),
         candidate_timeout_ms=candidate_timeout_ms,
         empty_message=_DIRECT_EMPTY_MSG,
+        incomplete_history_fn=incomplete_history_fn,
     )
+
+    # Persist a seed authorization failure alongside core L3 history.  Inserting
+    # once here preserves it for every return shape without affecting ranking.
+    if _dpcl_seed_rejection_history:
+        result.history[:0] = _dpcl_seed_rejection_history
 
     # ── Three-case return reconstruction (§3.1 / §3.2 / §3.3) ──
 
@@ -774,11 +1004,16 @@ def _run_plan_cost_loop(
     # all absent from the 4-key history entries — must build 7-key dicts explicitly.
     winner_metric = result.winner_measure["median"]   # direct path: measure is a dict
     winner_history = [
-        {
+        # Seed/L3 authorization rejections already have a canonical persisted
+        # shape. Preserve it verbatim even when a later ranked candidate wins.
+        h if h.get("status") == "equivalence_unverified_incomplete_result" else {
             "iteration": h["iteration"],
             "status": "improved" if (h["candidate_sql"] == result.winner_sql) else h["status"],
-            "metric": winner_metric if (h["candidate_sql"] == result.winner_sql) else baseline_metric,
-            "delta": winner_metric - baseline_metric if (h["candidate_sql"] == result.winner_sql) else 0.0,
+            # Ranking-only entries were never measured.  Do not turn their
+            # absent measurements into baseline/zero facts during report-shape
+            # reconstruction; formatters intentionally render these as n/a.
+            "metric": winner_metric if (h["candidate_sql"] == result.winner_sql) else h.get("metric"),
+            "delta": winner_metric - baseline_metric if (h["candidate_sql"] == result.winner_sql) else h.get("delta"),
             "hypothesis": "(plan-cost-loop)",
             "base_sql": original_sql,
             "candidate_sql": h.get("candidate_sql"),
@@ -965,6 +1200,7 @@ def _run_optimization_loop(
     max_fallbacks: Optional[int] = None,
     explain_runner: Optional[Callable[[str], Optional[str]]] = None,
     diagnose_only: bool = False,
+    execution_policy: ExecutionPolicy | None = None,
 ) -> dict:
     """Run the optimization loop. Returns summary dict.
 
@@ -987,6 +1223,7 @@ def _run_optimization_loop(
 
     # v48: step-level trace — populated as the loop runs; spliced into report at end
     _step_trace: StepTrace = []
+    policy = execution_policy or ExecutionPolicy(None)
 
     # ── Static analysis (cheap; runs in both paths) ──
     try:
@@ -1004,8 +1241,8 @@ def _run_optimization_loop(
     if not diagnose_only:
         output.progress("  Measuring baseline...")
         try:
-            _baseline = _measure(
-                original_sql, metric_key, verify_runs, capture_rows=True,
+            _baseline = _measure_logical_sql(
+                original_sql, metric_key, verify_runs, policy=policy, capture_rows=True,
                 output=output, label="baseline",
             )
             _baseline_metrics = _baseline["metrics"] if _baseline else None
@@ -1141,6 +1378,7 @@ def _run_optimization_loop(
             explain_runner=explain_runner,
             max_fallbacks=fallbacks,
             candidate_timeout_ms=candidate_timeout_ms,
+            execution_policy=policy,
         )
 
     # STANDARD_LOOP fall-through — rule-gate + directions block + session setup + loop body.
@@ -1208,21 +1446,14 @@ def _run_optimization_loop(
         except Exception:
             pass
 
-    # Wrap dict-based baseline into MeasureResult so _seed_decompose_and_select
-    # operates uniformly across both paths.
+    # Convert dict-based direct measurements uniformly without treating missing
+    # provenance as a legacy-compatible complete capture.
     from genie.skills.mcp_trino.research import (
         MeasureResult as _MeasureResult,
         _produce_decompose_candidate,
         _seed_decompose_and_select,
     )
-    _dir_baseline_mr = _MeasureResult(
-        median_metric=baseline_metric,
-        samples=baseline.get("samples", [baseline_metric]),
-        row_count=baseline["row_count"],
-        rows=baseline_data,
-        columns=baseline.get("columns", []),
-        metrics=baseline["metrics"],
-    )
+    _dir_baseline_mr = _direct_measure_to_measure_result(baseline)
 
     def _dir_produce_fn(_sql: str):
         return _produce_decompose_candidate(
@@ -1233,18 +1464,17 @@ def _run_optimization_loop(
         )
 
     def _dir_measure_fn(_sql: str) -> "_MeasureResult":
-        _d = _measure(
-            _sql, metric_key, verify_runs, capture_rows=True,
+        _d = _measure_logical_sql(
+            _sql, metric_key, verify_runs, policy=policy, capture_rows=True,
             output=output, label="seed",
         )
-        return _MeasureResult(
-            median_metric=_d["median"],
-            samples=_d.get("samples", [_d["median"]]),
-            row_count=_d["row_count"],
-            rows=_d["rows"],
-            columns=_d.get("columns", []),
-            metrics=_d["metrics"],
-        )
+        return _direct_measure_to_measure_result(_d)
+
+    history = []
+
+    def _record_seed_rejection(record: dict) -> None:
+        """Persist the shared seed gate's complete canonical failure record."""
+        history.append({**record, "hypothesis": record["rejection_reason"]})
 
     # §3.1 NORMATIVE: best_sql and best_measure come from the SAME tuple arm.
     _dir_winner_sql, _dir_winner_mr, _ = _seed_decompose_and_select(
@@ -1254,11 +1484,11 @@ def _run_optimization_loop(
         flag_enabled=_v48_direct_seed_enabled,
         output=output,
         trace=_step_trace,
+        rejection_history=_record_seed_rejection,
     )
     best_sql = _dir_winner_sql
     best_metric = _dir_winner_mr.median_metric
     best_metrics_obj = _dir_winner_mr.metrics
-    history = []
     # v32 T1: per-iteration re-diagnosis cache keyed by SQL (mirrors the MCP
     # path). Seeded with the original block (already in the system prompt) so a
     # stable best_sql is never re-diagnosed.
@@ -1274,7 +1504,8 @@ def _run_optimization_loop(
         last_str = "N/A (first iteration)"
         if history:
             last = history[-1]
-            last_str = f"{last['status']} (metric={last['metric']:.1f}, delta={last['delta']:+.1f})"
+            last_metric, last_delta = _format_history_measurement(last)
+            last_str = f"{last['status']} (metric={last_metric}, delta={last_delta})"
 
         static_block = ""
         if iteration == 1 and static_report and static_report.findings:
@@ -1376,8 +1607,8 @@ def _run_optimization_loop(
 
         # Guard 2: Execute and measure
         try:
-            candidate = _measure(
-                candidate_sql, metric_key, verify_runs, capture_rows=True,
+            candidate = _measure_logical_sql(
+                candidate_sql, metric_key, verify_runs, policy=policy, capture_rows=True,
                 output=output, label=f"iter {iteration} candidate",
                 timeout_ms=candidate_timeout_ms,
             )
@@ -1408,7 +1639,18 @@ def _run_optimization_loop(
         candidate_data = candidate["rows"]
         delta = candidate_metric - best_metric
 
-        # Guard 3: Result equivalence (not just row count — full data comparison)
+        # Guard 3: only complete direct captures authorize semantic comparison.
+        if not _correctness_authorized(baseline, candidate):
+            reason = _incomplete_rejection_reason(baseline, candidate)
+            history.append({
+                **_incomplete_history(
+                    iteration=iteration, baseline=baseline, candidate=candidate,
+                    base_sql=iter_base_sql, candidate_sql=candidate_sql,
+                    metric=candidate_metric, delta=delta,
+                ),
+                "hypothesis": hypothesis,
+            })
+            continue
         equiv, equiv_reason = _results_equivalent(baseline_data, candidate_data)
         if not equiv:
             output.progress(
@@ -1554,9 +1796,70 @@ def _iteration_diff(base_sql: str, candidate_sql: str) -> str:
     return "".join(diff).rstrip()
 
 
+def _format_history_measurement(history_entry: dict) -> tuple[str, str]:
+    """Render optional history measurement fields without upgrading compact records.
+
+    Shared plan-cost ranking records intentionally contain only ranking facts
+    (including ``plan_cost``), while canonical incomplete-result records retain
+    their complete persisted shape.  A direct no-winner result can contain both.
+    Report and terminal renderers therefore display unavailable measured values
+    as ``n/a`` rather than assuming every ranking record was measured.
+    """
+    def format_value(value: object, spec: str) -> str:
+        if isinstance(value, bool) or not isinstance(value, (int, float)):
+            return "n/a"
+        return format(value, spec)
+
+    return (
+        format_value(history_entry.get("metric"), ".1f"),
+        format_value(history_entry.get("delta"), "+.1f"),
+    )
+
+
+def _render_terminal_history(output, history: list[dict]) -> None:
+    """Render all direct history shapes safely in the terminal summary."""
+    for entry in history:
+        icon = "+" if entry["status"] == "improved" else "-" if entry["status"] == "worse" else "!"
+        metric, delta = _format_history_measurement(entry)
+        output.print(
+            f"    [{icon}] iter {entry['iteration']}: {entry['status']:<15s} "
+            f"metric={metric} delta={delta}"
+        )
+
+
+def _report_correctness_status(history: list[dict]) -> tuple[bool, str | None]:
+    """Return whether this report may make a full-equivalence claim.
+
+    A persisted incomplete-result rejection is authoritative evidence that the
+    correctness gate was not authorized for this run.  Keep report rendering
+    fail-closed: absent that evidence the existing direct completed-run contract
+    remains the verified path, while any such rejection suppresses semantic and
+    full row-level equivalence language.
+    """
+    for entry in history:
+        if entry.get("status") == "equivalence_unverified_incomplete_result":
+            return False, entry.get("rejection_reason", "mixed_incomplete_result")
+    return True, None
+
+
 def _generate_report(result: dict, metric_key: str, model: str, verify_runs: int) -> str:
     """Generate a markdown report — iteration-centric, single Best SQL block."""
     from datetime import datetime
+
+    correctness_authorized, rejection_reason = _report_correctness_status(result["history"])
+    if correctness_authorized:
+        validation_line = "**Result validation:** full row-level equivalence check"
+        row_count_line = f"| Row count | {result['baseline_rows']} (preserved) |"
+    else:
+        validation_line = (
+            "**Result validation:** unverified/incomplete result — full row-level "
+            f"equivalence and semantic preservation were not authorized "
+            f"(rejection reason: `{rejection_reason}`)"
+        )
+        row_count_line = (
+            f"| Row count | {result['baseline_rows']} "
+            "(observed baseline; preservation unverified) |"
+        )
 
     lines = [
         "# Trino Query Optimization Report",
@@ -1565,7 +1868,7 @@ def _generate_report(result: dict, metric_key: str, model: str, verify_runs: int
         f"**Model:** {model}",
         f"**Metric:** {metric_key} (lower is better)",
         f"**Verify runs:** {verify_runs} (median)",
-        f"**Result validation:** full row-level equivalence check",
+        validation_line,
         "",
         "## Summary",
         "",
@@ -1575,7 +1878,7 @@ def _generate_report(result: dict, metric_key: str, model: str, verify_runs: int
         f"| Best | {result['best_metric']:.1f} |",
         f"| Improvement | {result['total_improvement']:+.1f} ({result['improvement_pct']:+.1f}%) |",
         f"| Iterations | {result['iterations']} ({result['kept']} kept) |",
-        f"| Row count | {result['baseline_rows']} (preserved) |",
+        row_count_line,
         "",
         "## Iteration history",
         "",
@@ -1583,9 +1886,8 @@ def _generate_report(result: dict, metric_key: str, model: str, verify_runs: int
         "|---|--------|--------|-------|",
     ]
     for h in result["history"]:
-        lines.append(
-            f"| {h['iteration']} | {h['status']} | {h['metric']:.1f} | {h['delta']:+.1f} |"
-        )
+        metric, delta = _format_history_measurement(h)
+        lines.append(f"| {h['iteration']} | {h['status']} | {metric} | {delta} |")
 
     lines.append("")
     lines.append("## Iterations")
@@ -1593,10 +1895,11 @@ def _generate_report(result: dict, metric_key: str, model: str, verify_runs: int
     for h in result["history"]:
         lines.append(f"### Iteration {h['iteration']} — {h['status']}")
         lines.append("")
-        lines.append(f"**Hypothesis:** {h['hypothesis']}")
+        lines.append(f"**Hypothesis:** {h.get('hypothesis', h.get('rejection_reason', 'n/a'))}")
         lines.append("")
+        metric, delta = _format_history_measurement(h)
         lines.append(
-            f"**Metric:** {h['metric']:.1f} (delta {h['delta']:+.1f}) — "
+            f"**Metric:** {metric} (delta {delta}) — "
             f"{_VERDICT.get(h['status'], h['status'])}"
         )
         lines.append("")
@@ -1693,12 +1996,15 @@ def run_trino_research(
 
     from genie.skills.mcp_trino.write_analysis import classify_write_operation, run_write_analysis_only
 
+    # Validate as soon as public SQL exists, before advisory/provider/EXPLAIN work.
+    validated_safe_limit = validate_safe_limit(safe_limit)
+
     if classify_write_operation(sql) is not None:
         run_write_analysis_only(
             provider, cfg, model, reasoning, sql, output, build_prompt,
             sql_source=sql_file or ("sql_text" if sql_text else "stdin"),
             route="direct",
-            safe_limit=safe_limit,
+            safe_limit=validated_safe_limit,
         )
         return
 
@@ -1746,6 +2052,7 @@ def run_trino_research(
 
     # ── EXPLAIN (FORMAT JSON) runner — zero query cost, feeds plan diagnosis ──
     def _direct_explain_runner(s: str) -> Optional[str]:
+        _assert_executable_read_only(s)
         try:
             _, _, rows = _execute_sql(f"EXPLAIN (FORMAT JSON) {s}", capture_rows=True)
         except Exception:
@@ -1755,6 +2062,17 @@ def run_trino_research(
         first = rows[0]
         cell = first[0] if isinstance(first, (list, tuple)) and first else first
         return cell if isinstance(cell, str) else None
+
+    # Entry safety preflight is deliberately evaluated against original SQL.
+    from genie.skills.mcp_trino.preflight import run_preflight
+    preflight = run_preflight(sql, _direct_explain_runner)
+    if not preflight.ok:
+        output.error(f"  Preflight rejected: {preflight.reason}")
+        return
+    # Policy is created only after accepted original-SQL entry preflight. Existing
+    # loop call sites retain logical SQL; adapter boundaries can derive execution
+    # SQL independently through _measure_logical_sql.
+    _policy = ExecutionPolicy(validated_safe_limit)
 
     # ── Run ──
     result = _run_optimization_loop(
@@ -1772,6 +2090,7 @@ def run_trino_research(
         max_fallbacks=max_fallbacks,
         explain_runner=_direct_explain_runner,
         diagnose_only=diagnose_only,
+        execution_policy=_policy,
     )
 
     # ── Print summary ──
@@ -1813,14 +2132,19 @@ def run_trino_research(
     output.print(f"  Best:        {result['best_metric']:.1f}")
     output.print(f"  Improvement: {result['total_improvement']:+.1f} ({result['improvement_pct']:+.1f}%)")
     output.print(f"  Iterations:  {result['iterations']} ({result['kept']} kept)")
-    output.print(f"  Row count:   {result['baseline_rows']} (preserved)")
+    correctness_authorized, rejection_reason = _report_correctness_status(result["history"])
+    if correctness_authorized:
+        output.print(f"  Row count:   {result['baseline_rows']} (preserved)")
+    else:
+        output.print(
+            f"  Row count:   {result['baseline_rows']} "
+            "(observed baseline; preservation unverified/incomplete result)"
+        )
+        output.print(f"  Result validation: unverified/incomplete result ({rejection_reason})")
     output.print("")
 
     # Iteration history
-    for h in result["history"]:
-        icon = "+" if h["status"] == "improved" else "-" if h["status"] == "worse" else "!"
-        output.print(f"    [{icon}] iter {h['iteration']}: {h['status']:<15s} "
-                     f"metric={h['metric']:.1f} delta={h['delta']:+.1f}")
+    _render_terminal_history(output, result["history"])
 
     # Final SQL — full body lives in the report; terminal stays scannable.
     if result["best_sql"] == result["original_sql"]:

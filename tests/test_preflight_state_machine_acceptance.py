@@ -555,10 +555,10 @@ class TestS2UserSessionPropertyError:
         from genie.skills.trino_query import research as direct_research
 
         exc = RuntimeError(_SESSION_PROP_TEXT)
-        with patch.object(direct_research, "_measure", side_effect=exc):
+        with patch.object(direct_research, "_measure_logical_sql", side_effect=exc):
             result = direct_research._run_optimization_loop(
                 provider=None, model="m", reasoning="disable",
-                original_sql="SET SESSION query_max_execution_time = '5m'",
+                original_sql="SELECT 1",
                 metric_key="cpu_time_ms", max_iterations=5, verify_runs=1,
                 output=MagicMock(), build_prompt=lambda *a, **k: "",
             )

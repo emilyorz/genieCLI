@@ -17,6 +17,7 @@ from genie.skills.mcp_trino.preflight import (
     estimate_from_explain,
     make_query_max_run_time_sql,
     plan_cost,
+    validate_safe_limit,
     run_preflight,
 )
 
@@ -265,6 +266,19 @@ class TestMakeQueryMaxRunTimeSql:
         assert sql == "SET SESSION query_max_run_time = '7200000ms'"
 
 
+class TestValidateSafeLimit:
+    def test_accepts_none_and_positive_non_bool_integer(self):
+        assert validate_safe_limit(None) is None
+        assert validate_safe_limit(1) == 1
+        assert validate_safe_limit(42) == 42
+
+    @pytest.mark.parametrize("value", [True, False, 0, -1, 1.5, "1", object()])
+    def test_rejects_noncanonical_values_with_exact_message(self, value):
+        with pytest.raises(ValueError) as exc_info:
+            validate_safe_limit(value)
+        assert str(exc_info.value) == "safe_limit must be a positive integer or None"
+
+
 class TestApplySafeLimit:
     def test_wraps_simple_select(self):
         wrapped = apply_safe_limit("SELECT * FROM t", 100)
@@ -275,8 +289,12 @@ class TestApplySafeLimit:
         wrapped = apply_safe_limit("SELECT 1;", 10)
         assert ";" not in wrapped.split("LIMIT")[0]
 
-    def test_zero_limit_returns_original(self):
-        assert apply_safe_limit("SELECT 1", 0) == "SELECT 1"
+    def test_zero_limit_is_rejected(self):
+        with pytest.raises(
+            ValueError,
+            match="safe_limit must be a positive integer or None",
+        ):
+            apply_safe_limit("SELECT 1", 0)
 
 
 class TestCombineCost:

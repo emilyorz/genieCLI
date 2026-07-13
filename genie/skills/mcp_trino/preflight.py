@@ -44,6 +44,42 @@ class PreflightReport:
     is_read_only: bool = True
 
 
+def validate_safe_limit(value: object) -> int | None:
+    """Accept None or a positive non-bool int; reject every other value."""
+    if value is None:
+        return None
+    if isinstance(value, bool) or not isinstance(value, int) or value <= 0:
+        raise ValueError("safe_limit must be a positive integer or None")
+    return value
+
+
+@dataclass(frozen=True)
+class ExecutionPolicy:
+    """Validated per-invocation execution policy for logical SQL."""
+    safe_limit: int | None
+
+    def __post_init__(self) -> None:
+        # Keep this type safe even where a caller constructs it directly.
+        object.__setattr__(self, "safe_limit", validate_safe_limit(self.safe_limit))
+
+
+class ReadOnlyViolationError(ValueError):
+    """Raised when executable logical SQL does not pass the read-only gate."""
+
+
+def _assert_executable_read_only(logical_sql: str) -> None:
+    ok, reason = check_read_only(logical_sql)
+    if not ok:
+        raise ReadOnlyViolationError(reason)
+
+
+def _execution_sql_for(logical_sql: str, policy: ExecutionPolicy) -> str:
+    """Derive one execution statement; never mutate the logical SQL."""
+    if policy.safe_limit is None:
+        return logical_sql
+    return apply_safe_limit(logical_sql, policy.safe_limit)
+
+
 def check_read_only(sql: str) -> tuple[bool, str]:
     """Verify the SQL is read-only. Returns (is_ok, reason)."""
     if not sql or not sql.strip():
@@ -448,6 +484,7 @@ def _plan_cost_loop_core(
     output: "_SafeOutput",              # always a _SafeOutput; core calls methods unconditionally
     candidate_timeout_ms: Optional[float] = None,
     empty_message: Optional[str] = None,  # overrides core empty-branch progress line; None uses MCP default
+    incomplete_history_fn=None,          # (measured, ranked) -> canonical history dict | None
 ) -> "_PlanCostCoreResult":
     """Shared iteration core for both MCP and direct plan-cost loops.
 
@@ -537,6 +574,9 @@ def _plan_cost_loop_core(
             continue
 
         try:
+            # Lint is not an authorization mechanism: candidate EXPLAIN is
+            # permitted only after the same deny-by-default logical-SQL gate.
+            _assert_executable_read_only(candidate_sql)
             cand_rows_est, cand_bytes_est, cand_plan = plan_cost(candidate_sql, explain_runner)
         except Exception as exc:
             output.progress(f"  [SKIP] EXPLAIN failed: {exc}")
@@ -652,6 +692,13 @@ def _plan_cost_loop_core(
         if not equiv:
             output.progress(f"  [verify] L3 row-equiv FAIL — {reason}")
             verify_log.append({"iter": ranked["iteration"], "result": "row_equiv_fail", "reason": reason})
+            # The adapters own measurement provenance, but the core owns this
+            # verification phase. Persist its fail-closed rejection in canonical
+            # history rather than losing it in verify_log.
+            if incomplete_history_fn is not None:
+                incomplete = incomplete_history_fn(measured, ranked)
+                if incomplete is not None:
+                    history.append(incomplete)
             fallbacks_used += 1
             continue
 
@@ -709,9 +756,11 @@ def make_candidate_timeout_ms(baseline_wall_ms: float) -> int:
 
 
 def apply_safe_limit(sql: str, limit: int) -> str:
-    """Wrap SQL in SELECT * FROM (<orig>) LIMIT N. Caller's responsibility."""
-    if limit <= 0:
-        return sql
+    """Wrap logical SQL using an already-validated positive non-bool limit."""
+    # This is intentionally not a second public validation API. Callers must
+    # establish the policy with validate_safe_limit before reaching this helper.
+    if isinstance(limit, bool) or not isinstance(limit, int) or limit <= 0:
+        raise ValueError("safe_limit must be a positive integer or None")
     stripped = sql.strip().rstrip(";").strip()
     return f"SELECT * FROM ({stripped}) AS _safe_wrapped LIMIT {limit}"
 

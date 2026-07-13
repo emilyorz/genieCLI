@@ -134,6 +134,36 @@ def _call_core(
     )
 
 
+# ── v62 fail-closed plan-cost candidate boundary ─────────────────────────────
+
+
+import pytest
+
+
+@pytest.mark.parametrize("adapter", ["direct", "mcp"])
+def test_plan_cost_core_rejects_non_read_only_candidate_before_explain_or_measure(adapter):
+    """Both adapter callers get the shared fail-closed candidate EXPLAIN boundary.
+
+    The core is shared, while each production adapter injects its own
+    policy-enforcing direct executor or MCP tool measurement callable.  Neither
+    injected callable nor the EXPLAIN runner may see a generated write SQL.
+    """
+    explain_runner = MagicMock(side_effect=AssertionError("EXPLAIN must not run"))
+    measure_fn = MagicMock(side_effect=AssertionError("executor/MCP tool must not run"))
+
+    result = _call_core(
+        provider=_make_provider("```sql\nINSERT INTO audit_log SELECT * FROM source\n```"),
+        explain_runner=explain_runner,
+        measure_fn=measure_fn,
+    )
+
+    assert result.winner_sql is None
+    assert [entry["status"] for entry in result.history] == ["explain_failed"]
+    assert result.history[0]["candidate_sql"].startswith("INSERT INTO")
+    explain_runner.assert_not_called()
+    measure_fn.assert_not_called()
+
+
 # ── T-S1-SAFE: _SafeOutput(None) is no-op ────────────────────────────────────
 
 def test_safe_output_none_is_noop():

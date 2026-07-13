@@ -35,6 +35,212 @@ from genie.skills.mcp_trino.research import (
 )
 
 
+def test_mcp_plan_cost_decompose_seed_authorization_failure_persists_one_canonical_record(monkeypatch):
+    """MCP plan-cost seed envelope provenance cannot replace baseline."""
+    from genie.skills.mcp_trino.research import _run_mcp_plan_cost_loop
+
+    monkeypatch.setenv("GENIE_V48_SEED_DECOMPOSE", "1")
+    sql = "SELECT id FROM t"
+    seed_sql = "SELECT id FROM t WHERE id > 0"
+    baseline_metrics = RunMetrics(query_time_ms=80_000, cpu_time_ms=80_000, wall_time_ms=80_000)
+    baseline = MeasureResult(
+        median_metric=80_000.0, samples=[80_000.0], row_count=1,
+        rows=[{"id": 1}], columns=["id"], metrics=baseline_metrics,
+        capture_status="complete", completeness="unverified_received_envelope",
+    )
+    seed = MeasureResult(
+        median_metric=10_000.0, samples=[10_000.0], row_count=1,
+        rows=[{"id": 1}], columns=["id"],
+        metrics=RunMetrics(query_time_ms=10_000, cpu_time_ms=10_000, wall_time_ms=10_000),
+        capture_status="complete", completeness="unverified_received_envelope",
+    )
+    client = MagicMock()
+    client.config = McpConfig(url="http://mcp.test/mcp", enabled=True, timeout=1)
+    plan = json.dumps({
+        "name": "TableScan[hive.default.t]", "descriptor": {"table": "hive.default.t"},
+        "estimates": [{"outputRowCount": 100, "outputSizeInBytes": 10}], "children": [],
+    })
+
+    with patch("genie.skills.mcp_trino.write_analysis._make_advisory_llm_fn", return_value=MagicMock()), \
+         patch("genie.skills.mcp_trino.research._produce_decompose_candidate",
+               return_value=(seed_sql, [], [], None)), \
+         patch("genie.skills.mcp_trino.research._measure_mcp", return_value=seed):
+        report = _run_mcp_plan_cost_loop(
+            client=client, provider=MagicMock(), model="m", reasoning="default",
+            original_sql=sql, metric_key="cpu_time_ms", max_iterations=0,
+            verify_runs=1, output=_output_mock(), build_prompt=lambda *a, **kw: "",
+            baseline=baseline, static_report=None, explain_runner=lambda _: plan,
+            max_fallbacks=3,
+        )
+
+    rejections = [it for it in report.iterations
+                  if it.status == "equivalence_unverified_incomplete_result"]
+    assert report.enhanced_sql == sql
+    assert report.enhanced_metrics is baseline.metrics
+    assert len(rejections) == 1
+    rejection = rejections[0]
+    assert {
+        "iteration": rejection.iteration, "status": rejection.status,
+        "rejection_reason": rejection.rejection_reason,
+        "metric": rejection.metric_value, "delta": rejection.delta,
+        "base_sql": rejection.base_sql, "candidate_sql": rejection.candidate_sql,
+        "baseline_capture_status": rejection.baseline_capture_status,
+        "candidate_capture_status": rejection.candidate_capture_status,
+        "baseline_completeness": rejection.baseline_completeness,
+        "candidate_completeness": rejection.candidate_completeness,
+    } == {
+        "iteration": 0, "status": "equivalence_unverified_incomplete_result",
+        "rejection_reason": "both_upstream_completeness_unverified",
+        "metric": 10_000.0, "delta": -70_000.0,
+        "base_sql": sql, "candidate_sql": seed_sql,
+        "baseline_capture_status": "complete", "candidate_capture_status": "complete",
+        "baseline_completeness": "unverified_received_envelope",
+        "candidate_completeness": "unverified_received_envelope",
+    }
+
+
+def test_mcp_plan_cost_incomplete_failure_persists_full_history_and_keeps_baseline(monkeypatch):
+    """MCP envelopes remain unverified, even when their local rows match."""
+    from genie.skills.mcp_trino.research import _run_mcp_plan_cost_loop
+
+    monkeypatch.setenv("GENIE_V48_SEED_DECOMPOSE", "0")
+    sql = "SELECT id FROM t"
+    candidate_sql = "SELECT id FROM t WHERE id > 0"
+    metrics = RunMetrics(query_time_ms=80_000, cpu_time_ms=80_000, wall_time_ms=80_000)
+    baseline = MeasureResult(
+        median_metric=80_000.0, samples=[80_000.0], row_count=1,
+        rows=[{"id": 1}], columns=["id"], metrics=metrics,
+        capture_status="complete", completeness="unverified_received_envelope",
+    )
+    candidate = MeasureResult(
+        median_metric=10_000.0, samples=[10_000.0], row_count=1,
+        rows=[{"id": 1}], columns=["id"],
+        metrics=RunMetrics(query_time_ms=10_000, cpu_time_ms=10_000, wall_time_ms=10_000),
+        capture_status="complete", completeness="unverified_received_envelope",
+    )
+    client = MagicMock()
+    client.config = McpConfig(url="http://mcp.test/mcp", enabled=True, timeout=1)
+    plan = json.dumps({
+        "name": "TableScan[hive.default.t]", "descriptor": {"table": "hive.default.t"},
+        "estimates": [{"outputRowCount": 100, "outputSizeInBytes": 10}], "children": [],
+    })
+    candidate_plan = json.dumps({
+        "name": "TableScan[hive.default.t]", "descriptor": {"table": "hive.default.t"},
+        "estimates": [{"outputRowCount": 10, "outputSizeInBytes": 10}], "children": [],
+    })
+    provider = MagicMock()
+    provider.complete_text.return_value = f"```sql\n{candidate_sql}\n```"
+    with patch("genie.skills.mcp_trino.research._measure_mcp", return_value=candidate):
+        report = _run_mcp_plan_cost_loop(
+            client=client, provider=provider, model="m", reasoning="default",
+            original_sql=sql, metric_key="cpu_time_ms", max_iterations=1,
+            verify_runs=1, output=_output_mock(), build_prompt=lambda *a, **kw: "",
+            baseline=baseline, static_report=None,
+            explain_runner=lambda statement: plan if statement == sql else candidate_plan,
+            max_fallbacks=3,
+        )
+
+    assert report.enhanced_sql == sql
+    assert report.data_consistent is False
+    rejection = next(it for it in report.iterations if it.status == "equivalence_unverified_incomplete_result")
+    assert {
+        "iteration": rejection.iteration, "status": rejection.status,
+        "rejection_reason": rejection.rejection_reason,
+        "metric": rejection.metric_value, "delta": rejection.delta,
+        "base_sql": rejection.base_sql, "candidate_sql": rejection.candidate_sql,
+        "baseline_capture_status": rejection.baseline_capture_status,
+        "candidate_capture_status": rejection.candidate_capture_status,
+        "baseline_completeness": rejection.baseline_completeness,
+        "candidate_completeness": rejection.candidate_completeness,
+    } == {
+        "iteration": 1, "status": "equivalence_unverified_incomplete_result",
+        "rejection_reason": "both_upstream_completeness_unverified",
+        "metric": 10_000.0, "delta": -70_000.0,
+        "base_sql": sql, "candidate_sql": candidate_sql,
+        "baseline_capture_status": "complete", "candidate_capture_status": "complete",
+        "baseline_completeness": "unverified_received_envelope",
+        "candidate_completeness": "unverified_received_envelope",
+    }
+
+
+def test_mcp_plan_cost_mixed_ranking_and_rejection_history_keeps_measurement_provenance(monkeypatch):
+    """Compact ranking entries render n/a while canonical rejections keep facts."""
+    from genie.skills.mcp_trino.research import _run_mcp_plan_cost_loop
+
+    monkeypatch.setenv("GENIE_V48_SEED_DECOMPOSE", "0")
+    sql = "SELECT id FROM t"
+    candidate_sql = "SELECT id FROM t WHERE id > 0"
+    baseline = MeasureResult(
+        median_metric=80_000.0, samples=[80_000.0], row_count=1,
+        rows=[{"id": 1}], columns=["id"],
+        metrics=RunMetrics(query_time_ms=80_000, cpu_time_ms=80_000, wall_time_ms=80_000),
+        capture_status="complete", completeness="unverified_received_envelope",
+    )
+    candidate = MeasureResult(
+        median_metric=10_000.0, samples=[10_000.0], row_count=1,
+        rows=[{"id": 1}], columns=["id"],
+        metrics=RunMetrics(query_time_ms=10_000, cpu_time_ms=10_000, wall_time_ms=10_000),
+        capture_status="complete", completeness="unverified_received_envelope",
+    )
+    client = MagicMock()
+    client.config = McpConfig(url="http://mcp.test/mcp", enabled=True, timeout=1)
+    plan = json.dumps({
+        "name": "TableScan[hive.default.t]", "descriptor": {"table": "hive.default.t"},
+        "estimates": [{"outputRowCount": 100, "outputSizeInBytes": 10}], "children": [],
+    })
+    candidate_plan = json.dumps({
+        "name": "TableScan[hive.default.t]", "descriptor": {"table": "hive.default.t"},
+        "estimates": [{"outputRowCount": 10, "outputSizeInBytes": 10}], "children": [],
+    })
+    provider = MagicMock()
+    provider.complete_text.return_value = f"```sql\n{candidate_sql}\n```"
+
+    with patch("genie.skills.mcp_trino.research._measure_mcp", return_value=candidate):
+        report = _run_mcp_plan_cost_loop(
+            client=client, provider=provider, model="m", reasoning="default",
+            original_sql=sql, metric_key="cpu_time_ms", max_iterations=1,
+            verify_runs=1, output=_output_mock(), build_prompt=lambda *a, **kw: "",
+            baseline=baseline, static_report=None,
+            explain_runner=lambda statement: plan if statement == sql else candidate_plan,
+            max_fallbacks=3,
+        )
+
+    assert [(it.status, it.metric_value, it.delta) for it in report.iterations] == [
+        ("plan_cost_better", None, None),
+        ("equivalence_unverified_incomplete_result", 10_000.0, -70_000.0),
+    ]
+    rejection = report.iterations[1]
+    assert rejection.rejection_reason == "both_upstream_completeness_unverified"
+    assert rejection.base_sql == sql
+    assert rejection.candidate_sql == candidate_sql
+    assert rejection.baseline_capture_status == rejection.candidate_capture_status == "complete"
+    assert (
+        rejection.baseline_completeness == rejection.candidate_completeness
+        == "unverified_received_envelope"
+    )
+    markdown = generate_report(report)
+    assert "| 1 | plan_cost_better | n/a | n/a |" in markdown
+    assert "| 1 | equivalence_unverified_incomplete_result | 10000.0 | -70000.0 |" in markdown
+
+
+def test_mcp_measurement_capture_is_always_unverified_envelope(monkeypatch):
+    """A locally complete MCP envelope never becomes verified Trino equivalence."""
+    from genie.skills.mcp_trino.research import _measure_mcp, _incomplete_rejection_reason
+
+    monkeypatch.setattr(
+        "genie.skills.mcp_trino.research._execute_via_mcp",
+        lambda *args, **kwargs: {
+            "error": None, "metrics": RunMetrics(query_time_ms=1, cpu_time_ms=1, peak_memory_bytes=1),
+            "row_count": 1, "rows": [{"id": 1}], "columns": ["id"],
+        },
+    )
+    result = _measure_mcp(MagicMock(), "SELECT 1", "query_time_ms", 1, capture_rows=True)
+    assert result.row_count == result.observed_row_count == 1
+    assert result.capture_status == "complete"
+    assert result.completeness == "unverified_received_envelope"
+    assert _incomplete_rejection_reason(result, result) == "both_upstream_completeness_unverified"
+
+
 # ── RunMetrics ───────────────────────────────────────────────────────────────
 
 
@@ -56,6 +262,82 @@ def _output_mock():
 
 def _read_write_analysis_report(tmp_path):
     return next((tmp_path / "report").glob("trino-research-write-analysis-*.md")).read_text()
+
+
+@pytest.mark.parametrize("sql", ["SELECT * FROM source", "INSERT INTO audit_log SELECT * FROM source"])
+def test_mcp_public_entry_rejects_invalid_safe_limit_before_advisory_provider_explain_baseline_or_loop(
+    monkeypatch, sql
+):
+    """Supplied SQL validates policy before every MCP research/work surface."""
+    output = _output_mock()
+    provider = MagicMock()
+    advisory = MagicMock(side_effect=AssertionError("write advisory must not run"))
+    monkeypatch.setattr("genie.skills.mcp_trino.research.run_write_analysis_only", advisory)
+    monkeypatch.setattr(
+        "genie.skills.mcp_trino.research.load_mcp_config",
+        MagicMock(side_effect=AssertionError("MCP config must not load")),
+    )
+    monkeypatch.setattr(
+        "genie.skills.mcp_trino.research.McpClient",
+        MagicMock(side_effect=AssertionError("MCP client must not construct")),
+    )
+    monkeypatch.setattr(
+        "genie.skills.mcp_trino.preflight.run_preflight",
+        MagicMock(side_effect=AssertionError("EXPLAIN must not run")),
+    )
+    monkeypatch.setattr(
+        "genie.skills.mcp_trino.research.run_mcp_enhancement",
+        MagicMock(side_effect=AssertionError("baseline/loop must not run")),
+    )
+
+    with pytest.raises(ValueError, match="safe_limit must be a positive integer or None"):
+        run_trino_research_via_mcp(
+            provider, {}, "test-model", "default", output, lambda *_: "",
+            sql_text=sql, safe_limit=0, metric="query_time_ms", iterations=1, runs=1,
+        )
+
+    advisory.assert_not_called()
+    provider.complete_text.assert_not_called()
+
+
+def test_mcp_plan_cost_generated_write_never_reaches_tool_or_candidate_explain(monkeypatch):
+    """MCP adapter keeps unsafe generated SQL outside tool and EXPLAIN calls."""
+    from genie.skills.mcp_trino.research import _run_mcp_plan_cost_loop
+
+    monkeypatch.setenv("GENIE_V48_SEED_DECOMPOSE", "0")
+    original_sql = "SELECT id FROM source"
+    candidate_sql = "DELETE FROM source WHERE id = 1"
+    client = MagicMock()
+    client.config = McpConfig(url="http://mcp.test/mcp", enabled=True, timeout=1)
+    baseline = MeasureResult(
+        median_metric=1.0, samples=[1.0], row_count=1, rows=[{"id": 1}],
+        columns=["id"], metrics=RunMetrics(query_time_ms=1.0, wall_time_ms=1.0),
+        capture_status="complete", completeness="unverified_received_envelope",
+    )
+    explained = []
+
+    def explain_runner(sql):
+        explained.append(sql)
+        if sql != original_sql:
+            raise AssertionError("unsafe candidate reached EXPLAIN")
+        return json.dumps({
+            "name": "TableScan[hive.default.source]",
+            "estimates": [{"outputRowCount": 1, "outputSizeInBytes": 1}],
+            "children": [],
+        })
+
+    with patch("genie.skills.mcp_trino.research._measure_mcp", side_effect=AssertionError("MCP tool must not run")):
+        report = _run_mcp_plan_cost_loop(
+            client=client,
+            provider=MagicMock(complete_text=MagicMock(return_value=f"```sql\n{candidate_sql}\n```")),
+            model="test-model", reasoning="default", original_sql=original_sql,
+            metric_key="query_time_ms", max_iterations=1, verify_runs=1,
+            output=_output_mock(), build_prompt=lambda *_: "", baseline=baseline,
+            static_report=None, explain_runner=explain_runner, max_fallbacks=1,
+        )
+
+    assert report.enhanced_sql == original_sql
+    assert candidate_sql not in explained
 
 
 def test_mcp_write_analysis_skips_preflight_safe_limit_enhancement(tmp_path, monkeypatch):
@@ -764,6 +1046,24 @@ class TestGenerateReport:
         assert "query_time_ms" in md
         assert "exact match" in md
         assert "YES" in md  # data_consistent
+
+    def test_report_unverified_envelope_uses_diagnostic_text_contract(self):
+        report = self._make_report()
+        report.data_consistent = False
+        report.data_consistency_reason = "both_upstream_completeness_unverified"
+
+        md = generate_report(report)
+
+        assert "unverified/incomplete result" in md
+        assert "`both_upstream_completeness_unverified`" in md
+        assert (
+            "First 10 rows of the received query-output envelope, shown for "
+            "diagnostic inspection only; semantic preservation is unverified."
+        ) in md
+        assert "| Data Consistent | NO |" in md
+        assert "full row-level equivalence check verified" not in md
+        assert "full row-level equivalence was verified separately." not in md
+        assert "semantic preservation was verified" not in md
 
     def test_report_table_structure_is_fixed(self):
         """Verify that the report uses consistent table headers."""

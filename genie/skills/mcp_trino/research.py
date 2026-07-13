@@ -27,7 +27,10 @@ from rich.markup import escape
 
 from genie.core.sql_extraction import extract_sql_from_reply
 from .client import McpClient, McpConfig, McpError, load_mcp_config
-from .preflight import CandidateTimeoutError, make_candidate_timeout_ms
+from .preflight import (
+    CandidateTimeoutError, ExecutionPolicy, _assert_executable_read_only,
+    _execution_sql_for, make_candidate_timeout_ms, validate_safe_limit,
+)
 from .write_analysis import classify_write_operation, run_write_analysis_only
 
 # sqlglot is already a project dependency — used for table name extraction
@@ -56,13 +59,26 @@ class RunMetrics:
 
 @dataclass
 class MeasureResult:
-    """Aggregated result from multiple runs."""
+    """Aggregated result from multiple runs and local capture provenance."""
     median_metric: float
     samples: list[float]
     row_count: int
-    rows: list  # actual result rows for equivalence check
+    rows: list  # received MCP envelope rows, possibly locally retained prefix
     columns: list[str]
     metrics: RunMetrics
+    observed_row_count: int | None = None
+    captured_row_count: int = 0
+    max_capture_rows: int = 100_000
+    capture_status: str = "not_captured"
+    completeness: str = "not_captured"
+
+    def __post_init__(self) -> None:
+        if self.observed_row_count is None:
+            self.observed_row_count = self.row_count
+        # row_count remains the compatibility alias.
+        self.row_count = self.observed_row_count
+        if self.captured_row_count == 0 and self.rows:
+            self.captured_row_count = len(self.rows)
 
 
 @dataclass
@@ -70,10 +86,18 @@ class IterationRecord:
     """Record of a single optimization iteration."""
     iteration: int
     status: str  # improved | worse | lint_failed | exec_failed | semantic_drift | no_sql
-    metric_value: float
-    delta: float
+    # Compact plan-cost ranking records have no execution measurement.
+    metric_value: float | None
+    delta: float | None
     hypothesis: str
     sql: str = ""
+    rejection_reason: str | None = None
+    base_sql: str | None = None
+    candidate_sql: str | None = None
+    baseline_capture_status: str | None = None
+    candidate_capture_status: str | None = None
+    baseline_completeness: str | None = None
+    candidate_completeness: str | None = None
 
 
 @dataclass
@@ -578,6 +602,7 @@ def _fetch_explain_analyze(
     (e.g. MCP server doesn't support EXPLAIN ANALYZE, or the query errors out).
     This is the fallback-safe path — never raises.
     """
+    _assert_executable_read_only(sql)
     explain_sql = f"EXPLAIN ANALYZE {sql}"
     try:
         result = _execute_via_mcp(client, explain_sql, timeout_ms=timeout_ms, label=label)
@@ -819,6 +844,7 @@ def _build_mcp_explain_runner(client: McpClient):
     so callers can treat plan-cost as best-effort.
     """
     def _runner(s: str) -> Optional[str]:
+        _assert_executable_read_only(s)
         try:
             result = _execute_via_mcp(client, f"EXPLAIN (FORMAT JSON) {s}")
         except Exception:
@@ -978,14 +1004,95 @@ def _measure_mcp(client: McpClient, sql: str, metric_key: str,
     median_val = statistics.median(samples)
     median_idx = min(range(len(samples)), key=lambda i: abs(samples[i] - median_val))
 
+    if not capture_rows:
+        capture_status, completeness = "not_captured", "not_captured"
+    elif row_count > max_capture_rows:
+        capture_status, completeness = "truncated", "unverified_received_envelope"
+    else:
+        capture_status, completeness = "complete", "unverified_received_envelope"
     return MeasureResult(
         median_metric=median_val,
         samples=samples,
         row_count=row_count,
+        observed_row_count=row_count,
         rows=last_rows,
+        captured_row_count=len(last_rows),
+        max_capture_rows=max_capture_rows,
+        capture_status=capture_status,
+        completeness=completeness,
         columns=last_columns,
         metrics=all_metrics[median_idx],
     )
+
+
+def _measure_mcp_logical_sql(client: McpClient, logical_sql: str, metric_key: str,
+                             runs: int, *, policy: ExecutionPolicy, **kwargs) -> MeasureResult:
+    """Validate logical SQL then derive a fresh MCP execution statement."""
+    _assert_executable_read_only(logical_sql)
+    execution_sql = _execution_sql_for(logical_sql, policy)
+    result = _measure_mcp(client, execution_sql, metric_key, runs, **kwargs)
+    # Preserve logical/execution provenance without changing MCP public delivery.
+    result.logical_sql = logical_sql
+    result.execution_sql = execution_sql
+    result.safe_limit = policy.safe_limit
+    return result
+
+
+def _correctness_authorized(baseline: MeasureResult, candidate: MeasureResult) -> bool:
+    return (
+        baseline.capture_status == candidate.capture_status == "complete"
+        and baseline.completeness == candidate.completeness == "verified_complete"
+    )
+
+
+def _incomplete_history(*, iteration: int, baseline: MeasureResult,
+                        candidate: MeasureResult, base_sql: str,
+                        candidate_sql: str, metric: float, delta: float) -> dict:
+    """Build the sole persisted authorization-failure history representation."""
+    return {
+        "iteration": iteration,
+        "status": "equivalence_unverified_incomplete_result",
+        "rejection_reason": _incomplete_rejection_reason(baseline, candidate),
+        "metric": metric,
+        "delta": delta,
+        "base_sql": base_sql,
+        "candidate_sql": candidate_sql,
+        "baseline_capture_status": baseline.capture_status,
+        "candidate_capture_status": candidate.capture_status,
+        "baseline_completeness": baseline.completeness,
+        "candidate_completeness": candidate.completeness,
+    }
+
+
+def _incomplete_rejection_reason(baseline: MeasureResult, candidate: MeasureResult) -> str:
+    """Return one of the complete, canonical incomplete-result reasons."""
+    def kind(item):
+        if item.completeness == "direct_truncated":
+            return "direct_truncated"
+        if item.capture_status == "not_captured":
+            return "capture_not_captured"
+        if item.capture_status == "truncated":
+            return "capture_truncated"
+        if item.completeness == "unverified_received_envelope":
+            return "upstream_completeness_unverified"
+        if item.capture_status == "complete" and item.completeness == "verified_complete":
+            return "verified"
+        return "unknown"
+
+    left, right = kind(baseline), kind(candidate)
+    both = {
+        "direct_truncated": "both_direct_truncated",
+        "capture_not_captured": "both_captures_not_captured",
+        "capture_truncated": "both_captures_truncated",
+        "upstream_completeness_unverified": "both_upstream_completeness_unverified",
+    }
+    if left == right and left in both:
+        return both[left]
+    if right == "verified" and left in both:
+        return f"baseline_{left}"
+    if left == "verified" and right in both:
+        return f"candidate_{right}"
+    return "mixed_incomplete_result"
 
 
 # ---------------------------------------------------------------------------
@@ -1263,6 +1370,7 @@ def _seed_decompose_and_select(
     flag_enabled: bool,
     output=None,
     trace: "Optional[list]" = None,
+    rejection_history: "Optional[Callable[[dict], None]]" = None,
 ) -> "tuple[str, MeasureResult, list]":
     """§3.1 NORMATIVE single locus: decompose → measure → decide, coupled.
 
@@ -1282,6 +1390,8 @@ def _seed_decompose_and_select(
             produce_fn or measure_fn (no LLM calls, no Trino round-trips).
         output: progress sink (optional).
         trace: ``StepTrace`` list to append events into (optional).
+        rejection_history: optional sink for the canonical persisted record when
+            provenance cannot authorize the seed comparison.
 
     T-SYM: both the MCP STANDARD site and the --direct STANDARD site call this
     function; it is the only place where the §3.1 coupled assignment lives.
@@ -1316,6 +1426,27 @@ def _seed_decompose_and_select(
             return original_sql, baseline_measure, events
 
         seed_measure = measure_fn(recomposed_sql)
+
+        # A faster received/partial sample cannot replace the coupled baseline
+        # winner. This helper serves both adapters, so inspect the canonical
+        # provenance fields rather than treating row equality as authorization.
+        if not _correctness_authorized(baseline_measure, seed_measure):
+            reason = _incomplete_rejection_reason(baseline_measure, seed_measure)
+            # The seed has no loop iteration number; 0 unambiguously identifies
+            # this pre-iteration comparison while preserving the canonical shape.
+            if rejection_history is not None:
+                rejection_history(_incomplete_history(
+                    iteration=0, baseline=baseline_measure, candidate=seed_measure,
+                    base_sql=original_sql, candidate_sql=recomposed_sql,
+                    metric=seed_measure.median_metric,
+                    delta=seed_measure.median_metric - baseline_measure.median_metric,
+                ))
+            if output:
+                output.progress(
+                    "  [seed] decompose→recompose not accepted "
+                    f"({reason})"
+                )
+            return original_sql, baseline_measure, events
 
         verdict = _evaluate_seed_candidate(
             original_sql, recomposed_sql,
@@ -1367,6 +1498,7 @@ def _run_mcp_plan_cost_loop(
     max_fallbacks: int,
     candidate_timeout_ms: Optional[float] = None,
     peak_memory_limit_bytes: Optional[int] = None,   # NEW
+    execution_policy: ExecutionPolicy | None = None,
 ) -> EnhancementReport:
     """Plan-cost ranking + L1 structural guard + K-retry for the MCP path.
 
@@ -1397,6 +1529,8 @@ def _run_mcp_plan_cost_loop(
     )
     from genie.skills.trino_query.plan_signature import plan_signature
 
+    policy = execution_policy or ExecutionPolicy(None)
+    _assert_executable_read_only(original_sql)
     baseline_metric = baseline.median_metric
     if candidate_timeout_ms is None:
         # Use the LARGER of the measured end-to-end query time and the (often 0
@@ -1408,6 +1542,7 @@ def _run_mcp_plan_cost_loop(
         ))
         candidate_timeout_ms = make_candidate_timeout_ms(baseline_wall_ms) if baseline_wall_ms > 0 else None
 
+    _assert_executable_read_only(original_sql)
     baseline_rows_est, baseline_bytes_est, baseline_plan = plan_cost(
         original_sql, explain_runner
     )
@@ -1457,18 +1592,19 @@ def _run_mcp_plan_cost_loop(
     )
 
     # ── MCP adapter closures (step 9 of §2.1 reconstruction) ──
-    measure_fn = lambda sql, label: _measure_mcp(
-        client, sql, metric_key, verify_runs,
+    measure_fn = lambda sql, label: _measure_mcp_logical_sql(
+        client, sql, metric_key, verify_runs, policy=policy,
         capture_rows=True, output=output, label=label,
         timeout_ms=candidate_timeout_ms,
     )
     metric_fn = lambda m: m.median_metric
     # D8 pre-check preserved: MCP path checks row_count before rows content.
-    row_equiv_fn = lambda measured: (
-        (False, f"row count differs: {baseline.row_count} vs {measured.row_count}")
-        if baseline.row_count != measured.row_count
-        else _results_equivalent(baseline.rows, measured.rows)
-    )
+    def row_equiv_fn(measured):
+        if not _correctness_authorized(baseline, measured):
+            return False, _incomplete_rejection_reason(baseline, measured)
+        if baseline.row_count != measured.row_count:
+            return False, f"row count differs: {baseline.row_count} vs {measured.row_count}"
+        return _results_equivalent(baseline.rows, measured.rows)
 
     # ── v48 T6: Decompose-seed validation for MCP plan-cost loop ──
     # Guard: disabled by GENIE_V48_SEED_DECOMPOSE=0 for test/debugging isolation.
@@ -1481,6 +1617,9 @@ def _run_mcp_plan_cost_loop(
 
     from genie.output.step_trace import StepTrace as _PCL_StepTrace
     _pcl_step_trace: _PCL_StepTrace = []
+    # Seed provenance is checked before ranked verification. Retain its canonical
+    # failure record so it is persisted in the MCP iteration history as well.
+    _pcl_seed_rejection_history: list[dict] = []
     _pcl_seed_sql = original_sql
     _pcl_seed_baseline = baseline
     if _v48_pcl_seed_enabled:
@@ -1496,12 +1635,26 @@ def _run_mcp_plan_cost_loop(
                     max_fragment_model_calls=_v57_pcl_frag_cap,
                 )
                 if _pcl_recomposed != original_sql:
-                    _pcl_seed_meas = _measure_mcp(
-                        client, _pcl_recomposed, metric_key, verify_runs,
+                    _pcl_seed_meas = _measure_mcp_logical_sql(
+                        client, _pcl_recomposed, metric_key, verify_runs, policy=policy,
                         capture_rows=True, output=output, label="seed",
                         timeout_ms=candidate_timeout_ms,
                     )
-                    _pcl_seed_equiv, _pcl_seed_reason = _results_equivalent(baseline.rows, _pcl_seed_meas.rows)
+                    if _correctness_authorized(baseline, _pcl_seed_meas):
+                        _pcl_seed_equiv, _pcl_seed_reason = _results_equivalent(
+                            baseline.rows, _pcl_seed_meas.rows
+                        )
+                    else:
+                        _pcl_seed_equiv = False
+                        _pcl_seed_reason = _incomplete_rejection_reason(baseline, _pcl_seed_meas)
+                        # Envelope equality cannot authorize this seed. Persist one
+                        # canonical record and retain the original coupled winner.
+                        _pcl_seed_rejection_history.append(_incomplete_history(
+                            iteration=0, baseline=baseline, candidate=_pcl_seed_meas,
+                            base_sql=original_sql, candidate_sql=_pcl_recomposed,
+                            metric=_pcl_seed_meas.median_metric,
+                            delta=_pcl_seed_meas.median_metric - baseline_metric,
+                        ))
                     _pcl_seed_faster = _pcl_seed_meas.median_metric < baseline_metric
                     try:
                         from genie.output.step_trace import StepEvent as _PCL_StepEvent, StepStatus as _PCL_StepStatus
@@ -1556,6 +1709,16 @@ def _run_mcp_plan_cost_loop(
             if output:
                 output.progress(f"  [seed] decompose failed in plan-cost loop (degraded): {_pcl_seed_exc}")
 
+    def incomplete_history_fn(measured, ranked):
+        if _correctness_authorized(baseline, measured):
+            return None
+        return _incomplete_history(
+            iteration=ranked["iteration"], baseline=baseline, candidate=measured,
+            base_sql=original_sql, candidate_sql=ranked["sql"],
+            metric=measured.median_metric,
+            delta=measured.median_metric - baseline_metric,
+        )
+
     result = _plan_cost_loop_core(
         provider=provider,
         model=model,
@@ -1578,7 +1741,13 @@ def _run_mcp_plan_cost_loop(
         output=_SafeOutput(output),
         candidate_timeout_ms=candidate_timeout_ms,
         empty_message=None,             # MCP uses core default
+        incomplete_history_fn=incomplete_history_fn,
     )
+
+    # Persist a pre-ranked seed authorization failure alongside L3 history.
+    # This leaves the core winner untouched, preserving baseline coupling.
+    if _pcl_seed_rejection_history:
+        result.history[:0] = _pcl_seed_rejection_history
 
     # ── Reconstruct EnhancementReport from _PlanCostCoreResult ──
     # (spec §1.6 step 9 — MCP-specific path; NamedTuple fields only)
@@ -1590,19 +1759,39 @@ def _run_mcp_plan_cost_loop(
         best_measure = result.winner_measure
         best_value = best_measure.median_metric
 
-    iterations_records = [
-        IterationRecord(
+    iterations_records = []
+    for h in result.history:
+        if h.get("status") == "equivalence_unverified_incomplete_result":
+            # Preserve the complete canonical persisted history shape from L3.
+            iterations_records.append(IterationRecord(
+                iteration=h["iteration"], status=h["status"],
+                metric_value=h["metric"], delta=h["delta"],
+                hypothesis=h["rejection_reason"], sql=h["candidate_sql"],
+                rejection_reason=h["rejection_reason"], base_sql=h["base_sql"],
+                candidate_sql=h["candidate_sql"],
+                baseline_capture_status=h["baseline_capture_status"],
+                candidate_capture_status=h["candidate_capture_status"],
+                baseline_completeness=h["baseline_completeness"],
+                candidate_completeness=h["candidate_completeness"],
+            ))
+            continue
+
+        # Shared plan-cost records contain ranking facts, not a measurement.
+        # Keep those fields unavailable instead of manufacturing a baseline
+        # metric and zero delta. Any record that actually carries metric/delta
+        # remains representable without status-specific special cases.
+        has_measurement = "metric" in h and "delta" in h
+        iterations_records.append(IterationRecord(
             iteration=h["iteration"],
             status="improved" if (result.winner_sql is not None and h.get("candidate_sql") == result.winner_sql) else h["status"],
-            metric_value=best_value if (result.winner_sql is not None and h.get("candidate_sql") == result.winner_sql) else baseline_metric,
-            delta=(best_value - baseline_metric) if (result.winner_sql is not None and h.get("candidate_sql") == result.winner_sql) else 0.0,
-            hypothesis="(plan-cost-loop)",
-            sql=h.get("candidate_sql") or "",
-        )
-        for h in result.history
-    ]
+            metric_value=h.get("metric") if has_measurement else None,
+            delta=h.get("delta") if has_measurement else None,
+            hypothesis="(plan-cost-loop)", sql=h.get("candidate_sql") or "",
+        ))
 
-    if baseline.row_count != best_measure.row_count:
+    if not _correctness_authorized(baseline, best_measure):
+        final_equiv, final_reason = False, _incomplete_rejection_reason(baseline, best_measure)
+    elif baseline.row_count != best_measure.row_count:
         final_equiv = False
         final_reason = f"row count differs: {baseline.row_count} vs {best_measure.row_count}"
     else:
@@ -1718,6 +1907,7 @@ _LABELS_EN = {
     "target_metric": "Target Metric",
     "verify_runs": "Verify Runs",
     "iterations": "Iterations",
+    "result_validation": "Result Validation",
 }
 
 _LABELS_ZH = {
@@ -1776,7 +1966,21 @@ _LABELS_ZH = {
     "target_metric": "目標指標",
     "verify_runs": "驗證次數",
     "iterations": "迭代次數",
+    "result_validation": "結果驗證",
 }
+
+
+def _format_iteration_measurement(record: IterationRecord) -> tuple[str, str]:
+    """Render optional measurement facts without inventing them for rankings."""
+    def format_value(value: object, spec: str) -> str:
+        if isinstance(value, bool) or not isinstance(value, (int, float)):
+            return "n/a"
+        return format(value, spec)
+
+    return (
+        format_value(record.metric_value, ".1f"),
+        format_value(record.delta, "+.1f"),
+    )
 
 
 def generate_report(report: EnhancementReport, locale: str = "en", step_trace=None) -> str:
@@ -1814,6 +2018,25 @@ def generate_report(report: EnhancementReport, locale: str = "en", step_trace=No
             return f"{val:.2f}"
         return f"{val:.0f}"
 
+    # A report may claim full row-level equivalence only after the explicit
+    # correctness gate has authorized and matched the comparison.
+    if report.data_consistent:
+        validation_detail = "full row-level equivalence check verified"
+        sample_note = (
+            "First 10 rows of the query output, displayed as a sample; "
+            "full row-level equivalence was verified separately."
+        )
+    else:
+        validation_detail = (
+            "unverified/incomplete result — full row-level equivalence and "
+            "semantic preservation were not authorized "
+            f"(rejection reason: `{report.data_consistency_reason}`)"
+        )
+        sample_note = (
+            "First 10 rows of the received query-output envelope, shown for "
+            "diagnostic inspection only; semantic preservation is unverified."
+        )
+
     # ── Header ──
     lines.append(f"# {L['title']}")
     lines.append("")
@@ -1826,6 +2049,7 @@ def generate_report(report: EnhancementReport, locale: str = "en", step_trace=No
     lines.append(f"| {L['target_metric']} | {report.metric_key} ({L['lower_better']}) |")
     lines.append(f"| {L['verify_runs']} | {report.verify_runs} ({L['median']}) |")
     lines.append(f"| {L['iterations']} | {len(report.iterations)} |")
+    lines.append(f"| {L['result_validation']} | {validation_detail} |")
     lines.append("")
 
     # ── Performance Comparison ──
@@ -1873,9 +2097,10 @@ def generate_report(report: EnhancementReport, locale: str = "en", step_trace=No
     lines.append("|-------|--------|-------------|-------|------------|")
 
     for it in report.iterations:
+        metric_value, delta = _format_iteration_measurement(it)
         lines.append(
-            f"| {it.iteration} | {it.status} | {it.metric_value:.1f} | "
-            f"{it.delta:+.1f} | {it.hypothesis[:60]} |"
+            f"| {it.iteration} | {it.status} | {metric_value} | "
+            f"{delta} | {it.hypothesis[:60]} |"
         )
 
     lines.append("")
@@ -1891,7 +2116,7 @@ def generate_report(report: EnhancementReport, locale: str = "en", step_trace=No
     # ── Original Result (sample) ──
     lines.append(f"## {L['orig_result']}")
     lines.append("")
-    lines.append(f"_{L['sample_note']}_")
+    lines.append(f"_{sample_note}_")
     lines.append("")
     if report.original_columns:
         lines.append("| " + " | ".join(report.original_columns) + " |")
@@ -1920,7 +2145,7 @@ def generate_report(report: EnhancementReport, locale: str = "en", step_trace=No
     # ── Enhanced Result (sample) ──
     lines.append(f"## {L['enh_result']}")
     lines.append("")
-    lines.append(f"_{L['sample_note']}_")
+    lines.append(f"_{sample_note}_")
     lines.append("")
     if report.enhanced_columns:
         lines.append("| " + " | ".join(report.enhanced_columns) + " |")
@@ -2374,6 +2599,7 @@ def run_mcp_enhancement(
     long_query_threshold_s: Optional[int] = None,
     max_fallbacks: Optional[int] = None,
     diagnose_only: bool = False,
+    execution_policy: ExecutionPolicy | None = None,
 ) -> EnhancementReport:
     """Run the MCP-based query enhancement loop.
 
@@ -2398,6 +2624,7 @@ def run_mcp_enhancement(
 
     # v48: step-level trace — populated as the loop runs; spliced into report at end
     _step_trace: StepTrace = []
+    policy = execution_policy or ExecutionPolicy(None)
 
     if output:
         output.print("\n  [yellow]== MCP Trino Query Enhancement ==[/yellow]")
@@ -2472,8 +2699,10 @@ def run_mcp_enhancement(
         if output:
             output.progress("  Measuring baseline...")
         try:
-            _baseline = _measure_mcp(client, sql, metric_key, verify_runs,
-                                     capture_rows=True, output=output, label="baseline")
+            _baseline = _measure_mcp_logical_sql(
+                client, sql, metric_key, verify_runs, policy=policy,
+                capture_rows=True, output=output, label="baseline",
+            )
             _baseline_metrics = _baseline.metrics
         except Exception as exc:
             _baseline_exc = exc
@@ -2633,6 +2862,7 @@ def run_mcp_enhancement(
             max_fallbacks=fallbacks,
             candidate_timeout_ms=candidate_timeout_ms,
             peak_memory_limit_bytes=memory_limit_bytes,
+            execution_policy=policy,
         )
 
     # STANDARD_LOOP fall-through — EXPLAIN ANALYZE baseline follows.
@@ -2737,10 +2967,26 @@ def run_mcp_enhancement(
         )
 
     def _mcp_measure_fn(_sql: str) -> "MeasureResult":
-        return _measure_mcp(
-            client, _sql, metric_key, verify_runs,
+        return _measure_mcp_logical_sql(
+            client, _sql, metric_key, verify_runs, policy=policy,
             capture_rows=True, output=output, label="seed",
         )
+
+    iterations: list[IterationRecord] = []
+
+    def _record_seed_rejection(record: dict) -> None:
+        """Persist the shared seed gate's canonical authorization failure."""
+        iterations.append(IterationRecord(
+            iteration=record["iteration"], status=record["status"],
+            metric_value=record["metric"], delta=record["delta"],
+            hypothesis=record["rejection_reason"], sql=record["candidate_sql"],
+            rejection_reason=record["rejection_reason"], base_sql=record["base_sql"],
+            candidate_sql=record["candidate_sql"],
+            baseline_capture_status=record["baseline_capture_status"],
+            candidate_capture_status=record["candidate_capture_status"],
+            baseline_completeness=record["baseline_completeness"],
+            candidate_completeness=record["candidate_completeness"],
+        ))
 
     # §3.1 NORMATIVE: best_sql and best_measure come from the SAME tuple arm.
     # _seed_decompose_and_select is the single call-site locus — it cannot drift.
@@ -2752,9 +2998,9 @@ def run_mcp_enhancement(
         flag_enabled=_v48_seed_enabled,
         output=output,
         trace=_step_trace,
+        rejection_history=_record_seed_rejection,
     )
     best_metric = best_measure.median_metric
-    iterations: list[IterationRecord] = []
     # v32 T1: cache of rendered direction blocks keyed by SQL. Seeded with the
     # original (already in the system prompt) so a stable best_sql is never
     # re-diagnosed; refreshed only when an improvement changes best_sql.
@@ -2874,7 +3120,7 @@ def run_mcp_enhancement(
 
         # Execute and measure candidate
         try:
-            candidate = _measure_mcp(client, candidate_sql, metric_key, verify_runs, capture_rows=True,
+            candidate = _measure_mcp_logical_sql(client, candidate_sql, metric_key, verify_runs, policy=policy, capture_rows=True,
                                      output=output, label=f"iter {iteration} candidate",
                                      timeout_ms=candidate_timeout_ms)
         except CandidateTimeoutError as exc:
@@ -2916,8 +3162,18 @@ def run_mcp_enhancement(
         candidate_metric = candidate.median_metric
         delta = candidate_metric - best_metric
 
-        # Check result equivalence — full row count first (truncation-safe),
-        # then normalized content comparison on captured subset.
+        # Received MCP envelopes never authorize full-result correctness.
+        if not _correctness_authorized(baseline, candidate):
+            incomplete = _incomplete_history(
+                iteration=iteration, baseline=baseline, candidate=candidate,
+                base_sql=best_sql, candidate_sql=candidate_sql,
+                metric=candidate_metric, delta=delta,
+            )
+            iterations.append(IterationRecord(
+                metric_value=candidate_metric, hypothesis=incomplete["rejection_reason"],
+                sql=candidate_sql, **incomplete,
+            ))
+            continue
         if baseline.row_count != candidate.row_count:
             equiv = False
             equiv_reason = f"row count differs: {baseline.row_count} vs {candidate.row_count}"
@@ -3047,8 +3303,13 @@ def run_mcp_enhancement(
     improvement_abs = best_metric - baseline.median_metric
     improvement_pct = (improvement_abs / baseline.median_metric * 100) if baseline.median_metric else 0
 
-    # Final equivalence check
-    final_equiv, final_reason = _results_equivalent(baseline.rows, best_measure.rows)
+    # An MCP response is only a received envelope, never verification that the
+    # server emitted the complete Trino result. Equality remains diagnostic only.
+    if not _correctness_authorized(baseline, best_measure):
+        final_equiv = False
+        final_reason = _incomplete_rejection_reason(baseline, best_measure)
+    else:
+        final_equiv, final_reason = _results_equivalent(baseline.rows, best_measure.rows)
 
     report = EnhancementReport(
         timestamp=datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
@@ -3307,6 +3568,7 @@ def run_trino_research_via_mcp(
     to either path via a single call signature.
     """
     sql: str | None = None
+    validated_safe_limit: int | None = None
     sql_source = "stdin"
 
     # File/text callers already provide SQL without live MCP dependencies. Classify
@@ -3322,14 +3584,20 @@ def run_trino_research_via_mcp(
         if not sql:
             output.error("Empty SQL.")
             return
+        validated_safe_limit = validate_safe_limit(safe_limit)
         if classify_write_operation(sql) is not None:
             run_write_analysis_only(
                 provider, cfg, model, reasoning, sql, output, build_prompt,
                 sql_source=sql_source,
                 route="mcp",
-                safe_limit=safe_limit,
+                safe_limit=validated_safe_limit,
             )
             return
+
+    # For supplied read SQL, reject invalid policy before MCP configuration,
+    # reachability, provider work, or entry EXPLAIN.
+    if sql is not None:
+        validated_safe_limit = validate_safe_limit(safe_limit)
 
     mcp_cfg = load_mcp_config()
     if not mcp_cfg.enabled:
@@ -3363,14 +3631,14 @@ def run_trino_research_via_mcp(
         output.error("Empty SQL.")
         return
 
-    # Interactive paste reaches here after existing MCP reachability, but still
-    # skips preflight/execution if the pasted SQL is side-effecting.
+    # Interactive paste reaches here after existing MCP reachability.
+    validated_safe_limit = validate_safe_limit(safe_limit)
     if classify_write_operation(sql) is not None:
         run_write_analysis_only(
             provider, cfg, model, reasoning, sql, output, build_prompt,
             sql_source=sql_source,
             route="mcp",
-            safe_limit=safe_limit,
+            safe_limit=validated_safe_limit,
         )
         return
 
@@ -3411,8 +3679,11 @@ def run_trino_research_via_mcp(
         except (ValueError, EOFError, KeyboardInterrupt):
             runs = 3
 
+    # Public safe-limit validation is before every advisory/provider/EXPLAIN path.
+    validated_safe_limit = validate_safe_limit(safe_limit)
+
     # ── Pre-flight: read-only + size estimation ──
-    from .preflight import run_preflight, apply_safe_limit, PreflightBudget
+    from .preflight import run_preflight, PreflightBudget
 
     def _explain_runner(s: str) -> Optional[str]:
         tool_name, _ = _resolve_query_tool(client)
@@ -3448,12 +3719,6 @@ def run_trino_research_via_mcp(
     else:
         output.progress(f"  Pre-flight OK: read-only verified (size estimate unavailable)")
 
-    # ── Opt-in safe-limit wrap ──
-    if safe_limit and safe_limit > 0:
-        wrapped = apply_safe_limit(sql, safe_limit)
-        output.progress(f"  --safe-limit {safe_limit}: wrapped SQL with LIMIT {safe_limit}")
-        sql = wrapped
-
     # ── Pre-launch plan card ──
     _render_plan_card(
         output,
@@ -3485,6 +3750,7 @@ def run_trino_research_via_mcp(
             long_query_threshold_s=long_query_threshold_s,
             max_fallbacks=max_fallbacks,
             diagnose_only=diagnose_only,
+            execution_policy=ExecutionPolicy(validated_safe_limit),
         )
     except LongQueryAbort as lqa:
         # Message already printed by run_mcp_enhancement.

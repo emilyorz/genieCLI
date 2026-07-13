@@ -62,6 +62,14 @@ def _mr(median: float, rows: list, metrics=None) -> MeasureResult:
     )
 
 
+def _verified_mr(median: float, rows: list, metrics=None) -> MeasureResult:
+    """Explicitly model a fully retained direct result where authorization is needed."""
+    result = _mr(median, rows, metrics)
+    result.capture_status = "complete"
+    result.completeness = "verified_complete"
+    return result
+
+
 _ORIG = "SELECT * FROM t"
 _SEED = "SELECT id FROM t"
 _ROWS_AB  = [(1,), (2,), (3,)]   # same content as _ROWS_AB2
@@ -132,9 +140,38 @@ class TestReject:
 class TestAccept:
     """Rows equivalent AND faster → seed accepted; winner is (seed_sql, seed_measure)."""
 
-    def test_accept_returns_seed_sql(self):
+    def test_missing_provenance_fails_closed_and_keeps_coupled_baseline(self):
+        """Legacy/default MeasureResult fields cannot authorize a faster seed."""
         baseline = _mr(80_000, _ROWS_AB)
-        seed_mr   = _mr(50_000, _ROWS_AB2)  # equiv rows, faster
+        seed_mr = _mr(50_000, _ROWS_AB2)
+        persisted = []
+
+        winner_sql, winner_mr, _ = _seed_decompose_and_select(
+            _ORIG, baseline,
+            produce_fn=_produce_returns(_SEED),
+            measure_fn=lambda s: seed_mr,
+            flag_enabled=True,
+            rejection_history=persisted.append,
+        )
+
+        assert (winner_sql, winner_mr) == (_ORIG, baseline)
+        assert persisted == [{
+            "iteration": 0,
+            "status": "equivalence_unverified_incomplete_result",
+            "rejection_reason": "both_captures_not_captured",
+            "metric": 50_000,
+            "delta": -30_000,
+            "base_sql": _ORIG,
+            "candidate_sql": _SEED,
+            "baseline_capture_status": "not_captured",
+            "candidate_capture_status": "not_captured",
+            "baseline_completeness": "not_captured",
+            "candidate_completeness": "not_captured",
+        }]
+
+    def test_accept_returns_seed_sql(self):
+        baseline = _verified_mr(80_000, _ROWS_AB)
+        seed_mr   = _verified_mr(50_000, _ROWS_AB2)  # equiv rows, faster
 
         winner_sql, _, _ = _seed_decompose_and_select(
             _ORIG, baseline,
@@ -146,8 +183,8 @@ class TestAccept:
 
     def test_accept_winner_measure_IS_seed(self):
         """AC-5: equivalence checked on baseline.rows vs seed_measure.rows (not baseline.rows)."""
-        baseline = _mr(80_000, _ROWS_AB)
-        seed_mr   = _mr(50_000, _ROWS_AB2)
+        baseline = _verified_mr(80_000, _ROWS_AB)
+        seed_mr   = _verified_mr(50_000, _ROWS_AB2)
 
         _, winner_mr, _ = _seed_decompose_and_select(
             _ORIG, baseline,
@@ -160,8 +197,8 @@ class TestAccept:
         )
 
     def test_accept_winner_metric_equals_seed_metric(self):
-        baseline = _mr(80_000, _ROWS_AB)
-        seed_mr   = _mr(50_000, _ROWS_AB2)
+        baseline = _verified_mr(80_000, _ROWS_AB)
+        seed_mr   = _verified_mr(50_000, _ROWS_AB2)
 
         _, winner_mr, _ = _seed_decompose_and_select(
             _ORIG, baseline,
