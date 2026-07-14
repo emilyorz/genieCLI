@@ -12,82 +12,116 @@ AI-powered Trino query tuning CLI. 用 LLM 自動優化 Trino SQL，結合靜態
 
 ## 架構
 
+GenieCLI 由 CLI/chat、共用 core、LLM provider、可發現 skills 與兩條 Trino
+執行 adapter 組成。`/trino-research` 的 **MCP** 路徑透過 Trino MCP server 執行與取得
+metadata；`--direct` 路徑以本機 `trino.dbapi` 連線。兩者共用 read-only/preflight
+決策、靜態規則、plan-cost loop、診斷與報告契約；adapter 只負責各自的連線、量測與
+資料列形狀轉換。
+
+```text
+┌──────────────── CLI / chat ────────────────┐
+│ cli.py · chat.py · input.py · session       │
+└───────────────┬─────────────────────────────┘
+                │ Provider / OutputSink / SkillContext
+┌───────────────▼─────────────────────────────┐
+│ core                                         │
+│ registry · config · context · lint · SQL     │
+│ extraction · shared LLM advisory adapters    │
+└───────┬───────────────────────────────┬──────┘
+        │                               │
+ ┌──────▼─────────┐              ┌──────▼──────────┐
+ │ mcp_trino      │              │ trino_query     │
+ │ MCP client     │              │ trino.dbapi     │
+ │ MCP adapter    │              │ direct adapter  │
+ └──────┬─────────┘              └──────┬──────────┘
+        └────────── shared research contracts ────┘
+                     │
+       preflight → baseline → decompose → optimize
+                     → recompose → verify
+                     │
+  StepTrace / HumanSink / MachineSink / Markdown reports
 ```
-┌──────────────────────────────────────────────────────────────┐
-│  CLI Layer                                                   │
-│  cli.py (Typer) — 入口 + 子指令路由                          │
-│  chat.py — Chat loop + tool call 路由                        │
-│  input.py — 互動輸入（多行、補全）                            │
-└─────────────────────┬────────────────────────────────────────┘
-                      │
-          ┌───────────┴───────────┐
-          ▼                       ▼
-┌─────────────────┐     ┌─────────────────────────────────────┐
-│  Providers      │     │  Core (Engine)                       │
-│                 │     │  registry.py    — SkillRegistry       │
-│  tgenie.py      │     │  provider.py    — Provider Protocol   │
-│  openai.py ─────────  │  context.py     — SkillContext (DI)   │
-│  anthropic.py   │  │  │  config.py      — 設定讀寫            │
-│  base.py        │  │  │  sql_patterns.py— 共用 Oracle pattern │
-│                 │  │  │  sql_utils.py   — SQL text utilities  │
-└─────────────────┘  │  └──────────────┬──────────────────────┘
-  Ollama: native ────┘                 │
-  /api/chat + think=false    ┌─────────┼────────────┐
-                             ▼         ▼            ▼
-               ┌──────────────┐ ┌──────────────┐ ┌──────────────┐
-               │ oracle2trino │ │ trino_linter │ │ trino_query  │
-               │ (5 tools)    │ │ (1 tool,     │ │ (optimize +  │
-               │              │ │  11 rules)   │ │  research)   │
-               └──────────────┘ └──────────────┘ └──────────────┘
-                             │         │            │
-                             ▼         ▼            ▼
-               ┌──────────────┐ ┌──────────────┐ ┌──────────────┐
-               │ mcp_trino    │ │ file_ops     │ │ git_ops      │
-               │ (MCP client) │ │ (4 tools)    │ │ (5 tools)    │
-               └──────────────┘ └──────────────┘ └──────────────┘
-                                        │
-                                        ▼
-┌─────────────────────────────────────────────────────────────┐
-│  Output: HumanSink（Rich 彩色）/ MachineSink（JSON）        │
-└─────────────────────────────────────────────────────────────┘
-```
+
+### `/trino-research` routing and safety model
+
+在執行候選 SQL 前，兩條路徑都先檢查 logical SQL 的 read-only whitelist，並把
+`--safe-limit` 視為已驗證的 execution policy；它不改寫 logical SQL。每次呼叫的
+事實由純函式 `build_preflight_decision()` 產生不可變的 `PreflightDecision`，
+`PreflightRoute` 是唯一的六態路由表：
+
+| Route | 行為 |
+| --- | --- |
+| `DIAGNOSE_ONLY` | 不跑 baseline；產生 static / EXPLAIN / metadata（可用時）診斷。 |
+| `NO_DATA` | baseline 空結果或已辨識的 table/schema/catalog not-found；轉 no-data 報告。 |
+| `REAL_FAILURE` | 非 no-data baseline 例外直接呈現，不會誤包裝成 no-data。 |
+| `LONG_QUERY_ABORT` | 使用者關閉 long-query tuning 且成本 gate 拒絕；輸出 directed report。 |
+| `PLAN_COST_LOOP` | long-query opt-in 且 EXPLAIN 有 estimates；先以 plan cost 排名，再做 live 驗證。 |
+| `STANDARD_LOOP` | 一般量測／迭代流程。 |
+
+`PLAN_COST_LOOP` 的候選先經 lint、read-only gate、EXPLAIN 與 L1 plan-structure
+檢查，僅將較低 cost 的候選送入有限次 L3 row-equivalence fallback 驗證。一般 loop
+以 baseline 與候選的實際 metric 比較；兩者都保留失敗、timeout 與驗證 provenance，
+不能以失敗候選取代 baseline。
+
+### Decompose pipeline、成本與驗證
+
+讀取型研究可使用下列五階段管線；每一公開階段都以 typed unavailable / unverified
+結果降級，而不是把 cluster、parser 或 LLM 錯誤傳出成未處理例外：
+
+1. **baseline**：讀取 EXPLAIN cost、結構簽名，並在可執行時建立 row anchor。
+2. **decompose**：以 sqlglot 拆出 CTE、root 與 `EXISTS`/`IN` predicate-subquery
+   fragments；靜態 findings 與成本用來排序 monster fragments。
+3. **optimize**：只從命名的 P1–P9 strategy menu 選擇做法。SAFE 可提出 rewrite，
+   TRAP 必須通過等價驗證，DANGEROUS 僅 advisory；預設是 evidence-only，片段 LLM
+   rewrite 必須明確設 `GENIE_FRAGMENT_REWRITE=1`，並受
+   `GENIE_FRAGMENT_REWRITE_CAP` 限制。
+4. **recompose**：將已核准 fragment 放回完整 AST，重新掃描跨片段問題；不確定或
+   block 時採保守 revert。
+5. **verify**：執行 baseline/candidate row-equivalence、schema/column guards 與
+   cost comparison，結果只能是 `SHIP`、`NO_SHIP`、`UNVERIFIED` 或
+   `NO_COST_IMPROVEMENT`。
+
+離線 `critical_path.py` 建立遞迴 `CostNode` 樹，以 ordinal row magnitude、join
+blow-up、correlated-subquery、aggregate/distinct/limit reducers 和 static-rule penalty
+估算結構成本，取最重 root-to-leaf critical path。這是診斷與 prompt 的排序訊號，
+不是 live cost 的宣稱；含 cartesian 或 correlated 結構時會標示 offline
+truth-ceiling。其 bottleneck 可將 P-strategy（特別是 P9
+`exists-to-preagg-join`）放入 optimizer 的 diagnosis brief。
+
+P9 有額外的 pure-AST fan-out verifier：只有能將原 correlated `EXISTS`、同一 inner
+relation 的 pre-aggregation CTE、GROUP BY grain 與回接的 LEFT JOIN 完整綁定時，才會
+報告 `PROVEN_NO_FANOUT`（僅 row-count safety）。值等價、NULL 語意和實際加速仍需
+L3 live evidence。Evidence coverage 以 L1（結構）、L2（EXPLAIN）與 L3（live）
+列出 `PASS`/`FAIL`/`PARTIAL`/`PENDING`，並標示 `SHIP`、`ADVISED` 或
+`PENDING_LIVE`；它不改變既有 accept/reject 決策。
+
+### 可觀測性與 LLM 邊界
+
+`StepTrace` 是研究流程的有序 `StepEvent` 記錄，涵蓋 preflight route、baseline、
+decompose、fragment、critical path、recompose、iteration 和 verify。HumanSink 顯示
+精簡 breadcrumb，Markdown report 保留完整步驟與降級理由，MachineSink 輸出 NDJSON。
+
+LLM provider（OpenAI-compatible/Ollama、Anthropic、TGenie）實作共用 `Provider`
+protocol。`genie/core/llm_adapters.py` 把 `provider.complete_text()` 轉成供 advisory
+與 fragment pipeline 使用的 `prompt -> text` callable；模型錯誤由階段本身降級處理。
+`genie/core/sql_extraction.py` 集中處理 fenced SQL 擷取、CTAS inner query
+extract/rewrap、column-shape guard 與 default-deny structural-equivalence 比對，避免 MCP
+與 direct 各自解析模型輸出。
 
 ### 模組總覽
 
-#### Core（`genie/core/`）— Engine
-
-| 模組              | 說明                                                           |
-| ----------------- | -------------------------------------------------------------- |
-| `provider.py`     | `Provider` Protocol、`CompletionRequest`、`Delta` dataclass    |
-| `registry.py`     | `SkillRegistry`（discover / dispatch）、`BaseSkill` base class |
-| `context.py`      | `SkillContext`（DI container：provider、output sink、session） |
-| `config.py`       | 設定讀寫，自動補 DEFAULTS                                      |
-| `sql_patterns.py` | 共用 Oracle construct catalog（oracle2trino + trino_linter）   |
-| `sql_utils.py`    | SQL text utilities（strip comments/strings）                   |
-| `arg.py`          | `Arg` descriptor（skill 參數宣告 + 驗證）                      |
-| `tool_call.py`    | Tool call JSON 解析 + normalize 共用邏輯                       |
-
-#### Skills（`genie/skills/`）— 可插拔工具
-
-| Skill           | Tools   | 說明                                                        |
-| --------------- | ------- | ----------------------------------------------------------- |
-| `trino_query/`  | 4       | Trino query 執行 + EXPLAIN + schema 查詢 + **自動優化**     |
-| `mcp_trino/`    | dynamic | MCP Trino client + autoresearch via MCP server              |
-| `oracle2trino/` | 5       | Oracle → Trino SQL 轉換（sqlglot + AI 補完）                |
-| `trino_linter/` | 1       | Trino SQL 靜態分析（11 rules：Oracle 殘留 + anti-patterns） |
-| `file_ops/`     | 4       | 檔案讀寫、目錄列表、file_patch                              |
-| `git_ops/`      | 5       | Git 操作（status / diff / log / checkpoint / restore）      |
-| `shell_ops/`    | 1       | Shell 指令執行（whitelisted profiles）                      |
-
-#### Runtime（`genie/runtime/`）— Autoresearch 引擎
-
-| 模組                  | 說明                                                  |
-| --------------------- | ----------------------------------------------------- |
-| `run_manager.py`      | 迭代狀態管理（compare against current_best）          |
-| `checkpoint.py`       | Git checkpoint + revert                               |
-| `metric.py`           | Metric 提取 + 趨勢比較                                |
-| `journal.py`          | TSV journal 記錄（每輪 metric / status / hypothesis） |
-| `autoresearch_cli.py` | CLI 互動問答（Goal / Scope / Verify 設定）            |
+| 區域 | 主要內容 |
+| --- | --- |
+| `genie/` | Typer CLI、chat tool loop、互動輸入與 setup wizard。 |
+| `genie/core/` | `Provider`、`OutputSink`、`SkillContext`、registry/config/context、lint、`llm_adapters.py`、`sql_extraction.py`。 |
+| `genie/providers/` | OpenAI-compatible（含 Ollama）、Anthropic、TGenie adapters 與共用 HTTP/SSE 支援。 |
+| `genie/output/` | Rich `HumanSink`、NDJSON `MachineSink`、`step_trace.py`。 |
+| `genie/session/` | 對話 message/session JSON 持久化。 |
+| `genie/skills/mcp_trino/` | MCP client、preflight state machine、診斷/rule gate、cost/critical path、P-strategies、strategy verification、五階段 pipeline。 |
+| `genie/skills/trino_query/` | direct connection、量測、static rules R1–R10、plan signature 與 direct research adapter。 |
+| `genie/skills/oracle2trino/` | Oracle → Trino transpile、函數 lookup、限制與 stored-procedure analysis。 |
+| `genie/runtime/` | 通用 autoresearch 的 git checkpoint、metric comparison 與 TSV journal。 |
+| `tests/` | 純函式、雙路徑 parity、state-machine、pipeline、critical-path、strategy/evidence 與整合測試。 |
 
 ---
 
@@ -454,75 +488,69 @@ def register(registry) -> None:
 
 ## 檔案結構
 
-```
+```text
 genieCLI/
 ├── genie/
-│   ├── __main__.py                入口
-│   ├── cli.py                     Typer CLI
-│   ├── chat.py                    Chat loop
-│   ├── input.py                   互動輸入
-│   ├── core/                      Engine
-│   │   ├── provider.py            Provider Protocol
-│   │   ├── registry.py            SkillRegistry + BaseSkill
-│   │   ├── context.py             SkillContext (DI)
-│   │   ├── config.py              設定讀寫
-│   │   ├── sql_patterns.py        共用 Oracle pattern catalog
-│   │   ├── sql_utils.py           SQL text utilities
-│   │   ├── arg.py                 Arg descriptor
-│   │   └── tool_call.py           Tool call JSON 解析
-│   ├── providers/                  LLM 後端
-│   │   ├── tgenie.py              TGenie gateway
-│   │   ├── openai.py              OpenAI-compatible + Ollama native
-│   │   ├── anthropic.py           Anthropic API
-│   │   └── base.py                共用 HTTP helpers
-│   ├── skills/                     可插拔工具
-│   │   ├── trino_query/           Trino 執行 + 自動優化
-│   │   ├── mcp_trino/             MCP Trino client
-│   │   ├── oracle2trino/          Oracle → Trino 轉換
-│   │   ├── trino_linter/          SQL 靜態分析（11 rules）
-│   │   ├── file_ops/              檔案讀寫
-│   │   ├── git_ops/               Git 操作
-│   │   └── shell_ops/             Shell 執行
-│   ├── runtime/                    Autoresearch 引擎
-│   ├── output/                     輸出層
-│   └── session/                    對話管理
-├── tests/
-├── pyproject.toml
-└── tgenie.sh / tgenie.bat
+│   ├── cli.py / chat.py / input.py       CLI、REPL、tool dispatch
+│   ├── core/
+│   │   ├── provider.py / context.py / registry.py
+│   │   ├── llm_adapters.py               shared provider → advisory LLM adapter
+│   │   └── sql_extraction.py             SQL/CTAS extraction and structural guards
+│   ├── output/
+│   │   ├── human.py / machine.py
+│   │   └── step_trace.py                 ordered step telemetry and renderers
+│   ├── providers/                        OpenAI-compatible, Anthropic, TGenie
+│   ├── skills/
+│   │   ├── mcp_trino/
+│   │   │   ├── client.py / research.py   MCP adapter and orchestration
+│   │   │   ├── preflight.py              shared six-route state machine / plan-cost core
+│   │   │   ├── trino_optimize.py         baseline→decompose→optimize→recompose→verify
+│   │   │   ├── critical_path.py          offline structural cost model
+│   │   │   ├── p_strategies.py           P1–P9 safety-tiered strategy menu
+│   │   │   └── strategy_verify.py        P9 fan-out and evidence coverage
+│   │   ├── trino_query/
+│   │   │   ├── connection.py / research.py  trino.dbapi direct adapter
+│   │   │   ├── plan_signature.py
+│   │   │   └── sql_static/               R1–R10 sqlglot rules
+│   │   └── oracle2trino/
+│   ├── runtime/                          generic autoresearch/checkpoint/journal
+│   └── session/
+├── tests/                                unit, acceptance, parity and integration tests
+├── docs/doc-layer/ARCHITECTURE.md         generated architecture reference
+├── project-iterations/genieCLI/           historical ledger/status material
+├── .tlv5-*/                              Task Ledger V5 run state and artifacts
+└── pyproject.toml
 ```
 
 ---
 
 ## 開發與驗證流程
 
-這個 repo 的非 trivial 變更走 Task Ledger V3。Ledger 在 `project-iterations/genieCLI/`，repo-local hooks 設定在 `.codex/hooks.json` 和 `.claude/settings.json`；目前 runtime guard 會同時支援 Codex / Claude Code hook probe。
+目前工作流程使用 **Task Ledger V5**，不是舊的 Task Ledger V3 hook 流程。V5 run
+以 repo-root 的 `.tlv5-<run-name>/state.json` 為狀態來源，並在 `artifacts/` 保存
+explore、spec、ticket、develop、review 與 wrap/retro 證據；例如目前 HEAD 的
+state-machine safety core 對應 `.tlv5-v62-state-machine-core/`。不要把
+`.codex/hooks.json` 或 `.claude/settings.json` 中遺留的 V3 hook 文案當成目前開發流程
+或 README 指令。
 
-開發前先確認 hook/activation 狀態：
+開始工作時，先讀取相關 V5 `state.json`、producer/review artifacts、
+`project-iterations/genieCLI/STATUS.md`，再確認最近 commits 與受影響雙路徑的測試。對
+`/trino-research` 的變更尤其應維持：MCP/direct 共用決策與 rule-id 契約、logical SQL
+read-only gate、失敗候選不取代 baseline、以及 offline 與 live evidence 的界線。
 
-```bash
-TL_SKILL="${TASK_LEDGER_SKILL:-$HOME/.claude/skills/task-ledger-cycle}"
-python3 "$TL_SKILL/scripts/task_ledger_cli.py" doctor \
-  --repo-root . \
-  --runtimes codex,claude-code \
-  --json
-```
-
-提交前至少跑：
-
-```bash
-TL_SKILL="${TASK_LEDGER_SKILL:-$HOME/.claude/skills/task-ledger-cycle}"
-python3 "$TL_SKILL/templates/validate_ledger.py" project-iterations/genieCLI
-git diff --check
-```
-
-若有程式碼變更，再加上對應的 focused pytest 和 full suite：
+提交前，依修改範圍執行 focused tests，然後跑完整測試與 whitespace 檢查：
 
 ```bash
 .venv/bin/python -m pytest <focused-test-file-or-slice> -q
 .venv/bin/python -m pytest -q
+git diff --check
 ```
 
-Strict V3 的 SDD 流程要求 Step 2 / Step 3 / Step 5 都必須有 `Quality Loop: score X/10 -> pass only if > 9.0`。缺行、非數字分數、或分數 `<= 9.0` 都應被 guard / validator 擋下；驗證摘要也只能引用同一輪實際重跑的測試數字，不可沿用記憶中的舊 baseline。
+若修改 MCP/direct routing 或 shared pipeline，至少覆蓋 state-machine acceptance、
+dual-path rule-id parity、plan-cost core 與相關 pipeline/strategy tests；若修改報告或
+步驟顯示，也覆蓋 `test_step_trace.py` 與 evidence-coverage tests。live Trino/LLM 驗證
+只有在實際環境可用時才可記為 live evidence；離線 AST 或 mock 測試不能宣稱 row-value
+等價或實際加速。
 
 ---
 
