@@ -58,3 +58,11 @@ def test_fake_provider_records_calls():
     assert r1 == "hello"
     assert r2 == "world"
     assert len(provider.calls) == 2
+
+
+def test_python_version_check_requires_python_310():
+    """Doctor must match the project metadata's Python 3.10 floor."""
+    from genie.cli import _python_version_check
+
+    assert _python_version_check((3, 9), "3.9.19") == ("FAIL", "3.9.19 (need ≥ 3.10)")
+    assert _python_version_check((3, 10), "3.10.0") == ("OK", "3.10.0")

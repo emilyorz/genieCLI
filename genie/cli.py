@@ -38,6 +38,17 @@ app = typer.Typer(
 )
 
 REASONING_LEVELS = ["disable", "low", "medium", "high"]
+MIN_PYTHON_VERSION = (3, 10)
+
+
+def _python_version_check(version_info: tuple[int, ...], py_ver: str) -> tuple[str, str]:
+    """Return doctor status and detail for the supported Python floor."""
+    py_ok = version_info >= MIN_PYTHON_VERSION
+    required = ".".join(map(str, MIN_PYTHON_VERSION))
+    return (
+        "OK" if py_ok else "FAIL",
+        f"{py_ver}" + ("" if py_ok else f" (need ≥ {required})"),
+    )
 
 
 def _version_callback(value: bool) -> None:
@@ -350,11 +361,9 @@ def doctor() -> None:
     cfg = load_config()
     checks: list[tuple[str, str, str]] = []  # (name, status, detail)
 
-    # 1. Python version (≥ 3.9)
-    py_ver = platform.python_version()
-    py_ok = sys.version_info >= (3, 9)
-    checks.append(("Python version", "OK" if py_ok else "FAIL",
-                   f"{py_ver}" + ("" if py_ok else " (need ≥ 3.9)")))
+    # 1. Python version (≥ 3.10)
+    py_status, py_detail = _python_version_check(sys.version_info[:2], platform.python_version())
+    checks.append(("Python version", py_status, py_detail))
 
     # 2. `genie` on PATH
     genie_path = shutil.which("genie")
