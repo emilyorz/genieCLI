@@ -312,6 +312,81 @@ def test_should_rank_join_above_scan_when_q8():
 
 
 # ---------------------------------------------------------------------------
+# Set-operation regression coverage
+# ---------------------------------------------------------------------------
+
+@pytest.mark.parametrize(
+    ("sql", "expected_scans"),
+    [
+        (
+            "SELECT * FROM union_a UNION ALL SELECT * FROM union_b UNION ALL SELECT * FROM union_c",
+            {"SCAN union_a", "SCAN union_b", "SCAN union_c"},
+        ),
+        (
+            "(SELECT * FROM nested_a UNION ALL SELECT * FROM nested_b) UNION ALL SELECT * FROM nested_c",
+            {"SCAN nested_a", "SCAN nested_b", "SCAN nested_c"},
+        ),
+    ],
+)
+def test_should_analyze_every_union_all_branch(sql, expected_scans):
+    """UNION ALL trees, including parenthesized left subtrees, retain every branch."""
+    result = analyze_critical_path(sql)
+    assert result.available, result.reason
+    assert result.root is not None
+    compute_costs(result.root)
+    scans = {node.label for node in flatten_nodes(result.root, exclude_wrappers=False) if node.op == "scan"}
+    assert expected_scans <= scans
+
+
+def test_should_keep_two_branch_union_all_and_plain_select_available():
+    """Existing two-branch UNION ALL and ordinary SELECT shapes remain supported."""
+    for sql in (
+        "SELECT * FROM two_a UNION ALL SELECT * FROM two_b",
+        "SELECT * FROM ordinary_table",
+    ):
+        assert analyze_critical_path(sql).available
+
+
+def test_should_keep_top_level_setop_cte_with_union_all_join_nontrivial():
+    """A WITH owned by a top-level setop retains its CTE body and inner blowup."""
+    sql = """
+    WITH c AS (
+      SELECT a.id FROM c_src_a a JOIN c_dim d ON a.id = d.id
+      UNION ALL
+      SELECT b.id FROM c_src_b b
+    )
+    SELECT * FROM c
+    UNION ALL
+    SELECT * FROM tail
+    """
+    result = analyze_critical_path(sql)
+    assert result.available, result.reason
+    assert result.root is not None
+    nodes = flatten_nodes(result.root, exclude_wrappers=False)
+    assert any(node.op == "cte" and node.label == "CTE c" for node in nodes)
+    # Scan labels intentionally prefer aliases; both UNION ALL branches survive.
+    assert {"SCAN a", "SCAN b"} <= {
+        node.label for node in nodes if node.op == "scan"
+    }
+    assert any(node.op.startswith("join_") and "⋈d" in node.label for node in nodes)
+    assert not result.trivial
+
+
+def test_should_keep_union_all_branches_under_join_rhs_subquery():
+    """A UNION ALL derived table on JOIN RHS retains every branch under the join."""
+    sql = """
+    SELECT * FROM z
+    JOIN (SELECT * FROM a UNION ALL SELECT * FROM b) u ON z.id = u.id
+    """
+    root = build_cost_tree(sql)
+    compute_costs(root)
+    joins = [node for node in flatten_nodes(root, exclude_wrappers=False) if node.op.startswith("join_")]
+    assert len(joins) == 1
+    rhs_scans = {node.label for node in _descendants(joins[0]) if node.op == "scan"}
+    assert {"SCAN a", "SCAN b"} <= rhs_scans
+
+
+# ---------------------------------------------------------------------------
 # §8c Edge-case tests
 # ---------------------------------------------------------------------------
 

@@ -362,6 +362,41 @@ def _from_table_label(tbl: exp.Table) -> str:
     return f"SCAN {_table_name(tbl)}"
 
 
+def _analyze_with_clause(
+    query_owner: exp.Expression,
+    parent_magnitude: float,
+    outer_aliases: set[str],
+    depth: int,
+) -> list[CostNode]:
+    """Build CTE subtrees owned by any query shape (SELECT or set operation)."""
+    nodes: list[CostNode] = []
+    cte_clause = query_owner.args.get("with_")
+    if not cte_clause:
+        return nodes
+    for cte in (cte_clause.expressions or []):
+        alias_name = cte.alias if cte.alias else "?"
+        cte_node = CostNode(
+            op="cte",
+            label=f"CTE {alias_name}",
+            self_weight=NODE_BASE_WEIGHT["cte"],
+            rule_penalties=0.0,
+            row_magnitude=int(parent_magnitude),
+            sql_excerpt=f"CTE {alias_name}",
+        )
+        inner_query = cte.this
+        if isinstance(inner_query, (exp.Select, exp.SetOperation, exp.Subquery)):
+            cte_node.children.append(
+                _analyze_query(
+                    inner_query,
+                    parent_magnitude=parent_magnitude,
+                    outer_aliases=outer_aliases | {alias_name},
+                    depth=depth + 1,
+                )
+            )
+        nodes.append(cte_node)
+    return nodes
+
+
 # ---------------------------------------------------------------------------
 # §3 AST → CostNode tree builder
 # ---------------------------------------------------------------------------
@@ -422,17 +457,19 @@ def _analyze_select(
             children.append(scan)
 
         elif isinstance(primary, exp.Subquery):
-            # Derived table subquery — recurse with derived_magnitude
-            inner_sel = primary.this
-            if isinstance(inner_sel, exp.Select):
-                inner_node = _analyze_select(
-                    inner_sel,
+            # Derived table subquery — recurse through every set-operation branch.
+            inner_query = primary.this
+            if isinstance(inner_query, (exp.Select, exp.SetOperation, exp.Subquery)):
+                inner_node = _analyze_query(
+                    inner_query,
                     parent_magnitude=derived_magnitude,
                     outer_aliases=all_visible,
                     depth=depth + 1,
                 )
                 # R2 penalty: SELECT * inside a derived table feeding joins
-                if joins and any(isinstance(e, exp.Star) for e in inner_sel.expressions):
+                if joins and isinstance(inner_query, exp.Select) and any(
+                    isinstance(e, exp.Star) for e in inner_query.expressions
+                ):
                     inner_node.rule_penalties += node_penalty(RULE_SELECT_STAR, "medium")
                 children.append(inner_node)
 
@@ -500,6 +537,19 @@ def _analyze_select(
                 on_clause, all_visible, j_magnitude, depth
             ):
                 join_node.children.append(sub_node)
+
+        # A derived query on JOIN RHS belongs to this join's input subtree.
+        if isinstance(join.this, exp.Subquery) and isinstance(
+            join.this.this, (exp.Select, exp.SetOperation, exp.Subquery)
+        ):
+            join_node.children.append(
+                _analyze_query(
+                    join.this.this,
+                    parent_magnitude=derived_magnitude,
+                    outer_aliases=all_visible,
+                    depth=depth + 1,
+                )
+            )
 
         children.append(join_node)
 
@@ -639,28 +689,7 @@ def _analyze_select(
     # ------------------------------------------------------------------
     # 8. CTEs (WITH clause) — §3.3
     # ------------------------------------------------------------------
-    cte_clause = select_node.args.get("with_")
-    if cte_clause:
-        for cte in (cte_clause.expressions or []):
-            alias_name = cte.alias if cte.alias else "?"
-            cte_node = CostNode(
-                op="cte",
-                label=f"CTE {alias_name}",
-                self_weight=NODE_BASE_WEIGHT["cte"],
-                rule_penalties=0.0,
-                row_magnitude=int(parent_magnitude),
-                sql_excerpt=f"CTE {alias_name}",
-            )
-            inner_sel = cte.this
-            if isinstance(inner_sel, exp.Select):
-                inner_node = _analyze_select(
-                    inner_sel,
-                    parent_magnitude=parent_magnitude,
-                    outer_aliases=all_visible | {alias_name},
-                    depth=depth + 1,
-                )
-                cte_node.children.append(inner_node)
-            children.append(cte_node)
+    children.extend(_analyze_with_clause(select_node, parent_magnitude, all_visible, depth))
 
     # ------------------------------------------------------------------
     # Build this SELECT's root node (project / query)
@@ -684,6 +713,42 @@ def _analyze_select(
     return root_node
 
 
+def _analyze_query(
+    query_node: exp.Expression,
+    parent_magnitude: float,
+    outer_aliases: set[str],
+    depth: int,
+) -> CostNode:
+    """Build a subtree for a SELECT or every branch of a set operation."""
+    if isinstance(query_node, exp.Subquery):
+        return _analyze_query(query_node.this, parent_magnitude, outer_aliases, depth)
+    if isinstance(query_node, exp.Select):
+        return _analyze_select(query_node, parent_magnitude, outer_aliases, depth)
+    if isinstance(query_node, exp.SetOperation):
+        op_name = type(query_node).__name__.upper()
+        label = f"{op_name} ALL" if query_node.args.get("distinct") is False else op_name
+        setop_node = CostNode(
+            op="setop",
+            label=label,
+            self_weight=NODE_BASE_WEIGHT["setop"],
+            row_magnitude=int(parent_magnitude),
+            sql_excerpt=label,
+        )
+        # Preserve the existing coarse semantics for UNION DISTINCT, INTERSECT,
+        # and EXCEPT; this only makes query-owner WITH traversal uniform.
+        setop_node.children.extend(
+            _analyze_with_clause(query_node, parent_magnitude, outer_aliases, depth)
+        )
+        for branch in (query_node.this, query_node.expression):
+            if branch is None:
+                continue
+            setop_node.children.append(
+                _analyze_query(branch, parent_magnitude, outer_aliases, depth + 1)
+            )
+        return setop_node
+    raise ValueError(f"Expected SELECT statement, got {type(query_node).__name__}")
+
+
 def build_cost_tree(sql: str) -> CostNode:
     """Parse SQL with sqlglot (trino dialect) and build a CostNode tree.
 
@@ -691,15 +756,19 @@ def build_cost_tree(sql: str) -> CostNode:
     compute_costs() must be called separately to fill row_magnitude + subtree_cost.
     """
     tree = sqlglot.parse_one(sql, dialect="trino")
-    if not isinstance(tree, exp.Select):
-        # Handle WITH ... SELECT top-level
-        if isinstance(tree, exp.Select):
-            pass
-        elif hasattr(tree, "this") and isinstance(tree.this, exp.Select):
-            tree = tree.this
-        else:
-            raise ValueError(f"Expected SELECT statement, got {type(tree).__name__}")
-    return _analyze_select(tree, parent_magnitude=1.0, outer_aliases=set(), depth=0)
+    if isinstance(tree, exp.Select):
+        return _analyze_select(tree, parent_magnitude=1.0, outer_aliases=set(), depth=0)
+    if isinstance(tree, (exp.SetOperation, exp.Subquery)):
+        root = CostNode(
+            op="root",
+            label="query",
+            self_weight=NODE_BASE_WEIGHT["root"],
+            row_magnitude=1,
+            sql_excerpt="query",
+        )
+        root.children.append(_analyze_query(tree, 1.0, set(), depth=0))
+        return root
+    raise ValueError(f"Expected SELECT statement, got {type(tree).__name__}")
 
 
 # ---------------------------------------------------------------------------
