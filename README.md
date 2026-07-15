@@ -63,37 +63,72 @@ metadata；`--direct` 路徑以本機 `trino.dbapi` 連線。兩者共用 read-o
 以 baseline 與候選的實際 metric 比較；兩者都保留失敗、timeout 與驗證 provenance，
 不能以失敗候選取代 baseline。
 
-### Decompose pipeline、成本與驗證
+### 目前解 Trino query 的核心設計
 
-讀取型研究可使用下列五階段管線；每一公開階段都以 typed unavailable / unverified
-結果降級，而不是把 cluster、parser 或 LLM 錯誤傳出成未處理例外：
+GenieCLI 不把整段 SQL 丟給模型後直接執行。核心做法是由 deterministic control
+plane 控制安全、路由、成本排序與驗證；LLM 只在邊界內提出候選 rewrite：
 
-1. **baseline**：讀取 EXPLAIN cost、結構簽名，並在可執行時建立 row anchor。
-2. **decompose**：以 sqlglot 拆出 CTE、root 與 `EXISTS`/`IN` predicate-subquery
-   fragments；靜態 findings 與成本用來排序 monster fragments。
-3. **optimize**：只從命名的 P1–P9 strategy menu 選擇做法。SAFE 可提出 rewrite，
-   TRAP 必須通過等價驗證，DANGEROUS 僅 advisory；預設是 evidence-only，片段 LLM
-   rewrite 必須明確設 `GENIE_FRAGMENT_REWRITE=1`，並受
-   `GENIE_FRAGMENT_REWRITE_CAP` 限制。
-4. **recompose**：將已核准 fragment 放回完整 AST，重新掃描跨片段問題；不確定或
-   block 時採保守 revert。
-5. **verify**：執行 baseline/candidate row-equivalence、schema/column guards 與
-   cost comparison，結果只能是 `SHIP`、`NO_SHIP`、`UNVERIFIED` 或
+```text
+logical SQL
+  │
+  ├─ read-only gate + immutable ExecutionPolicy
+  ├─ PreflightDecision（唯一六態路由）
+  │
+  ├─ baseline / EXPLAIN / static findings
+  ├─ recursive CostNode tree → critical path → diagnosis brief
+  │
+  ├─ decompose → P1–P9 strategy selection → bounded fragment rewrite
+  ├─ recompose full AST → cross-fragment rescan
+  │
+  └─ L1 structural + L2 EXPLAIN + L3 live equivalence
+       └─ SHIP | NO_SHIP | UNVERIFIED | NO_COST_IMPROVEMENT
+```
+
+這個設計有四個硬邊界：
+
+1. **logical SQL 與 execution SQL 分離**：read-only gate 永遠檢查 logical SQL；
+   `--safe-limit` 存在不可變的 `ExecutionPolicy`，每次量測前才衍生 execution SQL，
+   不會把包裝後 SQL 回灌成下一輪語義來源。
+2. **路由由 state machine 決定**：baseline、no-data、real failure、long-query gate 與
+   plan-cost loop 都收斂到 `PreflightDecision`。控制流程不靠分散的 boolean 或例外文字
+   猜測，真實錯誤也不會被誤報成 no-data。
+3. **LLM 沒有放行權**：模型只能從命名的 P1–P9 strategy menu 提出候選。
+   deterministic gate 負責 parse、lint、read-only、結構、欄位形狀、成本與結果等價；
+   任一必要證據缺失時，結果只能降級成 advisory 或 `UNVERIFIED`。
+4. **MCP 與 direct 共用語義**：兩個 adapter 只處理連線、執行、量測與資料列形狀；
+   preflight、diagnosis、rewrite admission、verification 和 report contract 共用同一套邏輯。
+
+讀取型研究由五個公開階段組成。各階段遇到 cluster、parser 或 LLM 問題時，回傳 typed
+unavailable / unverified 結果，不把未處理例外當成研究結論：
+
+1. **baseline**：取得 EXPLAIN cost、plan signature，並在可執行時建立 row anchor。
+2. **decompose**：用 sqlglot 拆出 CTE、root、derived table、JOIN RHS，以及
+   `EXISTS`/`IN` predicate subquery；再依 static findings 與結構成本排序 monster
+   fragments。
+3. **optimize**：只從 P1–P9 strategy menu 選擇做法。SAFE 可提出 rewrite，TRAP
+   必須通過等價驗證，DANGEROUS 只提供 advisory。預設是 evidence-only；片段 rewrite
+   必須明確設定 `GENIE_FRAGMENT_REWRITE=1`，並受 `GENIE_FRAGMENT_REWRITE_CAP` 限制。
+4. **recompose**：把核准的 fragment 放回完整 AST，重新掃描跨片段問題；遇到 block、
+   parse uncertainty 或無法安全定位的 replacement 時，保留原 fragment。
+5. **verify**：執行 baseline/candidate row equivalence、schema/column guards 與 cost
+   comparison，最終 verdict 只有 `SHIP`、`NO_SHIP`、`UNVERIFIED` 或
    `NO_COST_IMPROVEMENT`。
 
-離線 `critical_path.py` 建立遞迴 `CostNode` 樹，以 ordinal row magnitude、join
-blow-up、correlated-subquery、aggregate/distinct/limit reducers 和 static-rule penalty
-估算結構成本，取最重 root-to-leaf critical path。這是診斷與 prompt 的排序訊號，
-不是 live cost 的宣稱；含 cartesian 或 correlated 結構時會標示 offline
-truth-ceiling。其 bottleneck 可將 P-strategy（特別是 P9
-`exists-to-preagg-join`）放入 optimizer 的 diagnosis brief。
+`critical_path.py` 會遞迴建立 `CostNode` 樹，以 ordinal row magnitude、join blow-up、
+correlated subquery、aggregate/distinct/limit reducer 和 static-rule penalty 估算結構
+成本，再找出最重的 root-to-leaf path。CTE owner、derived table、JOIN RHS，以及任意深度
+的 `UNION` / `UNION ALL` / `INTERSECT` / `EXCEPT` 都走同一個 query traversal；連鎖
+set operation 不會再被當成「不是 SELECT」的 parse error。這仍是離線排序訊號，不是
+live Trino cost；遇到 cartesian 或 correlated 結構時，報告會明確標示 offline
+truth ceiling。bottleneck 會進入 deterministic diagnosis brief，讓 optimizer 先處理
+證據最強的節點，而不是對整段 SQL 盲改。
 
-P9 有額外的 pure-AST fan-out verifier：只有能將原 correlated `EXISTS`、同一 inner
-relation 的 pre-aggregation CTE、GROUP BY grain 與回接的 LEFT JOIN 完整綁定時，才會
-報告 `PROVEN_NO_FANOUT`（僅 row-count safety）。值等價、NULL 語意和實際加速仍需
-L3 live evidence。Evidence coverage 以 L1（結構）、L2（EXPLAIN）與 L3（live）
-列出 `PASS`/`FAIL`/`PARTIAL`/`PENDING`，並標示 `SHIP`、`ADVISED` 或
-`PENDING_LIVE`；它不改變既有 accept/reject 決策。
+P9 另外有 pure-AST fan-out verifier。只有原 correlated `EXISTS`、同一 inner relation
+的 pre-aggregation CTE、GROUP BY grain 與回接 LEFT JOIN 完整綁定時，才會回報
+`PROVEN_NO_FANOUT`，而且只代表 row-count safety。值等價、NULL 語意與實際加速仍需
+L3 live evidence。Evidence coverage 會分開列出 L1（結構）、L2（EXPLAIN）與 L3
+（live）的 `PASS` / `FAIL` / `PARTIAL` / `PENDING`，並標示 `SHIP`、`ADVISED` 或
+`PENDING_LIVE`；報告層不會覆寫原本的 accept/reject 決策。
 
 ### 可觀測性與 LLM 邊界
 
