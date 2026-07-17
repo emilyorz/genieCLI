@@ -99,6 +99,25 @@ class IterationRecord:
     baseline_completeness: str | None = None
     candidate_completeness: str | None = None
 
+    @classmethod
+    def from_history(cls, history: dict, *, hypothesis: str, sql: str = "") -> "IterationRecord":
+        """Map the canonical persisted history shape to the report record shape."""
+        return cls(
+            iteration=history["iteration"],
+            status=history["status"],
+            metric_value=history.get("metric"),
+            delta=history.get("delta"),
+            hypothesis=hypothesis,
+            sql=sql,
+            rejection_reason=history.get("rejection_reason"),
+            base_sql=history.get("base_sql"),
+            candidate_sql=history.get("candidate_sql"),
+            baseline_capture_status=history.get("baseline_capture_status"),
+            candidate_capture_status=history.get("candidate_capture_status"),
+            baseline_completeness=history.get("baseline_completeness"),
+            candidate_completeness=history.get("candidate_completeness"),
+        )
+
 
 @dataclass
 class EnhancementReport:
@@ -3169,9 +3188,10 @@ def run_mcp_enhancement(
                 base_sql=best_sql, candidate_sql=candidate_sql,
                 metric=candidate_metric, delta=delta,
             )
-            iterations.append(IterationRecord(
-                metric_value=candidate_metric, hypothesis=incomplete["rejection_reason"],
-                sql=candidate_sql, **incomplete,
+            iterations.append(IterationRecord.from_history(
+                incomplete,
+                hypothesis=incomplete["rejection_reason"],
+                sql=candidate_sql,
             ))
             continue
         if baseline.row_count != candidate.row_count:

@@ -99,6 +99,37 @@ def test_mcp_plan_cost_decompose_seed_authorization_failure_persists_one_canonic
     }
 
 
+def test_iteration_record_accepts_canonical_incomplete_history_metric():
+    """Canonical persisted history maps ``metric`` to ``metric_value``."""
+    from genie.skills.mcp_trino.research import (
+        IterationRecord, MeasureResult, RunMetrics, _incomplete_history,
+    )
+
+    baseline = MeasureResult(
+        median_metric=80.0, samples=[80.0], row_count=1, rows=[{"id": 1}],
+        columns=["id"], metrics=RunMetrics(), capture_status="complete",
+        completeness="unverified_received_envelope",
+    )
+    candidate = MeasureResult(
+        median_metric=10.0, samples=[10.0], row_count=1, rows=[{"id": 1}],
+        columns=["id"], metrics=RunMetrics(), capture_status="complete",
+        completeness="unverified_received_envelope",
+    )
+    history = _incomplete_history(
+        iteration=1, baseline=baseline, candidate=candidate,
+        base_sql="SELECT id FROM t", candidate_sql="SELECT id FROM t WHERE id > 0",
+        metric=10.0, delta=-70.0,
+    )
+
+    record = IterationRecord.from_history(
+        history, hypothesis=history["rejection_reason"], sql=history["candidate_sql"]
+    )
+
+    assert record.metric_value == 10.0
+    assert record.delta == -70.0
+    assert record.status == "equivalence_unverified_incomplete_result"
+
+
 def test_mcp_plan_cost_incomplete_failure_persists_full_history_and_keeps_baseline(monkeypatch):
     """MCP envelopes remain unverified, even when their local rows match."""
     from genie.skills.mcp_trino.research import _run_mcp_plan_cost_loop
