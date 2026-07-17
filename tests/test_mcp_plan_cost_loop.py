@@ -335,6 +335,44 @@ def test_mcp_standard_loop_runs_when_long_query_opt_in_false():
     assert report.enhanced_sql == cand_sql
 
 
+def test_mcp_standard_loop_does_not_remeasure_rejected_duplicate_candidate():
+    """A rejected candidate is fed back and an exact retry consumes no Trino run."""
+    output = MagicMock()
+    client = _make_client()
+    baseline = _make_result(rows=100, wall_ms=10_000)
+    candidate = _make_result(rows=100, wall_ms=5_000)
+    cand_sql = "SELECT a FROM t WHERE a > 0"
+    provider = _llm_provider_with_replies([_wrap_sql(cand_sql), _wrap_sql(cand_sql)])
+    explain = ExplainAnalyzeResult(raw_text="", available=False)
+
+    with patch.object(mcp_research, "_build_mcp_explain_runner", return_value=lambda _sql: None), \
+         patch.object(mcp_research, "_run_mcp_plan_cost_loop") as plan_loop, \
+         patch.object(mcp_research, "_execute_via_mcp", side_effect=_no_error_execute), \
+         patch.object(mcp_research, "_fetch_explain_analyze", return_value=explain), \
+         patch.object(mcp_research, "_assemble_mcp_directions", return_value=([], [])), \
+         patch.object(mcp_research, "_measure_mcp", side_effect=[baseline, candidate]) as measure:
+        report = mcp_research.run_mcp_enhancement(
+            client=client, sql="SELECT * FROM t", metric_key="wall_time_ms",
+            max_iterations=2, verify_runs=1, provider=provider, model="m",
+            reasoning="disable", output=output,
+            build_prompt=lambda *a, **k: "SKILL", long_query_opt_in=False,
+        )
+
+    plan_loop.assert_not_called()
+    assert [call.kwargs.get("label") for call in measure.call_args_list] == [
+        "baseline", "iter 1 candidate",
+    ]
+    assert [it.status for it in report.iterations] == [
+        "equivalence_unverified_incomplete_result", "duplicate_candidate",
+    ]
+    second_request = provider.complete_text.call_args_list[1].args[0]
+    prompt_text = str(second_request.messages)
+    assert "Previously attempted changes" in prompt_text
+    rejection_reason = report.iterations[0].rejection_reason
+    assert rejection_reason is not None
+    assert rejection_reason in prompt_text
+
+
 def test_mcp_falls_back_to_standard_loop_when_explain_has_no_estimates():
     # A cluster without table statistics returns a plan but NO row/byte estimates.
     # Plan-cost ranking is impossible there (every candidate would skip), so the

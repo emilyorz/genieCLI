@@ -3024,6 +3024,32 @@ def run_mcp_enhancement(
     # original (already in the system prompt) so a stable best_sql is never
     # re-diagnosed; refreshed only when an improvement changes best_sql.
     rediag_cache: dict[str, str] = {sql: directions_block}
+    attempted_candidates: dict[str, tuple[int, str, str, str]] = {}
+
+    def _candidate_key(candidate_sql: str) -> str:
+        return " ".join(candidate_sql.split())
+
+    def _remember_candidate(iteration: int, candidate_sql: str,
+                            status: str, reason: str) -> None:
+        attempted_candidates[_candidate_key(candidate_sql)] = (
+            iteration, status, reason, candidate_sql,
+        )
+
+    def _attempted_changes_block() -> str:
+        if not attempted_candidates:
+            return ""
+        lines = ["Previously attempted changes (do NOT repeat these SQL candidates):"]
+        for attempted_iteration, status, reason, attempted_sql in list(
+            attempted_candidates.values()
+        )[-5:]:
+            compact_sql = " ".join(attempted_sql.split())
+            if len(compact_sql) > 500:
+                compact_sql = compact_sql[:497] + "..."
+            lines.append(
+                f"- iteration {attempted_iteration}: {status}; reason={reason}; "
+                f"candidate={compact_sql}"
+            )
+        return "\n".join(lines) + "\n\n"
 
     # ── Iteration loop ──
     for iteration in range(1, max_iterations + 1):
@@ -3059,6 +3085,7 @@ def run_mcp_enhancement(
         # covered by the system prompt) and the diagnosis produced directions.
         diag_line = f"{fresh_block}\n\n" if (fresh_block and best_sql != sql) else ""
 
+        attempted_changes = _attempted_changes_block()
         context = (
             f"[Trino Query Enhancement — Iteration {iteration}]\n"
             f"Target metric: {metric_key} (lower is better)\n"
@@ -3067,6 +3094,7 @@ def run_mcp_enhancement(
             f"Last iteration: {last_str}\n\n"
             f"Current SQL:\n```sql\n{best_sql}\n```\n\n"
             f"{diag_line}"
+            f"{attempted_changes}"
             f"Return the COMPLETE optimized SQL in a ```sql block. ONE change only. "
             f"Do NOT include a trailing semicolon."
         )
@@ -3126,6 +3154,30 @@ def run_mcp_enhancement(
             ))
             continue
 
+        candidate_key = _candidate_key(candidate_sql)
+        if candidate_key in attempted_candidates:
+            attempted_iteration, attempted_status, attempted_reason, _ = (
+                attempted_candidates[candidate_key]
+            )
+            duplicate_reason = (
+                f"same SQL as iteration {attempted_iteration} "
+                f"({attempted_status}: {attempted_reason})"
+            )
+            if output:
+                output.progress(f"  [SKIP] Duplicate candidate — {duplicate_reason}")
+            session["history"].append(new_msg(
+                "user",
+                f"Candidate rejected without execution: {duplicate_reason}. "
+                "Do not repeat an earlier SQL candidate; try a materially different change."
+            ))
+            iterations.append(IterationRecord(
+                iteration=iteration, status="duplicate_candidate",
+                metric_value=best_metric, delta=0.0,
+                hypothesis=duplicate_reason, sql=candidate_sql,
+                rejection_reason=duplicate_reason,
+            ))
+            continue
+
         # Extract hypothesis
         hypothesis = "?"
         for line in reply.split("\n"):
@@ -3161,6 +3213,7 @@ def run_mcp_enhancement(
                 metric_value=best_metric, delta=0.0,
                 hypothesis=hypothesis, sql=candidate_sql,
             ))
+            _remember_candidate(iteration, candidate_sql, "timeout_worse", str(exc))
             continue
         except Exception as exc:
             elapsed = time.monotonic() - iter_start
@@ -3175,6 +3228,12 @@ def run_mcp_enhancement(
                 iteration=iteration, status="exec_failed",
                 metric_value=best_metric, delta=0.0,
                 hypothesis=hypothesis, sql=candidate_sql,
+            ))
+            _remember_candidate(iteration, candidate_sql, "exec_failed", str(exc))
+            session["history"].append(new_msg(
+                "user",
+                f"Candidate REVERTED: execution failed: {exc}. "
+                "Do not repeat this SQL candidate; try a materially different change."
             ))
             continue
 
@@ -3192,6 +3251,15 @@ def run_mcp_enhancement(
                 incomplete,
                 hypothesis=incomplete["rejection_reason"],
                 sql=candidate_sql,
+            ))
+            _remember_candidate(
+                iteration, candidate_sql, incomplete["status"],
+                incomplete["rejection_reason"],
+            )
+            session["history"].append(new_msg(
+                "user",
+                f"Candidate REVERTED: {incomplete['rejection_reason']}. "
+                "Do not repeat this SQL candidate; try a materially different change."
             ))
             continue
         if baseline.row_count != candidate.row_count:
@@ -3218,6 +3286,9 @@ def run_mcp_enhancement(
                 metric_value=candidate_metric, delta=delta,
                 hypothesis=hypothesis, sql=candidate_sql,
             ))
+            _remember_candidate(
+                iteration, candidate_sql, "semantic_drift", equiv_reason,
+            )
             continue
 
         # Decision: keep or revert
@@ -3254,6 +3325,10 @@ def run_mcp_enhancement(
             metric_value=candidate_metric, delta=delta,
             hypothesis=hypothesis, sql=candidate_sql,
         ))
+        _remember_candidate(
+            iteration, candidate_sql, status,
+            "accepted as current best" if improved else "not faster than current best",
+        )
 
     # ── Direction efficacy (v32 T2) ──
     # Observational attribution: did each diagnosed direction's target metric
