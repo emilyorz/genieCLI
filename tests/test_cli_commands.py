@@ -200,6 +200,12 @@ def test_cli_version():
     assert "5.0.0" in result.output
 
 
+def test_cli_help_documents_no_skills():
+    result = runner.invoke(app, ["--help"])
+    assert result.exit_code == 0
+    assert "--no-skills" in result.output
+
+
 def test_cli_config_subcommand(monkeypatch, tmp_path):
     monkeypatch.setattr("genie.core.config._LEGACY_PATH", tmp_path / "x.json")
     monkeypatch.setattr("genie.core.config._TOML_PATH", tmp_path / "y.toml")
