@@ -210,7 +210,15 @@ def test_cli_help_documents_global_option_flags():
     """Lock root --help for flags not covered by no-skills lock."""
     result = runner.invoke(app, ["--help"])
     assert result.exit_code == 0
-    for flag in ("--no-color", "--model", "--skill-dir", "--reasoning"):
+    for flag in (
+        "--no-color",
+        "--model",
+        "--skill-dir",
+        "--reasoning",
+        "--debug",
+        "--provider",
+        "--skills",
+    ):
         assert flag in result.output, f"missing help flag: {flag}"
 
 
