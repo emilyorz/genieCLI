@@ -206,6 +206,14 @@ def test_cli_help_documents_no_skills():
     assert "--no-skills" in result.output
 
 
+def test_cli_help_documents_global_option_flags():
+    """Lock root --help for flags not covered by no-skills lock."""
+    result = runner.invoke(app, ["--help"])
+    assert result.exit_code == 0
+    for flag in ("--no-color", "--model", "--skill-dir", "--reasoning"):
+        assert flag in result.output, f"missing help flag: {flag}"
+
+
 def test_cli_config_subcommand(monkeypatch, tmp_path):
     monkeypatch.setattr("genie.core.config._LEGACY_PATH", tmp_path / "x.json")
     monkeypatch.setattr("genie.core.config._TOML_PATH", tmp_path / "y.toml")
