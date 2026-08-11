@@ -150,8 +150,12 @@ def _static_parse_ok(sql: str) -> tuple[bool, str]:
 
 
 def _default_apply(sql: str, step: PlanStepV2) -> Optional[str]:
+    """Sentinel no-op — must never produce APPLIED success."""
     _ = (sql, step)
     return None
+
+
+_default_apply.is_noop = True  # type: ignore[attr-defined]
 
 
 def _order_steps(steps: Sequence[PlanStepV2]) -> list[PlanStepV2]:
@@ -325,6 +329,23 @@ class StepwiseDriver:
                 )
                 continue
 
+            if getattr(self.apply_fn, "is_noop", False):
+                ledger.add(
+                    StepRecord(
+                        step_id=step.step_id,
+                        rule_id=step.rule_id,
+                        site_anchor=self._anchor(step),
+                        status=StepStatus.SKIPPED,
+                        verify_level=VerifyLevel.STATIC,
+                        reason_code=ReasonCode.APPLY_FAIL,
+                        unverified=True,
+                        before_sql=before,
+                        detail="default apply_fn is no-op; inject real apply_fn (cannot APPLIED)",
+                        depends_on=deps,
+                    )
+                )
+                continue
+
             if not new_sql or new_sql == before:
                 ledger.add(
                     StepRecord(
@@ -479,6 +500,33 @@ def default_mode_name(*, execute_all: bool = False) -> str:
     return "EXECUTE_ALL_OPTIN" if execute_all else "HYBRID_STEPWISE"
 
 
+def stepwise_opt_in(env: dict | None = None) -> bool:
+    """Explicit opt-in for attaching/running HYBRID_STEPWISE in research.
+
+    Env: GENIE_STEPWISE=1|true|on (default off / shadow).
+    """
+    import os
+    e = env if env is not None else os.environ
+    v = str(e.get("GENIE_STEPWISE", "0")).strip().lower()
+    return v in {"1", "true", "yes", "on"}
+
+
+def run_stepwise_shadow(
+    sql: str,
+    *,
+    confirm_dangerous: bool = False,
+    apply_fn: ApplyFn | None = None,
+) -> StepLedger:
+    """Offline shadow run: SCAN hits → plan v2 → driver (no MCP)."""
+    from genie.skills.mcp_trino.phit_scan import scan_phits
+    from genie.skills.mcp_trino.rewrite_plan import build_rewrite_plan_v2
+
+    hits = scan_phits(sql)
+    plan = build_rewrite_plan_v2(hits)
+    driver = StepwiseDriver(apply_fn=apply_fn)
+    return driver.run(sql, plan, confirm_dangerous=confirm_dangerous, mcp_client=None)
+
+
 __all__ = [
     "StepStatus",
     "ReasonCode",
@@ -489,5 +537,7 @@ __all__ = [
     "ApplyFn",
     "LiveVerifyFn",
     "default_mode_name",
+    "stepwise_opt_in",
+    "run_stepwise_shadow",
     "assert_no_dangerous_execute_v2",
 ]

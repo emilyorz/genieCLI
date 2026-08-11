@@ -237,3 +237,40 @@ def test_v1_plan_upgrade_compat():
 def test_execute_all_flag_changes_mode_name_only_with_flag():
     assert default_mode_name(execute_all=False) == "HYBRID_STEPWISE"
     assert default_mode_name(execute_all=True) == "EXECUTE_ALL_OPTIN"
+
+
+def test_default_noop_cannot_mark_applied():
+    driver = StepwiseDriver()  # default no-op apply
+    ledger = driver.run("SELECT 1", [_step("P1", "ast:a", sid="S1")])
+    assert all(r.status != StepStatus.APPLIED for r in ledger.records)
+    assert ledger.records[0].status == StepStatus.SKIPPED
+
+
+def test_stepwise_opt_in_default_off(monkeypatch):
+    from genie.skills.mcp_trino.stepwise_driver import stepwise_opt_in
+    monkeypatch.delenv("GENIE_STEPWISE", raising=False)
+    assert stepwise_opt_in() is False
+    monkeypatch.setenv("GENIE_STEPWISE", "1")
+    assert stepwise_opt_in() is True
+
+
+def test_run_stepwise_shadow_e2e_unverified_or_needs_human():
+    from genie.skills.mcp_trino.stepwise_driver import run_stepwise_shadow
+    sql = """
+    SELECT b.id FROM base b
+    JOIN r ON COALESCE(r.x,'') = b.x
+    """
+    ledger = run_stepwise_shadow(sql)
+    assert ledger.mode == "HYBRID_STEPWISE"
+    # with default no-op, no APPLIED success
+    assert all(r.status != StepStatus.APPLIED for r in ledger.records)
+    md = ledger.to_markdown()
+    assert "HYBRID_STEPWISE" in md
+    assert "EXECUTE_ALL default" in md or "No EXECUTE_ALL" in md
+
+
+def test_schema_v2_field_present():
+    hits = [PHit(pid="P1", node_ref="ast:a", tier="safe", why="x")]
+    plan = build_rewrite_plan_v2(hits)
+    assert plan.plan_schema == "v2"
+    assert plan.schema.startswith("genie-rewrite-plan-v2")

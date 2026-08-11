@@ -227,6 +227,7 @@ Engine builds P-hit SCAN → Rewrite PLAN → `StepwiseDriver` ledger.
 Dangerous rules (P3/P4/P6) stay `NEEDS_HUMAN` unless explicitly confirmed.
 Offline / no Trino MCP: STATIC checks only and rows are marked **UNVERIFIED** (not semantic proof).
 No EXECUTE_ALL default. No percentage speedup claims in conclusions.
+Opt-in attach: set `GENIE_STEPWISE=1` to run offline shadow driver into the report (default off / shadow). Real apply_fn must be injected for APPLIED rewrites.
 
 ## Connector-Specific Optimizations
 

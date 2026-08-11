@@ -2157,8 +2157,24 @@ def generate_report(report: EnhancementReport, locale: str = "en", step_trace=No
             lines.append("")
             lines.append(f"_Plan unavailable: {_plan_exc}_")
             lines.append("")
-        # Optional stepwise ledger attached by research loop (offline or live).
+        # Optional stepwise ledger: explicit attach on report OR GENIE_STEPWISE=1 shadow.
         _step_ledger = getattr(report, "step_ledger", None)
+        if _step_ledger is None:
+            try:
+                from genie.skills.mcp_trino.stepwise_driver import (
+                    run_stepwise_shadow,
+                    stepwise_opt_in,
+                )
+                if stepwise_opt_in():
+                    _step_ledger = run_stepwise_shadow(
+                        getattr(report, "original_sql", "") or ""
+                    )
+                    try:
+                        report.step_ledger = _step_ledger
+                    except Exception:
+                        pass
+            except Exception:
+                _step_ledger = None
         if _step_ledger is not None and hasattr(_step_ledger, "to_markdown"):
             lines.append("## Step Ledger (HYBRID_STEPWISE)")
             lines.append("")
