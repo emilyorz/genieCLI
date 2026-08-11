@@ -2131,6 +2131,35 @@ def generate_report(report: EnhancementReport, locale: str = "en", step_trace=No
     lines.append(f"| {L['consistency_detail']} | {report.data_consistency_reason} |")
     lines.append("")
 
+    # ── Engine P-hit SCAN + Rewrite PLAN (Stage-2/3 artifacts; best-effort) ──
+    try:
+        from genie.skills.mcp_trino.phit_scan import (
+            format_phits_markdown,
+            scan_phits,
+        )
+        from genie.skills.mcp_trino.rewrite_plan import (
+            build_rewrite_plan,
+            format_plan_markdown,
+        )
+        _hits = scan_phits(getattr(report, "original_sql", "") or "")
+        lines.append("## P-hit SCAN")
+        lines.append("")
+        lines.append(format_phits_markdown(_hits).rstrip())
+        lines.append("")
+        try:
+            _plan = build_rewrite_plan(_hits)
+            lines.append("## Rewrite PLAN")
+            lines.append("")
+            lines.append(format_plan_markdown(_plan).rstrip())
+            lines.append("")
+        except Exception as _plan_exc:
+            lines.append("## Rewrite PLAN")
+            lines.append("")
+            lines.append(f"_Plan unavailable: {_plan_exc}_")
+            lines.append("")
+    except Exception:
+        pass
+
     # ── Iteration History ──
     lines.append(f"## {L['iter_history']}")
     lines.append("")
