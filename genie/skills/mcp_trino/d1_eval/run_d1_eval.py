@@ -114,32 +114,41 @@ def run_eval(seed: Path, out: Path, model_id: str = "static-phit-scan") -> dict[
     rec_den = sum_tp + sum_fn
     prec_den = sum_tp + sum_fp
     report = {
-        "schema": "genie-d1-eval-v1",
-        "seed": str(seed),
-        "seed_hash": seed_hash,
-        "model_id": model_id,
-        "n_queries": len(per_query),
-        "aggregate": {
-            "tp": sum_tp,
-            "fn": sum_fn,
-            "fp": sum_fp,
-            "recall": round((sum_tp / rec_den) if rec_den else 0.0, 4),
-            "precision": round((sum_tp / prec_den) if prec_den else 0.0, 4),
-        },
-        "per_query": per_query,
-        "caveats": [
-            "Recall/precision = agreement with frozen oracle set, not ground truth.",
-            "Oracle v1 may be synthetic-structural stand-in until live Opus batch is frozen.",
-            "n is small; ±10pt swings can be noise.",
-            "D1 analysis only — not verified apply (D2), not SQL-looks-like-Opus, not speedup %.",
-            "No EXECUTE_ALL. apply remains no-op for scoring.",
-        ],
-        "forbidden_claims": [
-            "Do not claim 80% without this scorer + frozen oracle.",
-            "Do not report speedup % from this tool.",
-            "Do not equate analysis coverage with applied optimization.",
-        ],
-    }
+            "schema": "genie-d1-eval-v1",
+            "seed": str(seed),
+            "seed_hash": seed_hash,
+            "model_id": model_id,
+            "oracle_provenance": "synthetic_v0",
+            "metric_kind": "harness_self_consistency",
+            "n_queries": len(per_query),
+            "aggregate": {
+                "tp": sum_tp,
+                "fn": sum_fn,
+                "fp": sum_fp,
+                # Product D1 recall/precision only valid when oracle_provenance is opus_adjudicated_v*.
+                "harness_self_consistency_recall": round((sum_tp / rec_den) if rec_den else 0.0, 4),
+                "harness_self_consistency_precision": round((sum_tp / prec_den) if prec_den else 0.0, 4),
+                # Back-compat aliases explicitly namespaced — do not quote as product recall.
+                "recall": round((sum_tp / rec_den) if rec_den else 0.0, 4),
+                "precision": round((sum_tp / prec_den) if prec_den else 0.0, 4),
+                "recall_is_product_metric": False,
+            },
+            "per_query": per_query,
+            "caveats": [
+                "oracle_provenance=synthetic_v0 → aggregate recall/precision are harness_self_consistency only.",
+                "Do NOT quote 1.00 (or any number) as Opus analysis coverage until oracle is opus_adjudicated.",
+                "Recall/precision agreement with frozen oracle set, not ground truth.",
+                "n is small; ±10pt swings can be noise.",
+                "D1 analysis only — not verified apply (D2), not SQL-looks-like-Opus, not speedup %.",
+                "No EXECUTE_ALL. apply remains no-op for scoring.",
+            ],
+            "forbidden_claims": [
+                "Do not claim 80% without opus_adjudicated oracle + this scorer.",
+                "Do not report speedup % from this tool.",
+                "Do not equate analysis coverage with applied optimization.",
+                "Do not quote harness_self_consistency as product recall/precision.",
+            ],
+        }
     out.parent.mkdir(parents=True, exist_ok=True)
     out.write_text(json.dumps(report, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
     return report
@@ -163,8 +172,10 @@ def main(argv: list[str] | None = None) -> int:
                 "ok": True,
                 "out": str(args.out),
                 "n": rep["n_queries"],
-                "recall": agg["recall"],
-                "precision": agg["precision"],
+                "oracle_provenance": rep.get("oracle_provenance"),
+                "metric_kind": rep.get("metric_kind"),
+                "harness_self_consistency_recall": agg.get("harness_self_consistency_recall"),
+                "harness_self_consistency_precision": agg.get("harness_self_consistency_precision"),
                 "seed_hash": rep["seed_hash"][:12],
             },
             indent=2,

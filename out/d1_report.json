@@ -1,15 +1,20 @@
 {
   "schema": "genie-d1-eval-v1",
   "seed": "/private/tmp/genieCLI-d1-analysis-coverage-wt/eval/seed/d1_seed_v1",
-  "seed_hash": "b1321c62f180329fcf093e2e74bdbd6cdda38e6945d23f4aa3f9d991226604d7",
+  "seed_hash": "f50140a4573f589045c0232d86406d0f866583f479e81e0a8d19b4bc99875556",
   "model_id": "static-phit-scan",
-  "n_queries": 20,
+  "oracle_provenance": "synthetic_v0",
+  "metric_kind": "harness_self_consistency",
+  "n_queries": 23,
   "aggregate": {
     "tp": 26,
     "fn": 0,
     "fp": 0,
+    "harness_self_consistency_recall": 1.0,
+    "harness_self_consistency_precision": 1.0,
     "recall": 1.0,
-    "precision": 1.0
+    "precision": 1.0,
+    "recall_is_product_metric": false
   },
   "per_query": [
     {
@@ -380,7 +385,7 @@
         {
           "category": "LEADING_WILDCARD_LIKE",
           "object": "like",
-          "system_note": "P3: LIKE/pattern match; token contains rewrite is DANGEROUS (T3→P3 advise-only)."
+          "system_note": "P3: LIKE with leading wildcard; token contains rewrite is DANGEROUS (T3→P3 advise-only)."
         }
       ]
     },
@@ -421,18 +426,59 @@
           "system_note": "P9: Correlated EXISTS/IN-style existence check; prefer pre-aggregate + join (T1→P9), not bare P2 on 1-to-many."
         }
       ]
+    },
+    {
+      "query_id": "q21",
+      "oracle_n": 0,
+      "system_n": 0,
+      "tp": 0,
+      "fn": 0,
+      "fp": 0,
+      "recall": 0.0,
+      "precision": 0.0,
+      "missed": [],
+      "spurious": [],
+      "matched": []
+    },
+    {
+      "query_id": "q22",
+      "oracle_n": 0,
+      "system_n": 0,
+      "tp": 0,
+      "fn": 0,
+      "fp": 0,
+      "recall": 0.0,
+      "precision": 0.0,
+      "missed": [],
+      "spurious": [],
+      "matched": []
+    },
+    {
+      "query_id": "q23",
+      "oracle_n": 0,
+      "system_n": 0,
+      "tp": 0,
+      "fn": 0,
+      "fp": 0,
+      "recall": 0.0,
+      "precision": 0.0,
+      "missed": [],
+      "spurious": [],
+      "matched": []
     }
   ],
   "caveats": [
-    "Recall/precision = agreement with frozen oracle set, not ground truth.",
-    "Oracle v1 may be synthetic-structural stand-in until live Opus batch is frozen.",
+    "oracle_provenance=synthetic_v0 → aggregate recall/precision are harness_self_consistency only.",
+    "Do NOT quote 1.00 (or any number) as Opus analysis coverage until oracle is opus_adjudicated.",
+    "Recall/precision agreement with frozen oracle set, not ground truth.",
     "n is small; ±10pt swings can be noise.",
     "D1 analysis only — not verified apply (D2), not SQL-looks-like-Opus, not speedup %.",
     "No EXECUTE_ALL. apply remains no-op for scoring."
   ],
   "forbidden_claims": [
-    "Do not claim 80% without this scorer + frozen oracle.",
+    "Do not claim 80% without opus_adjudicated oracle + this scorer.",
     "Do not report speedup % from this tool.",
-    "Do not equate analysis coverage with applied optimization."
+    "Do not equate analysis coverage with applied optimization.",
+    "Do not quote harness_self_consistency as product recall/precision."
   ]
 }

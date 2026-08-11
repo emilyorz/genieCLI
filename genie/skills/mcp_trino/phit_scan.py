@@ -224,20 +224,20 @@ def _scan_p9(tree: Any, exp: Any) -> list[PHit]:
 
 def _scan_p3(tree: Any, exp: Any) -> list[PHit]:
     hits: list[PHit] = []
-    # LIKE '%x%'
+    # LIKE with a leading wildcard ('%…' or '_…') — trailing-only 'foo%' is NOT P3.
     for i, like in enumerate(tree.find_all(exp.Like)):
         try:
             pattern = like.expression.sql() if hasattr(like, "expression") else ""
         except Exception:
             pattern = str(like)
-        pat = pattern.replace("'", "")
-        if "%" in pat:
+        pat = pattern.strip().strip("'").strip('"')
+        if pat.startswith("%") or pat.startswith("_"):
             hits.append(
                 PHit(
                     pid="P3",
                     node_ref=f"ast:like[{i}]",
                     tier=_tier_for("P3"),
-                    why="LIKE/pattern match; token contains rewrite is DANGEROUS (T3→P3 advise-only).",
+                    why="LIKE with leading wildcard; token contains rewrite is DANGEROUS (T3→P3 advise-only).",
                     span=_span_of(like),
                 )
             )
