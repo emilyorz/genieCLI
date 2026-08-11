@@ -118,6 +118,7 @@ the side effects:
 | `ORDER BY` on full result                           | Move `ORDER BY` into a CTE or subquery with `LIMIT` — sorting unbounded result sets spills to disk               |
 | `CAST(partition_col AS VARCHAR)` in WHERE           | Use native type comparison — casting partition columns disables partition pruning                                |
 | `JOIN ... ON UPPER(a.x) = b.y` / `ON CAST(a.id AS varchar) = b.id` / `ON a.x + 1 = b.k` (function/cast/arithmetic on a join key) | Join on the raw column so the planner can hash-join. If the value must be normalized/cast, materialize the normalized value as a stored column upstream — a computed join key forces a per-row recompute / nested-loop join. (detected by static rule `join-key-computed`) |
+| `bitwise_or` / `bitwise_and` / bitmask flags in matching logic | Prefer `bool_or`, `max`, `sum(CASE …)`, or plain `CASE` status mapping. Bitmasks hide predicates from the planner and complicate equivalence. |
 
 ## P1–P8 Rewrite Strategy Menu
 
@@ -141,6 +142,79 @@ Apply a NAMED strategy; do not freestyle. Safety tier gates auto-apply:
 | P6 | lambda-rewrite | DANGEROUS | per-row array/map expansion → higher-order lambda (transform/filter/reduce) — heavy; null/empty/order easy to change |
 | P7 | skinny-join | SAFE | join inputs carry unused columns → project only keys + needed columns before the join (narrow the shuffle) |
 | P8 | broadcast-hint | SAFE | small build side distributed (PARTITIONED) → broadcast hint to replicate it and avoid a large shuffle |
+
+## Rule-Matching / Non-Equi Join Playbook
+
+Use this section when the workload looks like **massive base table × small/medium
+rule table**, **non-equi / cross join rule matching**, or **correlated
+EXISTS/IN/CASE enrichment** — not for ordinary equi-join tuning.
+
+This playbook does **not** replace P1–P8. It only chooses **which named strategy
+to try first**. Cross-reference the menu above; do not freestyle a new strategy.
+
+### Scenario cues
+
+- Join/`CASE` conditions use `LIKE`, `strpos`, `contains` on concatenated fields,
+  range/non-equi predicates, or many OR-ed rule branches
+- Rule/dimension side is much smaller than the fact/base side
+- Correlated `EXISTS` / `IN (SELECT …)` inside join predicates or per-row `CASE`
+- Functions (`COALESCE`, `CONCAT`/`||`, `SPLIT`, `CAST`, `UPPER`) sit on join keys
+- Previous candidates timed out or spilled while “matching rules”
+
+### Forced strategy order (one step per iteration)
+
+If system directions / rule-gate / critical-path brief already name a hotspot,
+prefer that hotspot and still apply **one** P-strategy only. Otherwise walk:
+
+1. **[P1 SAFE] function-pushup** — move `COALESCE`/`CONCAT`/`SPLIT`/`CAST`/
+   arithmetic **off** `ON`/`WHERE` join keys into upstream source CTEs; join on
+   precomputed columns (see static rule `join-key-computed`).
+2. **[P7 SAFE] skinny-join** — project base/rule sides to PK + predicate columns
+   before the heavy match; rejoin the wide base **after** 1:1 aggregate by PK
+   (late materialization).
+3. **[P8 SAFE] broadcast advice only** — if the filtered rule/build side is
+   provably small, recommend broadcast via harness advice. **Never** put
+   `SET SESSION` or `-- set session …` magic comments inside candidate SQL.
+4. **[P2 TRAP] exists-to-left-join** — convert correlated `EXISTS`/`IN` enrich to
+   upstream `LEFT JOIN` **only when the join key is unique**. Without uniqueness
+   evidence, **advise only** (fan-out changes `MAX`/`SUM`/`LISTAGG`).
+5. **[P5 TRAP] predicate/partition pushdown** — push time/partition filters to
+   leaves so pruning survives the rewrite.
+6. **[P6 DANGEROUS] lambda / single-row rule array** — **not the default.**
+   Only after safer steps fail **and** all of:
+   - rule table is small enough to `array_agg` into one row safely
+   - `filter`/`reduce` semantics are provably equivalent to the original match
+   - intermediate columns use a `calc_` prefix **inside CTEs**, final SELECT
+     column names still match baseline
+   Pattern sketch (advise/candidate only when gates above hold): package rules
+   with `array_agg(CAST(ROW(...) AS ROW(...)))`, `CROSS JOIN` the single row,
+   `filter(all_rules, r -> …)` then `reduce(...)` per base row.
+7. **[P3 / P4 DANGEROUS] advise-first**
+   - `LIKE '%v%'` → `contains(split(...))` changes substring vs token semantics
+   - `LISTAGG` → `array_join(slice(array_sort(array_agg(x)), 1, N), ',')` is a
+     **lossy cap** (`slice` truncates). Also note `array_agg` itself can OOM
+     before `slice` helps. Without explicit acceptance of different results,
+     **do not emit as a candidate** (row-equivalence will kill it).
+
+### Bitwise anti-pattern
+
+- **Never** use `bitwise_or` / `bitwise_and` / bitmasks for rule flags.
+- Prefer `bool_or`, `max`, `sum(CASE …)`, plain `CASE`, or (only if already in a
+  justified P6 path) `reduce` over booleans/status strings.
+
+### Hard constraints (research loop)
+
+- Candidate SQL must **not** contain any `SET SESSION` / session-set magic comment;
+  broadcast and resource knobs stay in advice, not in the SQL body.
+- **P6 is not the default.** Prefer P1/P7 first; use P6 only with the gates above.
+- **P2 without unique-key evidence** is advise-only (fan-out risk).
+- `slice(..., 1, N)` is lossy truncation — not a silent drop-in for `LISTAGG`.
+- **Exactly one focused change per iteration.** Multi-step refactors become
+  multiple iterations, each independently measurable.
+- Do **not** re-emit AST trees or long “extreme optimization” bullet essays.
+  Critical path / directions from the system are authoritative when present.
+- Response format unchanged: one short hypothesis line (≤80 chars) + complete
+  ```sql``` block; no trailing semicolon; preserve result semantics.
 
 ## Connector-Specific Optimizations
 
