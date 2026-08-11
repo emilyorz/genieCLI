@@ -420,15 +420,32 @@ def test_winner_plan_cost_is_from_ranked_not_measure():
 
 def test_wall_mcp_max_of_two_fields():
     """T-S1-WALL MCP: RunMetrics(query_time_ms=10, wall_time_ms=20) → max==20.0 (2-field max)."""
-    from genie.skills.mcp_trino.research import RunMetrics
+    from genie.skills.mcp_trino.research import RunMetrics, _baseline_wall_ms
 
     metrics = RunMetrics(query_time_ms=10.0, wall_time_ms=20.0)
-    # MCP path: max(query_time_ms, wall_time_ms)
-    baseline_wall_ms = float(max(
-        metrics.query_time_ms or 0,
-        metrics.wall_time_ms or 0,
-    ))
-    assert baseline_wall_ms == 20.0
+    assert _baseline_wall_ms(metrics) == 20.0
+
+
+def test_wall_mcp_prefers_query_time_when_stage_wall_is_tiny():
+    """Sam repro: EXPLAIN ANALYZE backfill wall=185ms must not beat e2e query=4196ms.
+
+    Old ``wall or query`` collapsed candidate timeout to the 2s floor and set
+    ``SET SESSION query_max_run_time = '2000ms'`` even though baseline took ~4s.
+    """
+    from genie.skills.mcp_trino.preflight import make_query_max_run_time_sql
+    from genie.skills.mcp_trino.research import RunMetrics, _baseline_wall_ms
+
+    metrics = RunMetrics(query_time_ms=4196.0, wall_time_ms=185.0, cpu_time_ms=168.4)
+    baseline_wall_ms = _baseline_wall_ms(metrics)
+    assert baseline_wall_ms == 4196.0
+    # 2× headroom → ~8392ms, NOT the 2000ms floor
+    assert make_query_max_run_time_sql(baseline_wall_ms) == (
+        "SET SESSION query_max_run_time = '8392ms'"
+    )
+    # Guard the anti-pattern explicitly: truthy tiny wall must not win.
+    legacy_bug = float(metrics.wall_time_ms or metrics.query_time_ms or 0)
+    assert legacy_bug == 185.0
+    assert baseline_wall_ms > legacy_bug
 
 
 def test_wall_direct_max_of_three_fields():

@@ -57,6 +57,31 @@ class RunMetrics:
                 f"wall={self.wall_time_ms:.0f}ms rows={self.processed_rows}")
 
 
+def _baseline_wall_ms(metrics: RunMetrics | None) -> float:
+    """Best available wall-clock duration for kill-timeout / long-query gate.
+
+    Prefer the LARGEST available measure so we never under-estimate baseline.
+
+    Why max(query_time_ms, wall_time_ms) and NOT ``wall or query``:
+    - ``query_time_ms`` is the client-measured end-to-end duration (always set).
+    - ``wall_time_ms`` often comes from EXPLAIN ANALYZE stage totals after the
+      mcp-trino metrics backfill. Stage wall can be tiny/partial relative to
+      real e2e time (e.g. query=4196ms, wall=185ms). Using ``wall or query``
+      treats a non-zero stage wall as authoritative and collapses the candidate
+      timeout to the 2s floor — killing every real candidate.
+    """
+    if metrics is None:
+        return 0.0
+
+    def _num(v) -> float:
+        return float(v) if isinstance(v, (int, float)) and not isinstance(v, bool) else 0.0
+
+    return float(max(
+        _num(getattr(metrics, "query_time_ms", 0)),
+        _num(getattr(metrics, "wall_time_ms", 0)),
+    ))
+
+
 @dataclass
 class MeasureResult:
     """Aggregated result from multiple runs and local capture provenance."""
@@ -1555,10 +1580,7 @@ def _run_mcp_plan_cost_loop(
         # Use the LARGER of the measured end-to-end query time and the (often 0
         # or tiny, EXPLAIN-stage-derived) wall time, so the kill-timeout basis
         # never under-estimates how long baseline actually took.
-        baseline_wall_ms = float(max(
-            baseline.metrics.query_time_ms or 0,
-            baseline.metrics.wall_time_ms or 0,
-        ))
+        baseline_wall_ms = _baseline_wall_ms(baseline.metrics)
         candidate_timeout_ms = make_candidate_timeout_ms(baseline_wall_ms) if baseline_wall_ms > 0 else None
 
     _assert_executable_read_only(original_sql)
@@ -2745,7 +2767,7 @@ def run_mcp_enhancement(
                 )
         threshold_s = long_query_threshold_s if long_query_threshold_s is not None else DEFAULT_LONG_QUERY_THRESHOLD_S
         _gate = check_long_query_gate(
-            baseline_wall_ms=float(_baseline.metrics.wall_time_ms or _baseline.metrics.query_time_ms or 0),
+            baseline_wall_ms=_baseline_wall_ms(_baseline.metrics),
             max_iterations=max_iterations, long_query_opt_in=long_query_opt_in,
             threshold_s=threshold_s, max_fallbacks=fallbacks)
         if _gate.ok and long_query_opt_in and max_iterations > 0:   # preserve guard
@@ -2845,7 +2867,12 @@ def run_mcp_enhancement(
     # mcp-trino may or may not persist SET SESSION across separate tool calls.
     # We emit it anyway; if the server ignores it, candidates that overshoot
     # baseline wall-time are also capped by the MCP request timeout below.
-    baseline_wall_ms = float(_baseline.metrics.wall_time_ms or _baseline.metrics.query_time_ms or 0)
+    # IMPORTANT: use max(query_time, wall_time) — NOT ``wall or query``.
+    # After EXPLAIN ANALYZE backfill, wall_time_ms is often a tiny stage total
+    # while query_time_ms is the real client e2e duration (Sam repro: query=4196
+    # wall=185 → old code set query_max_run_time=2000ms floor and killed all
+    # candidates).
+    baseline_wall_ms = _baseline_wall_ms(_baseline.metrics)
     candidate_timeout_ms = make_candidate_timeout_ms(baseline_wall_ms) if baseline_wall_ms > 0 else None
     if baseline_wall_ms > 0:
         timeout_sql = make_query_max_run_time_sql(baseline_wall_ms)
