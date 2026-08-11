@@ -1,0 +1,11 @@
+{
+  "query_id": "q19",
+  "findings": [
+    {
+      "category": "OTHER",
+      "object": "listagg",
+      "columns": [],
+      "note": "LISTAGG heavy agg"
+    }
+  ]
+}

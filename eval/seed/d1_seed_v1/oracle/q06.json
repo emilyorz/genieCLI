@@ -1,0 +1,11 @@
+{
+  "query_id": "q06",
+  "findings": [
+    {
+      "category": "NON_SARGABLE",
+      "object": "join",
+      "columns": [],
+      "note": "CAST on join key"
+    }
+  ]
+}

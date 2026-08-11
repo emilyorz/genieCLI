@@ -1,0 +1,17 @@
+{
+  "query_id": "q17",
+  "findings": [
+    {
+      "category": "REDUNDANT_CTE_JOIN",
+      "object": "cte",
+      "columns": [],
+      "note": "same dim joined across CTE chain"
+    },
+    {
+      "category": "SELECT_STAR_WIDE",
+      "object": "select",
+      "columns": [],
+      "note": "select *"
+    }
+  ]
+}

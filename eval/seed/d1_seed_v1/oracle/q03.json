@@ -1,0 +1,11 @@
+{
+  "query_id": "q03",
+  "findings": [
+    {
+      "category": "NON_SARGABLE",
+      "object": "join",
+      "columns": [],
+      "note": "COALESCE on join key"
+    }
+  ]
+}

@@ -1,0 +1,11 @@
+{
+  "query_id": "q13",
+  "findings": [
+    {
+      "category": "CORRELATED_SUBQUERY",
+      "object": "exists",
+      "columns": [],
+      "note": "correlated EXISTS"
+    }
+  ]
+}

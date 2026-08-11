@@ -1,0 +1,438 @@
+{
+  "schema": "genie-d1-eval-v1",
+  "seed": "/private/tmp/genieCLI-d1-analysis-coverage-wt/eval/seed/d1_seed_v1",
+  "seed_hash": "b1321c62f180329fcf093e2e74bdbd6cdda38e6945d23f4aa3f9d991226604d7",
+  "model_id": "static-phit-scan",
+  "n_queries": 20,
+  "aggregate": {
+    "tp": 26,
+    "fn": 0,
+    "fp": 0,
+    "recall": 1.0,
+    "precision": 1.0
+  },
+  "per_query": [
+    {
+      "query_id": "q01",
+      "oracle_n": 1,
+      "system_n": 1,
+      "tp": 1,
+      "fn": 0,
+      "fp": 0,
+      "recall": 1.0,
+      "precision": 1.0,
+      "missed": [],
+      "spurious": [],
+      "matched": [
+        {
+          "category": "NON_SARGABLE",
+          "object": "join",
+          "system_note": "P1: JOIN ON uses function/cast/concat/coalesce/arithmetic on a key side; push compute upstream (T2→P1)."
+        }
+      ]
+    },
+    {
+      "query_id": "q02",
+      "oracle_n": 1,
+      "system_n": 1,
+      "tp": 1,
+      "fn": 0,
+      "fp": 0,
+      "recall": 1.0,
+      "precision": 1.0,
+      "missed": [],
+      "spurious": [],
+      "matched": [
+        {
+          "category": "NON_SARGABLE",
+          "object": "join",
+          "system_note": "P1: JOIN ON uses function/cast/concat/coalesce/arithmetic on a key side; push compute upstream (T2→P1)."
+        }
+      ]
+    },
+    {
+      "query_id": "q03",
+      "oracle_n": 1,
+      "system_n": 1,
+      "tp": 1,
+      "fn": 0,
+      "fp": 0,
+      "recall": 1.0,
+      "precision": 1.0,
+      "missed": [],
+      "spurious": [],
+      "matched": [
+        {
+          "category": "NON_SARGABLE",
+          "object": "join",
+          "system_note": "P1: JOIN ON uses function/cast/concat/coalesce/arithmetic on a key side; push compute upstream (T2→P1)."
+        }
+      ]
+    },
+    {
+      "query_id": "q04",
+      "oracle_n": 2,
+      "system_n": 2,
+      "tp": 2,
+      "fn": 0,
+      "fp": 0,
+      "recall": 1.0,
+      "precision": 1.0,
+      "missed": [],
+      "spurious": [],
+      "matched": [
+        {
+          "category": "NON_SARGABLE",
+          "object": "join",
+          "system_note": "P1: JOIN ON uses function/cast/concat/coalesce/arithmetic on a key side; push compute upstream (T2→P1)."
+        },
+        {
+          "category": "SELECT_STAR_WIDE",
+          "object": "select",
+          "system_note": "SELECT * wide projection"
+        }
+      ]
+    },
+    {
+      "query_id": "q05",
+      "oracle_n": 2,
+      "system_n": 2,
+      "tp": 2,
+      "fn": 0,
+      "fp": 0,
+      "recall": 1.0,
+      "precision": 1.0,
+      "missed": [],
+      "spurious": [],
+      "matched": [
+        {
+          "category": "NON_SARGABLE",
+          "object": "join",
+          "system_note": "P1: JOIN ON uses function/cast/concat/coalesce/arithmetic on a key side; push compute upstream (T2→P1)."
+        },
+        {
+          "category": "SELECT_STAR_WIDE",
+          "object": "select",
+          "system_note": "SELECT * wide projection"
+        }
+      ]
+    },
+    {
+      "query_id": "q06",
+      "oracle_n": 1,
+      "system_n": 1,
+      "tp": 1,
+      "fn": 0,
+      "fp": 0,
+      "recall": 1.0,
+      "precision": 1.0,
+      "missed": [],
+      "spurious": [],
+      "matched": [
+        {
+          "category": "NON_SARGABLE",
+          "object": "join",
+          "system_note": "P1: JOIN ON uses function/cast/concat/coalesce/arithmetic on a key side; push compute upstream (T2→P1)."
+        }
+      ]
+    },
+    {
+      "query_id": "q07",
+      "oracle_n": 1,
+      "system_n": 1,
+      "tp": 1,
+      "fn": 0,
+      "fp": 0,
+      "recall": 1.0,
+      "precision": 1.0,
+      "missed": [],
+      "spurious": [],
+      "matched": [
+        {
+          "category": "NON_SARGABLE",
+          "object": "join",
+          "system_note": "P1: JOIN ON uses function/cast/concat/coalesce/arithmetic on a key side; push compute upstream (T2→P1)."
+        }
+      ]
+    },
+    {
+      "query_id": "q08",
+      "oracle_n": 1,
+      "system_n": 1,
+      "tp": 1,
+      "fn": 0,
+      "fp": 0,
+      "recall": 1.0,
+      "precision": 1.0,
+      "missed": [],
+      "spurious": [],
+      "matched": [
+        {
+          "category": "NON_SARGABLE",
+          "object": "join",
+          "system_note": "P1: JOIN ON uses function/cast/concat/coalesce/arithmetic on a key side; push compute upstream (T2→P1)."
+        }
+      ]
+    },
+    {
+      "query_id": "q09",
+      "oracle_n": 1,
+      "system_n": 1,
+      "tp": 1,
+      "fn": 0,
+      "fp": 0,
+      "recall": 1.0,
+      "precision": 1.0,
+      "missed": [],
+      "spurious": [],
+      "matched": [
+        {
+          "category": "CORRELATED_SUBQUERY",
+          "object": "exists",
+          "system_note": "P9: Correlated EXISTS/IN-style existence check; prefer pre-aggregate + join (T1→P9), not bare P2 on 1-to-many."
+        }
+      ]
+    },
+    {
+      "query_id": "q10",
+      "oracle_n": 1,
+      "system_n": 1,
+      "tp": 1,
+      "fn": 0,
+      "fp": 0,
+      "recall": 1.0,
+      "precision": 1.0,
+      "missed": [],
+      "spurious": [],
+      "matched": [
+        {
+          "category": "CORRELATED_SUBQUERY",
+          "object": "exists",
+          "system_note": "P9: Correlated EXISTS/IN-style existence check; prefer pre-aggregate + join (T1→P9), not bare P2 on 1-to-many."
+        }
+      ]
+    },
+    {
+      "query_id": "q11",
+      "oracle_n": 1,
+      "system_n": 1,
+      "tp": 1,
+      "fn": 0,
+      "fp": 0,
+      "recall": 1.0,
+      "precision": 1.0,
+      "missed": [],
+      "spurious": [],
+      "matched": [
+        {
+          "category": "CORRELATED_SUBQUERY",
+          "object": "exists",
+          "system_note": "P9: Correlated EXISTS/IN-style existence check; prefer pre-aggregate + join (T1→P9), not bare P2 on 1-to-many."
+        }
+      ]
+    },
+    {
+      "query_id": "q12",
+      "oracle_n": 1,
+      "system_n": 1,
+      "tp": 1,
+      "fn": 0,
+      "fp": 0,
+      "recall": 1.0,
+      "precision": 1.0,
+      "missed": [],
+      "spurious": [],
+      "matched": [
+        {
+          "category": "CORRELATED_SUBQUERY",
+          "object": "exists",
+          "system_note": "P9: Correlated EXISTS/IN-style existence check; prefer pre-aggregate + join (T1→P9), not bare P2 on 1-to-many."
+        }
+      ]
+    },
+    {
+      "query_id": "q13",
+      "oracle_n": 1,
+      "system_n": 1,
+      "tp": 1,
+      "fn": 0,
+      "fp": 0,
+      "recall": 1.0,
+      "precision": 1.0,
+      "missed": [],
+      "spurious": [],
+      "matched": [
+        {
+          "category": "CORRELATED_SUBQUERY",
+          "object": "exists",
+          "system_note": "P9: Correlated EXISTS/IN-style existence check; prefer pre-aggregate + join (T1→P9), not bare P2 on 1-to-many."
+        }
+      ]
+    },
+    {
+      "query_id": "q14",
+      "oracle_n": 2,
+      "system_n": 2,
+      "tp": 2,
+      "fn": 0,
+      "fp": 0,
+      "recall": 1.0,
+      "precision": 1.0,
+      "missed": [],
+      "spurious": [],
+      "matched": [
+        {
+          "category": "REDUNDANT_CTE_JOIN",
+          "object": "cte",
+          "system_note": "P10: Consecutive CTEs step2, step3, step4 repeatedly join the same dimension set ['dim']; merge into one enrichment CTE (T5→P10)."
+        },
+        {
+          "category": "SELECT_STAR_WIDE",
+          "object": "select",
+          "system_note": "SELECT * wide projection"
+        }
+      ]
+    },
+    {
+      "query_id": "q15",
+      "oracle_n": 2,
+      "system_n": 2,
+      "tp": 2,
+      "fn": 0,
+      "fp": 0,
+      "recall": 1.0,
+      "precision": 1.0,
+      "missed": [],
+      "spurious": [],
+      "matched": [
+        {
+          "category": "REDUNDANT_CTE_JOIN",
+          "object": "cte",
+          "system_note": "P10: Consecutive CTEs step2, step3, step4 repeatedly join the same dimension set ['dim']; merge into one enrichment CTE (T5→P10)."
+        },
+        {
+          "category": "SELECT_STAR_WIDE",
+          "object": "select",
+          "system_note": "SELECT * wide projection"
+        }
+      ]
+    },
+    {
+      "query_id": "q16",
+      "oracle_n": 2,
+      "system_n": 2,
+      "tp": 2,
+      "fn": 0,
+      "fp": 0,
+      "recall": 1.0,
+      "precision": 1.0,
+      "missed": [],
+      "spurious": [],
+      "matched": [
+        {
+          "category": "REDUNDANT_CTE_JOIN",
+          "object": "cte",
+          "system_note": "P10: Consecutive CTEs step2, step3, step4 repeatedly join the same dimension set ['dim']; merge into one enrichment CTE (T5→P10)."
+        },
+        {
+          "category": "SELECT_STAR_WIDE",
+          "object": "select",
+          "system_note": "SELECT * wide projection"
+        }
+      ]
+    },
+    {
+      "query_id": "q17",
+      "oracle_n": 2,
+      "system_n": 2,
+      "tp": 2,
+      "fn": 0,
+      "fp": 0,
+      "recall": 1.0,
+      "precision": 1.0,
+      "missed": [],
+      "spurious": [],
+      "matched": [
+        {
+          "category": "REDUNDANT_CTE_JOIN",
+          "object": "cte",
+          "system_note": "P10: Consecutive CTEs step2, step3, step4 repeatedly join the same dimension set ['dim']; merge into one enrichment CTE (T5→P10)."
+        },
+        {
+          "category": "SELECT_STAR_WIDE",
+          "object": "select",
+          "system_note": "SELECT * wide projection"
+        }
+      ]
+    },
+    {
+      "query_id": "q18",
+      "oracle_n": 1,
+      "system_n": 1,
+      "tp": 1,
+      "fn": 0,
+      "fp": 0,
+      "recall": 1.0,
+      "precision": 1.0,
+      "missed": [],
+      "spurious": [],
+      "matched": [
+        {
+          "category": "LEADING_WILDCARD_LIKE",
+          "object": "like",
+          "system_note": "P3: LIKE/pattern match; token contains rewrite is DANGEROUS (T3→P3 advise-only)."
+        }
+      ]
+    },
+    {
+      "query_id": "q19",
+      "oracle_n": 1,
+      "system_n": 1,
+      "tp": 1,
+      "fn": 0,
+      "fp": 0,
+      "recall": 1.0,
+      "precision": 1.0,
+      "missed": [],
+      "spurious": [],
+      "matched": [
+        {
+          "category": "OTHER",
+          "object": "listagg",
+          "system_note": "P4: List/group concat aggregation; bounded slice is DANGEROUS advise-only (T4→P4)."
+        }
+      ]
+    },
+    {
+      "query_id": "q20",
+      "oracle_n": 1,
+      "system_n": 1,
+      "tp": 1,
+      "fn": 0,
+      "fp": 0,
+      "recall": 1.0,
+      "precision": 1.0,
+      "missed": [],
+      "spurious": [],
+      "matched": [
+        {
+          "category": "CORRELATED_SUBQUERY",
+          "object": "exists",
+          "system_note": "P9: Correlated EXISTS/IN-style existence check; prefer pre-aggregate + join (T1→P9), not bare P2 on 1-to-many."
+        }
+      ]
+    }
+  ],
+  "caveats": [
+    "Recall/precision = agreement with frozen oracle set, not ground truth.",
+    "Oracle v1 may be synthetic-structural stand-in until live Opus batch is frozen.",
+    "n is small; ±10pt swings can be noise.",
+    "D1 analysis only — not verified apply (D2), not SQL-looks-like-Opus, not speedup %.",
+    "No EXECUTE_ALL. apply remains no-op for scoring."
+  ],
+  "forbidden_claims": [
+    "Do not claim 80% without this scorer + frozen oracle.",
+    "Do not report speedup % from this tool.",
+    "Do not equate analysis coverage with applied optimization."
+  ]
+}

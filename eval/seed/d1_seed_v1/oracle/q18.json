@@ -1,0 +1,11 @@
+{
+  "query_id": "q18",
+  "findings": [
+    {
+      "category": "LEADING_WILDCARD_LIKE",
+      "object": "like",
+      "columns": [],
+      "note": "leading wildcard LIKE"
+    }
+  ]
+}

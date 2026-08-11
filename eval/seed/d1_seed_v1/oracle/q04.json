@@ -1,0 +1,17 @@
+{
+  "query_id": "q04",
+  "findings": [
+    {
+      "category": "NON_SARGABLE",
+      "object": "join",
+      "columns": [],
+      "note": "UPPER on join"
+    },
+    {
+      "category": "SELECT_STAR_WIDE",
+      "object": "select",
+      "columns": [],
+      "note": "select *"
+    }
+  ]
+}
