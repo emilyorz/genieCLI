@@ -207,6 +207,67 @@ def render_menu() -> str:
     return "\n".join(lines)
 
 
+# --- Machine-readable rule metadata (stepwise driver) -----------------------
+
+
+@dataclass(frozen=True)
+class RuleMeta:
+    """Driver-facing metadata for one P-rule."""
+
+    rule_id: str
+    safety_tier: str  # safe | trap | dangerous
+    dangerous: bool
+    default_verify: str  # EXACT | ROW_COUNT | EXPLAIN_ONLY | STATIC
+    atomic_unit: str
+    structural: bool = False
+
+
+def _build_rule_meta() -> dict[str, RuleMeta]:
+    verify_map = {
+        "P1": "STATIC",
+        "P2": "ROW_COUNT",
+        "P3": "EXACT",
+        "P4": "EXACT",
+        "P5": "ROW_COUNT",
+        "P6": "EXACT",
+        "P7": "STATIC",
+        "P8": "EXPLAIN_ONLY",
+        "P9": "ROW_COUNT",
+        "P10": "ROW_COUNT",
+    }
+    atomic_map = {
+        "P1": "join_on_or_predicate_site",
+        "P2": "exists_subquery_site",
+        "P3": "like_or_strpos_site",
+        "P4": "listagg_site",
+        "P5": "predicate_site",
+        "P6": "array_map_site",
+        "P7": "join_site",
+        "P8": "join_site",
+        "P9": "exists_or_in_subquery_site",
+        "P10": "cte_chain_site",
+    }
+    structural_ids = frozenset({"P2", "P6", "P9", "P10"})
+    out: dict[str, RuleMeta] = {}
+    for s in P_STRATEGIES:
+        out[s.id] = RuleMeta(
+            rule_id=s.id,
+            safety_tier=s.tier,
+            dangerous=(s.tier == DANGEROUS),
+            default_verify=verify_map.get(s.id, "STATIC"),
+            atomic_unit=atomic_map.get(s.id, "fragment_site"),
+            structural=(s.id in structural_ids),
+        )
+    return out
+
+
+RULE_META: dict[str, RuleMeta] = _build_rule_meta()
+
+
+def dangerous_rule_ids() -> frozenset[str]:
+    return frozenset(r for r, m in RULE_META.items() if m.dangerous)
+
+
 __all__ = [
     "SAFE",
     "TRAP",
@@ -220,4 +281,7 @@ __all__ = [
     "P_STRATEGY_BY_ID",
     "strategies_for_action",
     "render_menu",
+    "RuleMeta",
+    "RULE_META",
+    "dangerous_rule_ids",
 ]

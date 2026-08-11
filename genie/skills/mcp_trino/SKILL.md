@@ -219,6 +219,15 @@ prefer that hotspot and still apply **one** P-strategy only. Otherwise walk:
 - Response format unchanged: one short hypothesis line (≤80 chars) + complete
   ```sql``` block; no trailing semicolon; preserve result semantics.
 
+
+## HYBRID_STEPWISE (driver)
+
+Default research mode applies **one `(rule_id, site)` P-rule application per step**.
+Engine builds P-hit SCAN → Rewrite PLAN → `StepwiseDriver` ledger.
+Dangerous rules (P3/P4/P6) stay `NEEDS_HUMAN` unless explicitly confirmed.
+Offline / no Trino MCP: STATIC checks only and rows are marked **UNVERIFIED** (not semantic proof).
+No EXECUTE_ALL default. No percentage speedup claims in conclusions.
+
 ## Connector-Specific Optimizations
 
 ### Hive Connector

@@ -23,6 +23,8 @@ from genie.skills.mcp_trino.p_strategies import (
     PStrategy,
     render_menu,
     strategies_for_action,
+    RULE_META,
+    dangerous_rule_ids,
 )
 
 _EXPECTED_IDS = frozenset(f"P{i}" for i in range(1, 11))
@@ -107,3 +109,17 @@ def test_render_menu_lists_all_ten_with_safety_flags():
     assert "ADVISE ONLY" in menu
     assert "MUST verify row-equivalence" in menu
     assert "redundant-same-dim-cte-merge" in menu
+
+
+def test_rule_meta_covers_all_registered_rules():
+    assert set(RULE_META) == ALL_P_STRATEGY_IDS
+    for pid, meta in RULE_META.items():
+        assert meta.rule_id == pid
+        assert meta.default_verify in {"EXACT", "ROW_COUNT", "EXPLAIN_ONLY", "STATIC"}
+        assert meta.atomic_unit
+
+
+def test_p6_and_t3_t4_marked_dangerous():
+    dang = dangerous_rule_ids()
+    assert "P3" in dang and "P4" in dang and "P6" in dang
+    assert "P1" not in dang

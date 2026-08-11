@@ -2157,6 +2157,13 @@ def generate_report(report: EnhancementReport, locale: str = "en", step_trace=No
             lines.append("")
             lines.append(f"_Plan unavailable: {_plan_exc}_")
             lines.append("")
+        # Optional stepwise ledger attached by research loop (offline or live).
+        _step_ledger = getattr(report, "step_ledger", None)
+        if _step_ledger is not None and hasattr(_step_ledger, "to_markdown"):
+            lines.append("## Step Ledger (HYBRID_STEPWISE)")
+            lines.append("")
+            lines.append(_step_ledger.to_markdown().rstrip())
+            lines.append("")
     except Exception:
         pass
 
@@ -2999,9 +3006,14 @@ def run_mcp_enhancement(
             _plan = build_rewrite_plan(_phits)
             _exec = [s for s in _plan.steps if s.action == "execute"][:3]
             if _exec:
-                phit_plan_block += "Rewrite PLAN next execute steps (apply at most ONE per iteration):\n"
+                phit_plan_block += (
+                    "HYBRID_STEPWISE: apply at most ONE (rule_id, site) per iteration; "
+                    "wait for verify/ledger before the next step. No EXECUTE_ALL.\n"
+                )
                 for s in _exec:
-                    phit_plan_block += f"- step {s.seq}: {s.pid} ({s.tier}) targets={', '.join(s.targets)}\n"
+                    phit_plan_block += (
+                        f"- step {s.seq}: {s.pid} ({s.tier}) targets={', '.join(s.targets)}\n"
+                    )
                 phit_plan_block += "\n"
         except Exception:
             pass
