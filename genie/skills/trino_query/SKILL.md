@@ -47,5 +47,5 @@ DANGEROUS = surfaced as advice, never auto-applied.
 Full playbook: `genie/skills/mcp_trino/SKILL.md` → **Rule-Matching / Non-Equi Join Playbook**.
 
 For massive base × small rule / non-equi / correlated EXISTS workloads, try in order:
-**P1 → P7 → P8(advice only) → P2(unique key) → P5 → P6(conditional) → P3/P4(advise-first)**.
+**P1 → P7 → P8(advice only) → P2(unique key) → P5 → P10(cte-merge) → P6(conditional) → P3/P4(advise-first)**.
 P6 lambda is **not** default. Never put `SET SESSION` in candidate SQL. One change per iteration.

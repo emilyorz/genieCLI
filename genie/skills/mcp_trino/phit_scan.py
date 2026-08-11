@@ -1,7 +1,7 @@
 """Engine-side structured P-hit SCAN (Stage-2).
 
 Pure AST scan → list[PHit]. No network, no LLM line guessing.
-Public IDs are catalog P-ids only (P1–P9). P10 deferred — never emitted here.
+Public IDs are catalog P-ids only (P1–P10).
 
 Maps internal transformation ideas (T*) to P-ids in comments only.
 """
@@ -44,6 +44,7 @@ def _tier_for(pid: str) -> str:
         "P7": "safe",
         "P8": "safe",
         "P9": "trap",
+        "P10": "trap",
     }
     return defaults.get(pid, "dangerous")
 
@@ -287,6 +288,113 @@ def _scan_p4(tree: Any, exp: Any) -> list[PHit]:
     return hits
 
 
+def _cte_join_signature(cte_select: Any, exp: Any) -> frozenset[str]:
+    """Normalized set of joined table names inside a CTE body (LEFT/INNER)."""
+    names: set[str] = set()
+    try:
+        for join in cte_select.find_all(exp.Join):
+            # table being joined
+            tbl = join.this
+            if isinstance(tbl, exp.Table) and tbl.name:
+                names.add(str(tbl.name).lower())
+            elif tbl is not None:
+                for t in tbl.find_all(exp.Table):
+                    if t.name:
+                        names.add(str(t.name).lower())
+                        break
+    except Exception:
+        return frozenset()
+    return frozenset(names)
+
+
+def _cte_is_simple_enrichment(cte_select: Any, exp: Any) -> bool:
+    """True if CTE looks like project/CASE enrich without aggregation grain change."""
+    try:
+        if cte_select.args.get("group") is not None:
+            return False
+        if cte_select.args.get("distinct") is not None:
+            return False
+        # HAVING / QUALIFY-like
+        if cte_select.args.get("having") is not None:
+            return False
+        # window is ok-ish but treat as non-simple for v1 safety
+        if list(cte_select.find_all(exp.Window)):
+            return False
+    except Exception:
+        return False
+    return True
+
+
+def _scan_p10(tree: Any, exp: Any) -> list[PHit]:
+    """Detect consecutive CTEs that LEFT/JOIN the same dim set (T5→P10)."""
+    hits: list[PHit] = []
+    try:
+        with_ = tree.args.get("with")
+        if with_ is None:
+            # root may be Select with with_
+            if hasattr(tree, "find"):
+                # collect CTE nodes in source order
+                ctes = list(tree.find_all(exp.CTE))
+            else:
+                ctes = []
+        else:
+            ctes = list(with_.find_all(exp.CTE)) if hasattr(with_, "find_all") else list(with_.expressions or [])
+        if len(ctes) < 2:
+            return []
+        # walk consecutive pairs/triples with same join signature
+        sigs: list[tuple[str, frozenset[str], bool]] = []
+        for cte in ctes:
+            name = str(getattr(cte, "alias_or_name", None) or getattr(cte, "alias", None) or cte.alias or "").lower()
+            if not name:
+                try:
+                    name = str(cte.alias_or_name).lower()
+                except Exception:
+                    name = f"cte{len(sigs)}"
+            body = cte.this
+            if body is None:
+                continue
+            sig = _cte_join_signature(body, exp)
+            simple = _cte_is_simple_enrichment(body, exp)
+            sigs.append((name, sig, simple))
+        # find runs of ≥2 consecutive CTEs sharing non-empty identical join set + simple
+        i = 0
+        run_id = 0
+        while i < len(sigs) - 1:
+            name_a, sig_a, simple_a = sigs[i]
+            if not sig_a or not simple_a:
+                i += 1
+                continue
+            j = i + 1
+            names = [name_a]
+            while j < len(sigs):
+                name_b, sig_b, simple_b = sigs[j]
+                if sig_b == sig_a and simple_b and sig_b:
+                    names.append(name_b)
+                    j += 1
+                else:
+                    break
+            if len(names) >= 2:
+                hits.append(
+                    PHit(
+                        pid="P10",
+                        node_ref=f"ast:cte_chain_same_dims[{run_id}]:{'>'.join(names)}",
+                        tier=_tier_for("P10"),
+                        why=(
+                            f"Consecutive CTEs {', '.join(names)} repeatedly join the same "
+                            f"dimension set {sorted(sig_a)}; merge into one enrichment CTE (T5→P10)."
+                        ),
+                        span=None,
+                    )
+                )
+                run_id += 1
+                i = j
+            else:
+                i += 1
+    except Exception:
+        return hits
+    return hits
+
+
 def scan_phits(sql: str) -> list[PHit]:
     """Scan SQL for catalog P-hits. Never raises; returns [] on parse failure."""
     if not sql or not str(sql).strip():
@@ -307,6 +415,7 @@ def scan_phits(sql: str) -> list[PHit]:
         hits.extend(_scan_p9(tree, exp))
         hits.extend(_scan_p3(tree, exp))
         hits.extend(_scan_p4(tree, exp))
+        hits.extend(_scan_p10(tree, exp))
     except Exception:
         return hits
 
@@ -314,8 +423,6 @@ def scan_phits(sql: str) -> list[PHit]:
     seen: set[tuple[str, str]] = set()
     out: list[PHit] = []
     for h in hits:
-        if h.pid == "P10":
-            continue  # deferred
         key = (h.pid, h.node_ref)
         if key in seen:
             continue

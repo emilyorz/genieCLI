@@ -2983,10 +2983,36 @@ def run_mcp_enhancement(
     rule_gate = build_rule_gate_summary(static_report, directions)
     rule_gate_block = format_rule_gate_for_prompt(rule_gate)
     directions_block = format_directions_for_prompt(directions)
+    # Compact engine P-hit / plan shortlist (not a CP essay; ONE change still required).
+    phit_plan_block = ""
+    try:
+        from genie.skills.mcp_trino.phit_scan import (
+            format_phits_direction_bullets,
+            scan_phits,
+        )
+        from genie.skills.mcp_trino.rewrite_plan import build_rewrite_plan
+        _phits = scan_phits(sql)
+        _bullets = format_phits_direction_bullets(_phits, limit=5)
+        if _bullets:
+            phit_plan_block = _bullets
+        try:
+            _plan = build_rewrite_plan(_phits)
+            _exec = [s for s in _plan.steps if s.action == "execute"][:3]
+            if _exec:
+                phit_plan_block += "Rewrite PLAN next execute steps (apply at most ONE per iteration):\n"
+                for s in _exec:
+                    phit_plan_block += f"- step {s.seq}: {s.pid} ({s.tier}) targets={', '.join(s.targets)}\n"
+                phit_plan_block += "\n"
+        except Exception:
+            pass
+    except Exception:
+        phit_plan_block = ""
     if output:
         render_rule_gate_summary(output, rule_gate)
     if output and directions:
         output.progress(f"  Pre-execution diagnosis: {len(directions)} ranked direction(s) → prompt")
+    if output and phit_plan_block:
+        output.progress("  Engine P-hit / PLAN shortlist → prompt")
 
     # ── Session setup ──
     skill_prompt = build_prompt(True, model) if build_prompt else ""
@@ -3007,6 +3033,8 @@ def run_mcp_enhancement(
         sys_prompt += f"## Trino Optimization Guide\n\n{skill_instructions}\n\n"
     if directions_block:
         sys_prompt += f"{directions_block}\n\n"
+    if phit_plan_block:
+        sys_prompt += f"## Engine P-hit / stepwise PLAN hint\n\n{phit_plan_block}\n"
     sys_prompt += skill_prompt
     session = new_session(sys_prompt)
 

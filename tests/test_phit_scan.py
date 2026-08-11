@@ -36,3 +36,11 @@ def test_like_and_listagg_hits_p3_p4():
 def test_empty_and_bad_sql():
     assert scan_phits("") == []
     assert scan_phits("not sql ;;;%%%") == [] or isinstance(scan_phits("SELECT 1"), list)
+
+
+def test_cte_chain_same_dims_hits_p10():
+    hits = scan_phits(_load("cte_chain_same_dims.sql"))
+    assert any(h.pid == "P10" for h in hits)
+    for h in hits:
+        if h.pid == "P10":
+            assert h.tier == "trap"

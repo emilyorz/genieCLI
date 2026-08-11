@@ -39,9 +39,13 @@ def test_unknown_pid_rejected():
         build_rewrite_plan([PHit(pid="T1", node_ref="x", tier="safe", why="no")])
 
 
-def test_p10_rejected():
-    with pytest.raises(RewritePlanError):
-        build_rewrite_plan([PHit(pid="P10", node_ref="x", tier="trap", why="deferred")])
+def test_p10_accepted_as_trap_execute():
+    plan = build_rewrite_plan([
+        PHit(pid="P10", node_ref="ast:cte_chain", tier="trap", why="merge"),
+        PHit(pid="P3", node_ref="a", tier="dangerous", why="x"),
+    ])
+    assert any(s.pid == "P10" and s.action == "execute" for s in plan.steps)
+    assert_no_dangerous_execute(plan)
 
 
 def test_force_dangerous_execute_guard():

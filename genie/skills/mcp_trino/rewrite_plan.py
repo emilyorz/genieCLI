@@ -71,9 +71,6 @@ def build_rewrite_plan(hits: Iterable[PHit]) -> RewritePlan:
     for h in hits:
         if h.pid not in ALL_P_STRATEGY_IDS:
             raise RewritePlanError(f"unknown catalog pid: {h.pid!r}")
-        if h.pid == "P10":
-            # deferred: reject if ever slipped in
-            raise RewritePlanError("P10 deferred this run; remove hit")
         key = (h.pid, h.node_ref)
         if key in seen:
             continue

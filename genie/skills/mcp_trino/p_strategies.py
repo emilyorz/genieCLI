@@ -167,6 +167,20 @@ P_STRATEGIES: tuple[PStrategy, ...] = (
                     "the aggregation groups on the true correlation key and reproduces the EXISTS "
                     "truth value (NULL/empty handling). TRAP — verify row-equivalence before apply.",
     ),
+    PStrategy(
+        id="P10",
+        name="redundant-same-dim-cte-merge",
+        trigger="a chain of consecutive CTEs that each LEFT JOIN the same small dimension/"
+                "enrichment table(s) and only add simple CASE/derived columns — repeating the "
+                "same join work across step2/step3/step4-style pipelines (cross-CTE structural).",
+        recipe="merge the chain into one CTE: join each small dim once, keep all CASE/derived "
+               "columns in that single layer, and delete the redundant intermediate CTEs.",
+        tier=TRAP,
+        safety_note="value-preserving when intermediates only project/CASE over the same grain "
+                    "and joins are not fan-out multipliers. If any step aggregates, filters rows, "
+                    "or joins a 1-to-many dim without preagg, merge changes cardinality — "
+                    "TRAP: verify row-equivalence before apply. (Internal T5 → P10.)",
+    ),
 )
 
 ALL_P_STRATEGY_IDS: frozenset[str] = frozenset(s.id for s in P_STRATEGIES)
@@ -181,7 +195,7 @@ def strategies_for_action(action: str) -> tuple[PStrategy, ...]:
 
 
 def render_menu() -> str:
-    """Render the P1–P9 menu as a compact prompt block for the optimize step."""
+    """Render the P1–P10 menu as a compact prompt block for the optimize step."""
     lines = ["Rewrite strategy menu (apply ONLY a named strategy that fits; do not freestyle):"]
     for s in P_STRATEGIES:
         verify = " [MUST verify row-equivalence]" if s.tier in TIERS_REQUIRE_VERIFY else ""

@@ -189,6 +189,9 @@ prefer that hotspot and still apply **one** P-strategy only. Otherwise walk:
    Pattern sketch (advise/candidate only when gates above hold): package rules
    with `array_agg(CAST(ROW(...) AS ROW(...)))`, `CROSS JOIN` the single row,
    `filter(all_rules, r -> …)` then `reduce(...)` per base row.
+6b. **[P10 TRAP] redundant-same-dim-cte-merge** — consecutive CTEs that
+   repeatedly LEFT JOIN the same small dims with only CASE/project enrich:
+   merge into one CTE (verify row-equivalence).
 7. **[P3 / P4 DANGEROUS] advise-first**
    - `LIKE '%v%'` → `contains(split(...))` changes substring vs token semantics
    - `LISTAGG` → `array_join(slice(array_sort(array_agg(x)), 1, N), ',')` is a
